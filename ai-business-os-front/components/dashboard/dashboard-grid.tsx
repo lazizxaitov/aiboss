@@ -1,0 +1,2381 @@
+"use client";
+
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import Image from "next/image";
+import {
+  Responsive,
+  type LayoutItem,
+  type ResponsiveLayouts,
+} from "react-grid-layout/legacy";
+
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Drawer } from "@/components/ui/drawer";
+import { FilterChip } from "@/components/ui/filter-chip";
+import { Dropdown } from "@/components/ui/dropdown";
+import { Surface } from "@/components/ui/surface";
+import { AiPreviewBanner } from "@/components/dashboard/ai-preview-banner";
+import { AiSuggestionsButton } from "@/components/dashboard/ai-suggestions-button";
+import { AiSuggestionsDrawer } from "@/components/dashboard/ai-suggestions-drawer";
+import { useDashboardManifest } from "@/components/dashboard/dashboard-manifest-provider";
+import { cn } from "@/lib/cn";
+import {
+  dedupeWidgets,
+  dedupeWidgetSignatures,
+  snapWidgetSemanticSize,
+  widgetLayoutGroup,
+  widgetCanResize,
+} from "@/lib/launcher/layout-engine";
+import {
+  createDevelopmentLauncherSuggestions,
+  evaluateLauncherSuggestion,
+} from "@/lib/launcher/ai-suggestions";
+import {
+  breakpointForWidth,
+  composeResponsiveLauncherLayouts,
+  createDefaultLauncherState,
+  deriveLauncherOrder,
+  LAUNCHER_BREAKPOINTS,
+  LAUNCHER_COLUMNS,
+  normalizeLauncherState,
+  updateLauncherWidgetSize,
+} from "@/lib/launcher/composer";
+import {
+  clearLauncherState,
+  loadLauncherState,
+  saveLauncherState,
+} from "@/lib/launcher/state-persistence";
+import {
+  clampSize,
+  getLauncherVariantFromGrid,
+  launcherSemanticSizeOptions,
+} from "@/lib/launcher/size-mapping";
+import { getWidgetSizeContract } from "@/lib/launcher/widget-registry";
+import type {
+  LauncherSemanticSize,
+  LauncherState,
+  LauncherSuggestion,
+  LauncherSuggestionPreview,
+  LauncherWidgetVariant,
+} from "@/lib/launcher/types";
+import {
+  type AnalyticsDataStatus,
+  type AnalyticsMetricValue,
+  type DashboardManifestWidget,
+} from "@/lib/core-api";
+
+type SerializedMetricValue = AnalyticsMetricValue;
+
+type ExecutiveNumber = {
+  label?: string;
+  current?: string | number | null;
+  previous?: string | number | null;
+  delta?: string | number | null;
+  direction?: string | null;
+};
+
+type SerializedProductRow = {
+  product_id?: string | null;
+  product_external_id?: string | null;
+  product_name?: string | null;
+  organization_id?: string | null;
+  organization_name?: string | null;
+  sold_units?: SerializedMetricValue;
+  revenue?: SerializedMetricValue;
+  orders_count?: SerializedMetricValue;
+  customers_count?: SerializedMetricValue;
+  average_selling_price?: SerializedMetricValue;
+  returns_quantity?: SerializedMetricValue;
+  returns_amount?: SerializedMetricValue;
+  return_rate?: SerializedMetricValue;
+  current_stock?: SerializedMetricValue;
+  stock_value?: SerializedMetricValue;
+  sales_velocity_7d?: SerializedMetricValue;
+  sales_velocity_30d?: SerializedMetricValue;
+  days_of_stock?: SerializedMetricValue;
+  sales_change_pct?: SerializedMetricValue;
+  units_change_pct?: SerializedMetricValue;
+  revenue_change_pct?: SerializedMetricValue;
+  classification?: string | null;
+  classification_tags?: string[];
+  stockout_risk?: string | null;
+  first_sale_date?: string | null;
+  last_sale_date?: string | null;
+  data_status?: AnalyticsDataStatus;
+};
+
+type SerializedCustomerRow = {
+  customer_external_id?: string | null;
+  customer_name?: string | null;
+  organization_ids?: string[];
+  orders_count?: SerializedMetricValue;
+  revenue?: SerializedMetricValue;
+  sold_units?: SerializedMetricValue;
+  average_order_value?: SerializedMetricValue;
+  days_since_last_order?: SerializedMetricValue;
+  purchase_frequency?: SerializedMetricValue;
+  returns_count?: SerializedMetricValue;
+  returns_amount?: SerializedMetricValue;
+  visits_count?: SerializedMetricValue;
+  products_count?: SerializedMetricValue;
+  organizations_count?: SerializedMetricValue;
+  customer_value_score?: SerializedMetricValue;
+  segment?: string | null;
+  first_order_date?: string | null;
+  last_order_date?: string | null;
+  data_status?: AnalyticsDataStatus;
+};
+
+type SerializedOrganizationRow = {
+  organization_id: string;
+  organization_name: string;
+  metrics: Record<string, SerializedMetricValue>;
+  products_sold?: SerializedMetricValue;
+  sales_reps?: SerializedMetricValue;
+  visits?: SerializedMetricValue;
+  stock?: SerializedMetricValue;
+  data_status?: AnalyticsDataStatus;
+};
+
+type SerializedInventoryOpportunity = {
+  product_external_id?: string | null;
+  product_name?: string | null;
+  from_organization_id?: string;
+  from_organization_name?: string;
+  to_organization_id?: string;
+  to_organization_name?: string;
+  source_stock?: SerializedMetricValue;
+  destination_stock?: SerializedMetricValue;
+  source_days?: SerializedMetricValue;
+  destination_days?: SerializedMetricValue;
+  source_velocity?: SerializedMetricValue;
+  destination_velocity?: SerializedMetricValue;
+  reason?: string | null;
+};
+
+type SerializedSalesRepRow = {
+  sales_rep_external_id?: string | null;
+  sales_rep_name?: string | null;
+  organization_id?: string | null;
+  organization_name?: string | null;
+  visits_count?: SerializedMetricValue;
+  orders_count?: SerializedMetricValue;
+  revenue?: SerializedMetricValue;
+  sold_units?: SerializedMetricValue;
+  average_order_value?: SerializedMetricValue;
+  conversion_rate?: SerializedMetricValue;
+  last_visit_date?: string | null;
+  data_status?: AnalyticsDataStatus;
+};
+
+type SerializedAIInsight = {
+  id?: string;
+  type?: string;
+  severity?: string;
+  title?: string;
+  summary?: string;
+  recommendation?: string | null;
+  confidence?: number | null;
+  metric_key?: string | null;
+  entity_type?: string | null;
+  entity_id?: string | null;
+  organization_ids?: string[];
+  metrics?: ExecutiveNumber[];
+  evidence?: string[];
+  tags?: string[];
+};
+
+type ChatTile = {
+  title: string;
+  accent: "yellow" | "slate";
+  icon: "chat" | "head";
+};
+
+type ModelItem = {
+  name: string;
+  time: string;
+  description: string;
+  icon: "chatgpt" | "claude" | "grok";
+};
+
+function statusLabel(status: AnalyticsDataStatus, compact = false) {
+  switch (status) {
+    case "AVAILABLE":
+      return compact ? "Подтверждено" : "Данные подтверждены";
+    case "PARTIAL":
+      return compact ? "Частично" : "Частичное покрытие";
+    case "NO_DATA":
+      return "Нет данных";
+    case "NO_VERIFIED_DATA":
+      return compact ? "Нет данных" : "Недостаточно данных";
+    case "UNRESOLVED":
+      return compact ? "Не определено" : "Недостаточно данных";
+    case "PERMISSION_RESTRICTED":
+      return "Нет доступа к данным";
+    case "INSUFFICIENT_HISTORY":
+      return compact ? "Мало истории" : "Недостаточно истории";
+    case "ANALYSIS_PENDING":
+      return compact ? "Обновляется" : "Анализ обновляется";
+    case "NOT_SUPPORTED":
+      return "Не поддерживается";
+    default:
+      return "Недоступно";
+  }
+}
+
+function statusVariant(status: AnalyticsDataStatus): "accent" | "soft" | "dark" | "neutral" {
+  switch (status) {
+    case "PARTIAL":
+    case "ANALYSIS_PENDING":
+      return "accent";
+    case "AVAILABLE":
+      return "soft";
+    case "NO_DATA":
+    case "NO_VERIFIED_DATA":
+    case "UNRESOLVED":
+    case "PERMISSION_RESTRICTED":
+    case "NOT_SUPPORTED":
+    case "INSUFFICIENT_HISTORY":
+      return "neutral";
+    default:
+      return "neutral";
+  }
+}
+
+export function DashboardAssistantPanel() {
+  const [expanded, setExpanded] = useState(false);
+  const [selectedModel, setSelectedModel] = useState(0);
+  const [message, setMessage] = useState("");
+  const [chatMessages, setChatMessages] = useState<Array<{ id: string; role: "user" | "assistant"; text: string }>>([]);
+  const messageInputRef = useRef<HTMLInputElement | null>(null);
+  const chatSurfaceRef = useRef<HTMLDivElement | null>(null);
+  const chatThreadRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!expanded) return;
+
+    const frame = window.requestAnimationFrame(() => {
+      messageInputRef.current?.focus();
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [expanded]);
+
+  useEffect(() => {
+    if (!expanded) {
+      return;
+    }
+
+    const handleOutsidePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (chatSurfaceRef.current?.contains(target)) return;
+      setExpanded(false);
+    };
+
+    document.addEventListener("pointerdown", handleOutsidePointerDown);
+
+    return () => {
+      document.removeEventListener("pointerdown", handleOutsidePointerDown);
+    };
+  }, [expanded]);
+
+  useEffect(() => {
+    if (chatMessages.length === 0) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      chatThreadRef.current?.scrollTo({
+        top: chatThreadRef.current.scrollHeight,
+        behavior: "smooth",
+      });
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [chatMessages]);
+  const tiles: ChatTile[] = [
+    { title: "Обсудить продажи", accent: "yellow", icon: "chat" },
+    { title: "Проверить склад", accent: "slate", icon: "head" },
+    { title: "Собрать сводку", accent: "slate", icon: "chat" },
+    { title: "Спросить про KPI", accent: "yellow", icon: "head" },
+  ];
+
+  const models: ModelItem[] = [
+    { name: "ChatGPT", time: "22:10", description: "Сформируй краткий обзор по выручке.", icon: "chatgpt" },
+    { name: "Claude", time: "11:23", description: "Подготовь структурный обзор по данным.", icon: "claude" },
+    { name: "Grok", time: "18:40", description: "Сформулируй краткое пояснение по KPI.", icon: "grok" },
+  ];
+
+  const thoughts = [
+    {
+      label: "Предлагает",
+      title: "Проверить продажи",
+      text: "Есть смысл посмотреть последние сделки и выделить самые сильные продукты.",
+    },
+    {
+      label: "Предупреждает",
+      title: "Остатки могут просесть",
+      text: "По части ассортимента лучше проверить товарные сигналы и риск дефицита.",
+    },
+    {
+      label: "Предлагает",
+      title: "Собрать краткий отчёт",
+      text: "Можно быстро собрать обзор по выручке, заказам и поступлениям за выбранный период.",
+    },
+  ];
+
+  const visibleThoughts = expanded ? thoughts.slice(0, 2) : thoughts;
+  const smoothTransition = "transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]";
+  const hasConversation = chatMessages.length > 0;
+  const activeModel = models[selectedModel] ?? models[0];
+  const chatTitle =
+    chatMessages.find((item) => item.role === "user")?.text.trim() || "Новый чат";
+
+  const handleSendMessage = () => {
+    const text = message.trim();
+    if (!text) return;
+
+    setExpanded(true);
+    setChatMessages((current) => [
+      ...current,
+      { id: `user-${Date.now()}-${current.length}`, role: "user", text },
+      {
+        id: `assistant-${Date.now()}-${current.length}`,
+        role: "assistant",
+        text: "Понял. Могу помочь с этим дальше.",
+      },
+    ]);
+    setMessage("");
+  };
+
+  const handleBackToStart = () => {
+    setChatMessages([]);
+    setMessage("");
+    setExpanded(true);
+    requestAnimationFrame(() => {
+      messageInputRef.current?.focus();
+    });
+  };
+
+  return (
+    <div className="flex min-h-0 flex-col gap-3 xl:sticky xl:top-[6.5rem] xl:h-[calc(100dvh-8rem)]">
+      <div ref={chatSurfaceRef}>
+        <Surface
+          className={cn(
+            "relative flex min-h-0 shrink-0 flex-col overflow-hidden border-[#3c4048] bg-[radial-gradient(circle_at_78%_12%,rgba(255,255,255,0.05),transparent_32%),linear-gradient(180deg,#2E3137_0%,#2A2D33_100%)] px-4",
+            smoothTransition,
+            expanded ? "h-[699px] xl:h-[739px] pt-5 pb-4" : "h-[165px] xl:h-[165px] py-3",
+          )}
+        >
+          <button
+            type="button"
+            onClick={() => setExpanded((value) => !value)}
+            className="pointer-events-none absolute inset-0 z-0"
+            aria-hidden="true"
+            tabIndex={-1}
+          />
+          <div className="pointer-events-none absolute inset-0 opacity-40 [background-image:repeating-linear-gradient(120deg,rgba(255,255,255,0.03)_0,rgba(255,255,255,0.03)_1px,transparent_1px,transparent_14px)]" />
+          <div className={cn("relative flex min-h-0 flex-col", smoothTransition, expanded ? "flex-1 gap-4" : "flex-1 justify-center gap-3")}>
+            {expanded && hasConversation ? (
+              <div className="flex items-center gap-4">
+                <button
+                  type="button"
+                  onClick={handleBackToStart}
+                  className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-[#4a4e56] bg-[#343840] text-xl text-[#f4f7fb] transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] hover:border-[#FFF27A]/30 hover:text-[#FFF27A]"
+                  aria-label="Назад"
+                  title="Назад"
+                >
+                  <span aria-hidden>‹</span>
+                </button>
+                <div className="min-w-0 flex-1">
+                  <p className="max-w-full truncate text-[18px] font-semibold leading-[1.1] tracking-[-0.05em] text-[#f4f7fb] xl:text-[20px]">
+                    {chatTitle}
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-start justify-between gap-4">
+                <div className={cn("flex-1", !expanded ? "text-center" : "")}>
+                  <p
+                    className={cn(
+                      "font-semibold tracking-[-0.08em] text-[#f4f7fb] leading-[1.05]",
+                      smoothTransition,
+                      expanded ? "text-[22px] xl:text-[26px]" : "text-[17px] xl:text-[19px]",
+                    )}
+                  >
+                    Как я могу помочь сегодня?
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-[#4a4e56] bg-[#343840] text-xl text-[#f4f7fb] transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] hover:border-[#FFF27A]/30 hover:text-[#FFF27A]"
+                  aria-label={expanded ? "Свернуть чат" : "Открыть чат"}
+                  onClick={() => setExpanded((value) => !value)}
+                >
+                  <span aria-hidden>{expanded ? "⌄" : "›"}</span>
+                </button>
+              </div>
+            )}
+
+            {!expanded ? (
+              <form
+                className="flex h-[58px] w-full items-center gap-3 rounded-[24px] border border-[#3a3d43] bg-[#343840] px-4 pr-2 text-left shadow-[0_18px_30px_rgba(0,0,0,0.16)] transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  handleSendMessage();
+                }}
+              >
+                <input
+                  ref={messageInputRef}
+                  value={message}
+                  onChange={(event) => setMessage(event.target.value)}
+                  onFocus={() => setExpanded(true)}
+                  onClick={() => setExpanded(true)}
+                  placeholder="Напишите сообщение..."
+                  aria-label="Напишите сообщение"
+                  className="min-w-0 flex-1 border-0 bg-transparent text-[15px] text-slate-300 outline-none placeholder:text-slate-400"
+                />
+                <button
+                  type="submit"
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#FFF27A] text-[#1E1E21] transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] hover:bg-[#fff6a6]"
+                  aria-label="Отправить сообщение"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    className="h-[17px] w-[17px]"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M22 2 11 13" />
+                    <path d="M22 2 15 22l-4-9-9-4 20-7Z" />
+                  </svg>
+                </button>
+              </form>
+            ) : hasConversation ? (
+              <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
+                <div ref={chatThreadRef} className="min-h-0 flex-1 overflow-y-auto pr-1">
+                  <div className="flex flex-col gap-4 pb-3">
+                    {chatMessages.map((item) =>
+                      item.role === "user" ? (
+                        <div key={item.id} className="ml-auto flex max-w-[82%] items-start gap-2.5 rounded-[20px] bg-[#565b63] px-3 py-3 text-[#f4f7fb]">
+                          <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#FFF27A] text-[11px] font-semibold text-[#1E1E21]">
+                            Вы
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-[14px] font-semibold tracking-[-0.04em] text-[#f4f7fb]">Вы</p>
+                            <p className="mt-1.5 text-[13px] leading-6 text-[#f4f7fb]">{item.text}</p>
+                          </div>
+                        </div>
+                      ) : (
+                        <div key={item.id} className="mr-auto flex max-w-[82%] items-start gap-2.5 rounded-[20px] bg-[#f4f7fb] px-3 py-3 text-[#1E1E21]">
+                          <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#7fb8b0]">
+                            <ModelIcon kind={activeModel.icon} selected />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-[14px] font-semibold tracking-[-0.04em] text-[#1E1E21]">{activeModel.name}</p>
+                            <p className="mt-1.5 text-[13px] leading-6 text-[#1E1E21]">{item.text}</p>
+                          </div>
+                        </div>
+                      ),
+                    )}
+                  </div>
+                </div>
+
+                <form
+                  className="mt-1 flex h-[60px] items-center gap-3 rounded-[24px] border border-[#3a3d43] bg-[#343840] px-4 pr-2 text-left shadow-[0_18px_30px_rgba(0,0,0,0.16)] transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    handleSendMessage();
+                  }}
+                >
+                  <input
+                    ref={messageInputRef}
+                    value={message}
+                    onChange={(event) => setMessage(event.target.value)}
+                    placeholder="Напишите сообщение..."
+                    aria-label="Напишите сообщение"
+                    className="min-w-0 flex-1 border-0 bg-transparent text-[15px] text-slate-300 outline-none placeholder:text-slate-400"
+                  />
+                  <button
+                    type="submit"
+                    className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[#FFF27A] text-[#1E1E21] transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] hover:bg-[#fff6a6]"
+                    aria-label="Отправить сообщение"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      className="h-[17px] w-[17px]"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M22 2 11 13" />
+                      <path d="M22 2 15 22l-4-9-9-4 20-7Z" />
+                    </svg>
+                  </button>
+                </form>
+              </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-4 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]">
+                  {tiles.map((tile) => (
+                    <button
+                      key={`${tile.title}-${tile.icon}`}
+                      type="button"
+                      className={cn(
+                        "group relative flex min-h-[154px] flex-col justify-between overflow-hidden rounded-[24px] px-4 py-4 text-left transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] hover:-translate-y-0.5",
+                        tile.accent === "yellow"
+                          ? "bg-[#FFF27A] text-[#1E1E21] shadow-[0_16px_36px_rgba(255,242,122,0.18)]"
+                          : "bg-[#4a4a4a] text-[#f4f7fb]",
+                      )}
+                    >
+                      <div className="relative z-10 max-w-[150px] text-[21px] font-semibold leading-[1.14] tracking-[-0.03em]">
+                        {tile.title}
+                      </div>
+                      <div className="relative z-10 flex items-end justify-between gap-3">
+                        <div
+                          className={cn(
+                            "flex h-[52px] w-[52px] items-center justify-center rounded-full",
+                            tile.accent === "yellow" ? "bg-[#1E1E21]/10" : "bg-white/10",
+                          )}
+                        >
+                          <ChatTileIcon kind={tile.icon} />
+                        </div>
+                        <span className="text-3xl font-light leading-none">↗</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex items-center justify-between gap-3 pt-2">
+                  <p className="text-[22px] font-medium tracking-[-0.05em] text-[#cfd3dc]">Выбери модель</p>
+                  <button type="button" className="text-sm text-slate-400 transition hover:text-[#f4f7fb]">
+                    Все
+                  </button>
+                </div>
+
+                <div className="min-h-0 flex-1 overflow-hidden">
+                  <div className="grid grid-cols-3 gap-4">
+                    {models.map((model, index) => {
+                      const selected = index === selectedModel;
+
+                      return (
+                        <button
+                          key={model.name}
+                          type="button"
+                          onClick={() => setSelectedModel(index)}
+                          className={cn(
+                            "flex h-[112px] w-full flex-col items-center justify-between rounded-[24px] border px-2 py-3 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] hover:-translate-y-0.5",
+                            selected
+                              ? "border-[#FFF27A] bg-[#FFF27A] text-[#1E1E21] shadow-[0_12px_28px_rgba(255,242,122,0.18)]"
+                              : "border-[#3a3d43] bg-[#4b4f56] text-[#f4f7fb] hover:bg-[#52565d]",
+                          )}
+                          aria-label={model.name}
+                          title={model.name}
+                          draggable={false}
+                        >
+                          <span className="flex h-[58px] w-[58px] items-center justify-center overflow-hidden rounded-[18px]">
+                            <ModelIcon kind={model.icon} selected={selected} />
+                          </span>
+                          <span
+                            className={cn(
+                              "text-center text-[11px] font-medium leading-[1.1] tracking-[-0.03em]",
+                              selected ? "text-[#1E1E21]" : "text-[#f4f7fb]",
+                            )}
+                          >
+                            {model.name}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <form
+                  className="flex h-[58px] items-center gap-3 rounded-[24px] border border-[#3a3d43] bg-[#343840] px-4 pr-2 text-left shadow-[0_18px_30px_rgba(0,0,0,0.16)] transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    handleSendMessage();
+                  }}
+                >
+                  <input
+                    ref={messageInputRef}
+                    value={message}
+                    onChange={(event) => setMessage(event.target.value)}
+                    placeholder="Напишите сообщение..."
+                    aria-label="Напишите сообщение"
+                    className="min-w-0 flex-1 border-0 bg-transparent text-[15px] text-slate-300 outline-none placeholder:text-slate-400"
+                  />
+                  <button
+                    type="submit"
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#FFF27A] text-[#1E1E21] transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] hover:bg-[#fff6a6]"
+                    aria-label="Отправить сообщение"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      className="h-[17px] w-[17px]"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M22 2 11 13" />
+                      <path d="M22 2 15 22l-4-9-9-4 20-7Z" />
+                    </svg>
+                  </button>
+                </form>
+              </>
+            )}
+          </div>
+        </Surface>
+      </div>
+
+      <Surface
+        className={cn(
+          "relative flex min-h-0 flex-col overflow-hidden border-[#3c4048] bg-[linear-gradient(180deg,#2E3137_0%,#2A2D33_100%)] px-4 py-4 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
+          expanded ? "flex-none" : "flex-1",
+        )}
+      >
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.3em] text-slate-400">Мысли ИИ</p>
+            <h3 className="mt-1.5 text-[24px] font-semibold tracking-[-0.06em] text-[#f4f7fb]">
+              Что важно сейчас
+            </h3>
+          </div>
+          <Badge variant="accent">{thoughts.length}</Badge>
+        </div>
+        <div
+          className={cn(
+            "mt-3 flex min-h-0 flex-col gap-2 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
+            expanded ? "flex-none overflow-hidden" : "flex-1 overflow-y-auto pr-1",
+          )}
+        >
+          {visibleThoughts.map((item) => (
+            <div
+              key={item.title}
+              className="rounded-[22px] border border-[#3a3d43] bg-[#343840] p-2.5 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <Badge variant={item.label === "Предупреждает" ? "dark" : "soft"}>{item.label}</Badge>
+                  <p className="mt-2 text-[14px] font-semibold tracking-[-0.04em] text-[#f4f7fb]">{item.title}</p>
+                  <p className="mt-1 text-[11px] leading-5 text-slate-300">{item.text}</p>
+                </div>
+                <span className="text-lg leading-none text-[#FFF27A]">›</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </Surface>
+    </div>
+  );
+}
+
+function ModelIcon({ kind, selected }: { kind: ModelItem["icon"]; selected: boolean }) {
+  const src =
+    kind === "chatgpt"
+      ? "/ai-model-icons/ChatGPT.png"
+      : kind === "claude"
+        ? "/ai-model-icons/Claude.png"
+        : "/ai-model-icons/Grok.png";
+
+  return (
+    <Image
+      src={src}
+      alt=""
+      width={56}
+      height={56}
+      className={cn(
+        "h-[56px] w-[56px] select-none rounded-[18px] object-cover transition-transform duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
+        selected ? "scale-100" : "scale-100",
+      )}
+      draggable={false}
+      aria-hidden="true"
+    />
+  );
+}
+
+function ChatTileIcon({ kind }: { kind: ChatTile["icon"] }) {
+  if (kind === "chat") {
+    return (
+      <svg viewBox="0 0 24 24" className="h-6 w-6 text-[#1E1E21]" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M8.5 17.5 5.5 20v-3.2C4.1 15.5 3 13.9 3 12c0-4.4 3.8-8 9-8s9 3.6 9 8-3.8 8-9 8c-1 0-1.9-.1-2.8-.3" />
+        <path d="M8 10.5h8" />
+        <path d="M8 13.5h4.5" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg viewBox="0 0 24 24" className="h-6 w-6 text-[#1E1E21]" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 13c2.2 0 4-1.8 4-4s-1.8-4-4-4-4 1.8-4 4 1.8 4 4 4Z" />
+      <path d="M4.5 20c.8-3.1 3.1-5 7.5-5s6.7 1.9 7.5 5" />
+      <path d="M17.5 9.5c1.7 0 3 1.3 3 3 0 1.5-1 2.7-2.4 3" />
+    </svg>
+  );
+}
+
+function severityLabel(severity?: string | null) {
+  if (!severity) return null;
+  const normalized = severity.trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === "info") return "Норма";
+  if (normalized === "warning") return "Внимание";
+  if (normalized === "attention") return "Требует внимания";
+  return businessCopy(severity) ?? severity;
+}
+
+function useMeasuredWidth<T extends HTMLElement>() {
+  const [node, setNode] = useState<T | null>(null);
+  const [width, setWidth] = useState(0);
+  const ref = useCallback((element: T | null) => {
+    setNode(element);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!node) return;
+
+    const updateWidth = () => {
+      setWidth(node.getBoundingClientRect().width);
+    };
+
+    updateWidth();
+
+    const observer = new ResizeObserver(() => {
+      updateWidth();
+    });
+    observer.observe(node);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [node]);
+
+  return [ref, width] as const;
+}
+
+function cloneResponsiveLayouts(layouts: ResponsiveLayouts) {
+  return Object.fromEntries(
+    Object.entries(layouts).map(([breakpoint, layout]) => [
+      breakpoint,
+      (layout ?? []).map((item) => ({ ...item })),
+    ]),
+  ) as ResponsiveLayouts;
+}
+
+function applyBoundsToResponsiveLayouts(
+  layouts: ResponsiveLayouts,
+  widgets: DashboardManifestWidget[],
+  widgetContracts: Map<string, ReturnType<typeof getWidgetSizeContract>>,
+  editMode: boolean,
+  lockedWidgetIds: Set<string>,
+) {
+  return Object.fromEntries(
+    Object.entries(layouts).map(([breakpoint, layout]) => {
+      const columns = LAUNCHER_COLUMNS[breakpoint as keyof typeof LAUNCHER_COLUMNS] ?? LAUNCHER_COLUMNS.lg;
+      const safeLayout = layout ?? [];
+      return [
+        breakpoint,
+        safeLayout.map((item) => {
+          const widget = widgets.find((entry) => entry.widget_id === item.i);
+          const contract = widget ? widgetContracts.get(widget.widget_id) : null;
+          if (!widget || !contract) {
+            return item;
+          }
+
+          const min = clampSize(contract.minSize, columns);
+          const max = clampSize(contract.maxSize, columns);
+          const locked = widget.locked_position || lockedWidgetIds.has(widget.widget_id);
+          const lockedSize = Boolean(widget.locked_size);
+          const canResize = editMode && !locked && !lockedSize && widgetCanResize(widget);
+          return {
+            ...item,
+            minW: min.w,
+            minH: min.h,
+            maxW: max.w,
+            maxH: max.h,
+            lockedPosition: locked,
+            lockedSize,
+            isResizable: canResize,
+            resizeHandles: canResize ? ["se"] : undefined,
+            isDraggable: editMode && !locked,
+            static: locked,
+          };
+        }),
+      ];
+    }),
+  ) as ResponsiveLayouts;
+}
+
+function parseNumber(value: string | number | null | undefined) {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const normalized = String(value).replace(/\s+/g, "").replace(",", ".");
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatNumberString(value: number, maximumFractionDigits = 0) {
+  const formatted = new Intl.NumberFormat("ru-RU", { maximumFractionDigits })
+    .format(Math.abs(value))
+    .replace(/\u00A0/g, " ");
+  return value < 0 ? `−${formatted}` : formatted;
+}
+
+function formatPlainNumber(value: string | number | null | undefined) {
+  const parsed = parseNumber(value);
+  if (parsed === null) return "—";
+  return formatNumberString(parsed, 0);
+}
+
+function formatMoney(value: string | number | null | undefined, currencyCode?: string | null) {
+  const parsed = parseNumber(value);
+  if (parsed === null) return "—";
+  const formatted = formatNumberString(parsed, 0);
+  return currencyCode ? `${formatted} ${currencyCode}` : formatted;
+}
+
+function formatPercent(value: string | number | null | undefined) {
+  const parsed = parseNumber(value);
+  if (parsed === null) return "—";
+  return `${formatNumberString(parsed, 1)}%`;
+}
+
+export function formatPresentationValue(value: string | number | null | undefined) {
+  if (value === null || value === undefined || value === "") {
+    return "—";
+  }
+  const parsed = parseNumber(value);
+  if (parsed === null) {
+    return String(value).trim();
+  }
+  return formatPlainNumber(parsed);
+}
+
+export function presentationMetricLabel(key: string) {
+  const normalized = key.trim();
+  if (!normalized) return "Показатель";
+  if (METRIC_LABELS[normalized]) return METRIC_LABELS[normalized];
+  const upper = normalized.toUpperCase();
+  if (upper === "CUSTOMER_RETURN_VALUE") return "Сумма документов возврата";
+  if (upper === "SALE_REVENUE") return "Выручка";
+  if (upper === "PAYMENTS_RECEIVED") return "Поступления";
+  if (upper === "CASH_OUT") return "Расходы";
+  if (upper === "CASH_FLOW") return "Чистый денежный поток";
+  if (upper === "ORDER_COUNT") return "Заказы";
+  if (upper === "SOLD_UNITS") return "Продано единиц";
+  return "Показатель";
+}
+
+function metricCurrency(metric?: SerializedMetricValue | null) {
+  return metric?.currency || (metric?.unit === "currency" ? "UZS" : null);
+}
+
+function formatMetric(metric?: SerializedMetricValue | null) {
+  if (!metric) return "—";
+  if (metric.value === null || metric.value === undefined || metric.value === "") {
+    return metric.data_status === "NO_VERIFIED_DATA" ? "Недостаточно данных" : "—";
+  }
+  if (metric.unit === "currency") {
+    return formatMoney(metric.value, metricCurrency(metric));
+  }
+  if (metric.unit === "percent") {
+    return formatPercent(metric.value);
+  }
+  if (metric.unit === "days") {
+    const value = formatPlainNumber(metric.value);
+    return value === "—" ? value : `${value} дн.`;
+  }
+  return formatPlainNumber(metric.value);
+}
+
+function metricDelta(metric?: SerializedMetricValue | null) {
+  if (!metric || metric.delta === null || metric.delta === undefined || metric.delta === "") return null;
+  const deltaValue = parseNumber(metric.delta);
+  const percent = parseNumber(metric.percent_delta);
+  const direction = deltaValue !== null && deltaValue > 0 ? "+" : "";
+  if (metric.unit === "currency") {
+    return `${direction}${formatMoney(metric.delta, metricCurrency(metric))}${percent !== null ? ` · ${direction}${formatPercent(percent)}` : ""}`;
+  }
+  if (percent !== null) {
+    return `${direction}${formatPercent(percent)}`;
+  }
+  return `${direction}${formatPlainNumber(metric.delta)}`;
+}
+
+function widgetPayload<T>(widget: DashboardManifestWidget) {
+  return (widget.payload ?? {}) as T;
+}
+
+function metricTone(metric?: SerializedMetricValue | null) {
+  const status = metric?.data_status;
+  if (status === "AVAILABLE") return "text-[#f4f7fb]";
+  if (status === "PARTIAL" || status === "ANALYSIS_PENDING") return "text-[#FFF27A]";
+  return "text-slate-400";
+}
+
+function businessCopy(text?: string | null) {
+  if (!text) return null;
+  const normalized = text.trim();
+  if (!normalized) return null;
+
+  const lower = normalized.toLowerCase();
+  if (lower === "medium") return "Средний";
+  if (lower === "low") return "Низкий";
+  if (lower === "critical") return "Критично";
+  if (lower === "all time") return "За весь период";
+  if (/^\d+\s+canonical rows/i.test(normalized)) return null;
+  if (/^(canonical|materialized|snapshot|verified|partial)$/i.test(normalized)) return null;
+  if (/\bcanonical\b/i.test(normalized) && normalized.length < 80) return null;
+  if (/\bmaterialized\b/i.test(normalized)) return null;
+  return normalized;
+}
+
+export function displayMetricLabel(label?: string | null) {
+  if (!label) return null;
+  const normalized = label.trim();
+  if (!normalized) return null;
+
+  const copy = businessCopy(normalized);
+  if (copy && copy !== normalized) {
+    return copy;
+  }
+
+  if (/^[A-Z0-9_]+$/.test(normalized) || normalized.includes("_")) {
+    return presentationMetricLabel(normalized);
+  }
+
+  return copy;
+}
+
+function widgetHeader(widget: DashboardManifestWidget, compact = false) {
+  const subtitle = businessCopy(widget.subtitle);
+  return (
+    <div className="drag-handle flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        <h3 className={cn("mt-2 font-semibold tracking-[-0.04em] text-[#f4f7fb]", compact ? "text-[18px]" : "text-[22px]")}>
+          {widgetTitleFromName(widget.title)}
+        </h3>
+        {subtitle ? <p className={cn("mt-1 leading-6 text-slate-400", compact ? "text-xs" : "text-sm")}>{subtitle}</p> : null}
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <Badge variant={statusVariant(widget.data_status)}>{statusLabel(widget.data_status, compact)}</Badge>
+      </div>
+    </div>
+  );
+}
+
+function widgetFooter(widget: DashboardManifestWidget, compact = false) {
+  void widget;
+  void compact;
+  return null;
+}
+
+function semanticSizeLabel(size: LauncherSemanticSize) {
+  switch (size) {
+    case "small":
+      return "Маленький";
+    case "medium":
+      return "Средний";
+    case "large":
+      return "Большой";
+    default:
+      return "Средний";
+  }
+}
+
+function widgetSemanticSizeOptions(widget: DashboardManifestWidget) {
+  const allowed = launcherSemanticSizeOptions(getWidgetSizeContract(widget).allowedSizes);
+  return allowed.length > 0 ? allowed : ["small"];
+}
+
+function widgetSizeFromContract(widget: DashboardManifestWidget, size: LauncherSemanticSize) {
+  const allowed = widgetSemanticSizeOptions(widget);
+  if (allowed.includes(size)) return size;
+  if (allowed.includes("medium")) return "medium";
+  if (allowed.includes("small")) return "small";
+  return allowed[0] ?? "small";
+}
+
+type WidgetEditMenuProps = {
+  widget: DashboardManifestWidget;
+  currentSize: LauncherSemanticSize;
+  locked: boolean;
+  onChangeSize: (size: LauncherSemanticSize) => void;
+  onToggleLock: () => void;
+  onHide: () => void;
+};
+
+function WidgetEditMenu({
+  widget,
+  currentSize,
+  locked,
+  onChangeSize,
+  onToggleLock,
+  onHide,
+}: WidgetEditMenuProps) {
+  const sizeOptions = widgetSemanticSizeOptions(widget);
+
+  return (
+    <Dropdown
+      align="right"
+      trigger={
+        <button
+          type="button"
+          className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[#3a3d43] bg-[#2E3137] text-slate-400 shadow-[0_10px_24px_rgba(15,23,42,0.08)] transition hover:border-[#4a4e56] hover:text-[#f4f7fb]"
+          aria-label="Редактировать виджет"
+        >
+          ⋯
+        </button>
+      }
+      panelClassName="w-64 rounded-[22px] border border-[#3a3d43] bg-[#2E3137] p-3 shadow-[0_24px_60px_rgba(15,23,42,0.14)]"
+    >
+      {(close) => (
+        <>
+          <p className="text-[11px] uppercase tracking-[0.26em] text-slate-400">Размер</p>
+          <div className="mt-2 grid gap-2">
+            {sizeOptions.map((size) => (
+              <button
+                key={size}
+                type="button"
+                onClick={() => {
+                  onChangeSize(size);
+                  close();
+                }}
+                className={cn(
+                  "rounded-[16px] border px-3 py-2 text-left text-sm font-medium transition",
+                  currentSize === size
+                    ? "border-[#FFF27A]/30 bg-[#FFF27A] text-[#1E1E21]"
+                    : "border-[#3a3d43] bg-[#2E3137] text-slate-300 hover:border-[#4a4e56] hover:text-[#f4f7fb]",
+                )}
+              >
+                {semanticSizeLabel(size)}
+              </button>
+            ))}
+          </div>
+
+          <div className="my-3 h-px bg-[#3a3d43]" />
+
+          <div className="grid gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                onToggleLock();
+                close();
+              }}
+              className="rounded-[16px] border border-[#3a3d43] bg-[#2E3137] px-3 py-2 text-left text-sm font-medium text-slate-300 transition hover:border-[#4a4e56] hover:text-[#f4f7fb]"
+            >
+              {locked ? "Разблокировать" : "Закрепить"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                onHide();
+                close();
+              }}
+              className="rounded-[16px] border border-[#3a3d43] bg-[#2E3137] px-3 py-2 text-left text-sm font-medium text-slate-300 transition hover:border-[#4a4e56] hover:text-[#f4f7fb]"
+            >
+              Скрыть
+            </button>
+          </div>
+        </>
+      )}
+    </Dropdown>
+  );
+}
+
+function widgetVariantToCount(variant: LauncherWidgetVariant | undefined, dense = false) {
+  switch (variant) {
+    case "compact":
+      return dense ? 1 : 2;
+    case "regular":
+      return dense ? 2 : 3;
+    case "expanded":
+      return dense ? 3 : 4;
+    case "xl":
+      return dense ? 4 : 6;
+    default:
+      return dense ? 2 : 3;
+  }
+}
+
+function widgetListCount(widget: DashboardManifestWidget, variant?: LauncherWidgetVariant) {
+  const family = getWidgetSizeContract(widget).family;
+  switch (family) {
+    case "kpi":
+      return 0;
+    case "chart":
+      return variant === "compact" ? 2 : variant === "regular" ? 3 : variant === "expanded" ? 4 : 6;
+    case "table":
+      return variant === "compact" ? 4 : variant === "regular" ? 6 : variant === "expanded" ? 8 : 10;
+    case "list":
+      return variant === "compact" ? 3 : variant === "regular" ? 4 : variant === "expanded" ? 6 : 8;
+    case "summary":
+      return variant === "compact" ? 1 : variant === "regular" ? 2 : variant === "expanded" ? 3 : 4;
+    case "detail":
+      return variant === "compact" ? 1 : variant === "regular" ? 2 : variant === "expanded" ? 3 : 5;
+    case "alert":
+      return variant === "compact" ? 1 : variant === "regular" ? 2 : 3;
+    default:
+      return widgetVariantToCount(variant, true) + 1;
+  }
+}
+
+function widgetSurfacePadding(widget: DashboardManifestWidget, variant?: LauncherWidgetVariant) {
+  const group = widgetLayoutGroup(widget);
+  if (widget.widget_id === "executive-brief" || widget.widget_type === "data_quality") {
+    return variant === "compact" ? "p-4" : "p-4 sm:p-5";
+  }
+  if (variant === "compact") {
+    return "p-4";
+  }
+  if (group === "table") return "p-4 sm:p-5";
+  if (group === "kpi") return "p-5";
+  if (group === "alert") return "p-5";
+  return "p-5";
+}
+
+function widgetTitleFromName(title: string) {
+  if (title === "Executive brief") return "Сводка руководителя";
+  if (title === "Watchlist") return "На контроле";
+  if (title === "Product Signals") return "Товарные сигналы";
+  if (title === "Data Quality") return "Качество данных";
+  if (title === "Inventory Risk") return "Риски запасов";
+  if (title === "Visit Summary") return "Визиты";
+  if (title === "Organization Comparison") return "Сравнение организаций";
+  if (title === "Product Ranking") return "Топ товаров";
+  if (title === "Customer Ranking") return "Клиенты";
+  if (title === "Cash Flow") return "Денежный поток";
+  if (title === "Payments Received") return "Поступления";
+  if (title === "Returns") return "Возвраты";
+  if (title === "Revenue Trend") return "Динамика выручки";
+  if (title === "Ограничение качества данных") return "Качество данных";
+  return title;
+}
+
+export function aggregateProductSignalWidgets(widgets: DashboardManifestWidget[]) {
+  const normalized = widgets.filter(Boolean);
+  const productSignals = normalized.filter((widget) => {
+    const title = String(widget.title ?? "").toLowerCase();
+    return widget.widget_type === "product_alert"
+      || (widget.widget_type === "ai_insight" && widget.entity_type === "product")
+      || (widget.widget_type === "watchlist" && widget.entity_type === "product")
+      || title.includes("товар") || title.includes("product");
+  });
+
+  if (productSignals.length <= 1) return normalized;
+
+  const remainder = normalized.filter((widget) => !productSignals.includes(widget));
+  const first = productSignals[0];
+  const mergedOrganizations = Array.from(new Set(productSignals.flatMap((widget) => widget.organization_ids ?? [])));
+  const rows = productSignals.map((widget, index) => ({
+    id: widget.widget_id,
+    title: widget.title,
+    summary: businessCopy(widget.summary) ?? businessCopy(widget.subtitle) ?? "Продуктовый сигнал требует внимания.",
+    severity: widget.data_status === "AVAILABLE" ? "info" : widget.data_status === "PARTIAL" ? "warning" : "attention",
+    recommendation: widget.payload && typeof widget.payload === "object" && "recommendation" in widget.payload
+      ? String((widget.payload as Record<string, unknown>).recommendation ?? "")
+      : null,
+    evidence: widget.signal_ids ?? [],
+    tags: [
+      widget.entity_type ?? "product",
+      widget.source_type ?? "AI_DYNAMIC",
+      `#${index + 1}`,
+    ],
+  }));
+
+  return [
+    ...remainder,
+    {
+      ...first,
+      widget_id: "product-signals",
+      widget_type: "watchlist",
+      title: "Товарные сигналы",
+      subtitle: "Собранные товарные предупреждения в одной карточке",
+      signal_ids: productSignals.flatMap((widget) => widget.signal_ids ?? []),
+      entity_type: "product",
+      entity_id: null,
+      organization_ids: mergedOrganizations,
+      semantic_size: first.semantic_size === "XL" ? "XL" : "L",
+      priority: Math.min(...productSignals.map((widget) => widget.priority)) - 0.25,
+      priority_reason: "Сгруппированы однотипные товарные сигналы",
+      min_size: "L",
+      preferred_size: "L",
+      max_size: "XL",
+      supports_horizontal_expand: true,
+      supports_vertical_expand: true,
+      supports_internal_scroll: false,
+      flow: "vertical",
+      preferred_aspect: "tall",
+      content_density: "high",
+      scroll_behavior: "none",
+      removable_by_ai: true,
+      movable_by_ai: true,
+      resizable_by_ai: true,
+      locked_position: false,
+      locked_size: false,
+      pinned: false,
+      hidden: false,
+      drilldown: first.drilldown,
+      summary: "Товарные сигналы, которые требуют внимания.",
+      data_status: productSignals.some((widget) => widget.data_status === "AVAILABLE") ? "AVAILABLE" : "PARTIAL",
+      payload: {
+        rows,
+        source_widget_ids: productSignals.map((widget) => widget.widget_id),
+        total_count: productSignals.length,
+      },
+    } as DashboardManifestWidget,
+  ];
+}
+
+export function getExecutiveBriefVisibleInsightLimit(variant?: LauncherWidgetVariant) {
+  switch (variant) {
+    case "compact":
+      return 1;
+    case "regular":
+      return 2;
+    case "expanded":
+      return 3;
+    case "xl":
+      return 3;
+    default:
+      return 3;
+  }
+}
+
+const METRIC_LABELS: Record<string, string> = {
+  low_stock: "Низкий остаток",
+  overstock: "Избыток",
+  stockout_risk: "Риск дефицита",
+  cash_flow: "Денежный поток",
+  payments_received: "Поступления",
+  returns: "Возвраты",
+  verified_cash_in: "Подтверждённый приток",
+  verified_cash_out: "Подтверждённый отток",
+  revenue: "Выручка",
+  orders: "Заказы",
+  sold_units: "Продано единиц",
+  customers: "Клиенты",
+  current_stock: "Остаток",
+  days_of_stock: "Дней запаса",
+  sales_velocity_30d: "Скорость 30д",
+};
+
+function humanizeMetricKey(key: string) {
+  return presentationMetricLabel(key);
+}
+
+function SmallStat({ label, value, note, compact = false }: { label: string; value: string; note?: string | null; compact?: boolean }) {
+  return (
+    <div className={cn("rounded-[18px] border border-[#3a3d43] bg-[#343840]/80", compact ? "p-2.5" : "p-3")}>
+      <p className={cn("uppercase tracking-[0.24em] text-slate-400", compact ? "text-[10px]" : "text-[11px]")}>{label}</p>
+      <p className={cn("mt-2 font-semibold tracking-[-0.03em] text-[#f4f7fb]", compact ? "text-base" : "text-lg")}>{value}</p>
+      {note ? <p className={cn("mt-1 text-slate-400", compact ? "text-[11px] leading-5" : "text-xs")}>{note}</p> : null}
+    </div>
+  );
+}
+
+function ListShell({ children, scroll }: { children: React.ReactNode; scroll?: boolean }) {
+  return (
+    <div className={cn("mt-4 min-h-0 flex-1", scroll ? "overflow-y-auto pr-1" : "overflow-hidden")}>{children}</div>
+  );
+}
+
+function resolveVisibleMetricStatus(metric?: SerializedMetricValue | null, fallbackStatus?: AnalyticsDataStatus): AnalyticsDataStatus {
+  const status = metric?.data_status ?? metric?.status ?? fallbackStatus ?? "NO_DATA";
+  if (status === "AVAILABLE" || status === "PARTIAL" || status === "ANALYSIS_PENDING") {
+    return status;
+  }
+
+  const hasVisibleData =
+    metric !== null &&
+    metric !== undefined &&
+    [
+      metric.value,
+      metric.previous_value,
+      metric.delta,
+      metric.percent_delta,
+      metric.coverage,
+      metric.confidence,
+      metric.record_count,
+      metric.currency,
+      metric.note,
+    ].some((value) => value !== null && value !== undefined && value !== "");
+
+  return hasVisibleData ? "AVAILABLE" : status;
+}
+
+function KpiWidget({ widget, variant }: { widget: DashboardManifestWidget; variant?: LauncherWidgetVariant }) {
+  const payload = widgetPayload<{ metric?: SerializedMetricValue; metric_key?: string }>(widget);
+  const metric = payload.metric;
+  const compact = variant === "compact";
+  return (
+    <Surface className={cn("group relative flex h-full min-h-0 flex-col overflow-hidden", widgetSurfacePadding(widget, variant))}>
+      {widgetHeader(widget, compact)}
+      <div className={cn("mt-5 flex min-h-0 flex-1 flex-col justify-between gap-4", compact && "mt-4 gap-3")}>
+        <div>
+          <p className={cn(compact ? "text-[28px]" : "text-[40px]", "font-semibold tracking-[-0.08em]", metricTone(metric))}>{formatMetric(metric)}</p>
+        </div>
+      </div>
+      {compact ? null : widgetFooter(widget, compact)}
+    </Surface>
+  );
+}
+
+function buildSparkPath(values: number[], width: number, height: number) {
+  const max = Math.max(...values, 1);
+  const min = Math.min(...values, 0);
+  const range = Math.max(max - min, 1);
+  const step = values.length > 1 ? width / (values.length - 1) : width;
+  return values
+    .map((value, index) => {
+      const x = index * step;
+      const y = height - ((value - min) / range) * height;
+      return `${index === 0 ? "M" : "L"}${x},${y}`;
+    })
+    .join(" ");
+}
+
+function TrendWidget({ widget, variant }: { widget: DashboardManifestWidget; variant?: LauncherWidgetVariant }) {
+  const payload = widgetPayload<{ metric?: SerializedMetricValue; series?: Array<{ organization_name?: string; value?: string | number | null; status?: AnalyticsDataStatus }>; period_label?: string }>(widget);
+  const metric = payload.metric;
+  const values = (payload.series ?? []).map((item) => parseNumber(item.value) ?? 0);
+  const hasSeries = values.some((value) => value > 0);
+  const seriesLimit = widgetListCount(widget, variant);
+  const chartHeight = variant === "compact" ? 104 : variant === "regular" ? 144 : 188;
+  const periodLabel = businessCopy(payload.period_label) ?? businessCopy(widget.summary) ?? "За выбранный период";
+  return (
+    <Surface className={cn("group relative flex h-full min-h-0 flex-col overflow-hidden", widgetSurfacePadding(widget, variant))}>
+      {widgetHeader(widget, variant === "compact")}
+      <div className={cn("mt-5 flex min-h-0 flex-1 flex-col gap-4", variant === "compact" && "gap-3")}>
+        <div className="flex items-end justify-between gap-4">
+          <div>
+            <p className={cn(variant === "compact" ? "text-[28px]" : "text-[38px]", "font-semibold tracking-[-0.08em]", metricTone(metric))}>{formatMetric(metric)}</p>
+            <p className={cn("mt-1 text-slate-400", variant === "compact" ? "text-xs" : "text-sm")}>{periodLabel}</p>
+          </div>
+          {metricDelta(metric) ? <Badge variant="accent">{metricDelta(metric)}</Badge> : null}
+        </div>
+        <div className="rounded-[24px] border border-[#3a3d43] bg-[linear-gradient(180deg,#2E3137_0%,#26292e_100%)] p-4">
+          {hasSeries ? (
+            <>
+              <svg viewBox="0 0 520 180" className="w-full" style={{ height: `${chartHeight}px` }}>
+                <g stroke="#e2e8f0" strokeDasharray="4 6">
+                  {[0, 1, 2, 3].map((index) => {
+                    const y = 12 + index * 48;
+                    return <line key={index} x1="0" x2="520" y1={y} y2={y} />;
+                  })}
+                </g>
+                <path d={buildSparkPath(values, 520, 152)} fill="none" stroke="#4f46e5" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              <div className={cn("mt-3 grid gap-2", variant === "compact" ? "sm:grid-cols-2" : "sm:grid-cols-2 xl:grid-cols-3")}>
+                {(payload.series ?? []).slice(0, seriesLimit).map((row, index) => (
+                  <div key={`${row.organization_name ?? "series"}-${index}`} className="rounded-2xl border border-[#3a3d43] bg-[#2E3137] px-3 py-2">
+                    <p className="text-xs uppercase tracking-[0.22em] text-slate-400">{row.organization_name ?? `Сегмент ${index + 1}`}</p>
+                    <p className="mt-1 text-sm font-semibold text-[#f4f7fb]">{formatMoney(row.value ?? null, metricCurrency(metric))}</p>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className={cn(
+              "flex h-full items-center justify-center rounded-[20px] border border-dashed border-[#3a3d43] bg-[#2E3137]/60 px-6 text-center text-sm leading-6 text-slate-400",
+              variant === "compact" ? "min-h-[148px]" : variant === "regular" ? "min-h-[180px]" : "min-h-[220px]",
+            )}>
+              Для этого виджета пока нет временного ряда в текущем контексте.
+            </div>
+          )}
+        </div>
+      </div>
+      {variant === "compact" ? null : widgetFooter(widget, false)}
+    </Surface>
+  );
+}
+
+function ExecutiveBriefWidget({ widget, variant }: { widget: DashboardManifestWidget; variant?: LauncherWidgetVariant }) {
+  const payload = widgetPayload<{
+    headline?: string;
+    business_status?: string;
+    key_numbers?: ExecutiveNumber[];
+    top_insights?: SerializedAIInsight[];
+    risks?: SerializedAIInsight[];
+    opportunities?: SerializedAIInsight[];
+    data_warnings?: SerializedAIInsight[];
+  }>(widget);
+  const keyLimit = variant === "xl" ? 2 : 1;
+  const visibleLimit = getExecutiveBriefVisibleInsightLimit(variant);
+  const flattenedInsights = [
+    { title: "Ключевые сигналы", rows: payload.top_insights },
+    { title: "Риски", rows: payload.risks },
+    { title: "Возможности", rows: payload.opportunities },
+    { title: "Что влияет на точность", rows: payload.data_warnings },
+  ].flatMap(({ title, rows }) => (rows ?? []).map((item) => ({ ...item, sectionTitle: title })));
+  const visibleInsights = flattenedInsights.slice(0, visibleLimit);
+  const hiddenInsights = Math.max(0, flattenedInsights.length - visibleInsights.length);
+  const metricChipLimit = variant === "xl" ? 3 : variant === "expanded" ? 2 : 1;
+  return (
+    <Surface className={cn("group relative flex h-full min-h-0 flex-col overflow-hidden", widgetSurfacePadding(widget, variant))}>
+      {widgetHeader(widget, variant === "compact")}
+      <div className={cn("mt-4 flex min-h-0 flex-1 flex-col gap-4", variant === "compact" && "gap-3")}>
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className={cn("font-semibold tracking-[-0.03em] text-[#f4f7fb]", variant === "compact" ? "text-base" : "text-lg")}>
+                {businessCopy(payload.headline) ?? businessCopy(widget.summary) ?? "Краткая executive-сводка"}
+              </p>
+              {payload.business_status ? (
+                <p className={cn("mt-1 text-slate-400", variant === "compact" ? "text-xs" : "text-sm")}>
+                  {businessCopy(payload.business_status) ?? payload.business_status}
+                </p>
+              ) : null}
+            </div>
+            {payload.key_numbers?.length ? (
+              <div className={cn("grid gap-2", variant === "compact" ? "grid-cols-1" : "grid-cols-2 sm:grid-cols-2 xl:grid-cols-4")}>
+                {payload.key_numbers.slice(0, keyLimit).map((item, index) => (
+                  <div key={`${item.label ?? "num"}-${index}`} className="rounded-[18px] border border-[#3a3d43] bg-[#2E3137] px-3 py-2">
+                    <p className="text-[11px] uppercase tracking-[0.24em] text-slate-400">{businessCopy(item.label) ?? item.label ?? `Метрика ${index + 1}`}</p>
+                    <p className={cn("mt-2 font-semibold tracking-[-0.03em] text-[#f4f7fb]", variant === "compact" ? "text-base" : "text-lg")}>{formatPresentationValue(item.current)}</p>
+                    {item.delta !== null && item.delta !== undefined && item.delta !== "" ? (
+                      <p className="mt-1 text-xs text-slate-400">Δ {formatPresentationValue(item.delta)}</p>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </div>
+
+        {visibleInsights.length ? (
+          <div className="space-y-3">
+            {visibleInsights.map((item, index) => (
+              <div
+                key={`${item.id ?? item.title ?? "insight"}-${index}`}
+                className={cn("rounded-[18px] border border-[#3a3d43] bg-[#2E3137] px-4 py-3 shadow-[0_8px_18px_rgba(15,23,42,0.03)]", variant === "compact" && "px-3 py-3")}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="soft">{item.sectionTitle ?? "Сигнал"}</Badge>
+                      {severityLabel(item.severity) ? <Badge variant="accent">{severityLabel(item.severity)}</Badge> : null}
+                    </div>
+                    <p className={cn("mt-2 font-semibold tracking-[-0.03em] text-[#f4f7fb]", variant === "compact" ? "text-sm" : "text-base")}>
+                      {displayMetricLabel(item.title) ?? businessCopy(item.title) ?? item.title ?? "Сигнал"}
+                    </p>
+                    {item.summary ? (
+                      <p className={cn("mt-1 leading-6 text-slate-300", variant === "compact" ? "text-xs leading-5" : "text-sm")}>
+                        {businessCopy(item.summary) ?? item.summary}
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+                {item.metrics?.length ? (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {item.metrics.slice(0, metricChipLimit).map((metric, metricIndex) => (
+                      <div key={`${item.id ?? index}-metric-${metricIndex}`} className="rounded-full border border-[#3a3d43] bg-[#343840] px-3 py-1 text-xs text-slate-300">
+                        {metric.label ? `${displayMetricLabel(metric.label) ?? metric.label}: ` : ""}
+                        <span className="font-medium text-[#f4f7fb]">{formatPresentationValue(metric.current)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                {item.recommendation ? (
+                  <p className="mt-2 text-sm font-medium text-[#FFF27A]">{businessCopy(item.recommendation) ?? item.recommendation}</p>
+                ) : null}
+                {item.evidence?.length ? (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {item.evidence.slice(0, 2).map((evidence, evidenceIndex) => (
+                      <Badge key={`${item.id ?? index}-evidence-${evidenceIndex}`} variant="soft">
+                        {businessCopy(evidence) ?? evidence}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-[20px] border border-dashed border-[#3a3d43] bg-[#2E3137] px-5 py-6 text-sm text-slate-400">
+            Пока нет подтверждённых executive-выводов для текущего контекста.
+          </div>
+        )}
+
+        {hiddenInsights > 0 ? (
+          <div className="inline-flex w-fit items-center rounded-full border border-[#3a3d43] bg-[#2E3137] px-4 py-2 text-xs font-medium text-slate-400">
+            Ещё {hiddenInsights} выводов
+          </div>
+        ) : null}
+      </div>
+      {widgetFooter(widget, variant === "compact")}
+    </Surface>
+  );
+}
+
+function RankingWidget({ widget, rows, customerMode = false, variant }: { widget: DashboardManifestWidget; rows: SerializedProductRow[] | SerializedCustomerRow[]; customerMode?: boolean; variant?: LauncherWidgetVariant }) {
+  return (
+    <Surface className={cn("group relative flex h-full min-h-0 flex-col overflow-hidden", widgetSurfacePadding(widget, variant))}>
+      {widgetHeader(widget, variant === "compact")}
+      <ListShell scroll>
+        <div className="space-y-3">
+          {rows.length ? rows.map((row, index) => {
+            const productRow = row as SerializedProductRow;
+            const customerRow = row as SerializedCustomerRow;
+            const name = customerMode ? customerRow.customer_name : productRow.product_name;
+            const sublabel = customerMode
+              ? `${formatMetric(customerRow.orders_count)} заказов · ${formatMetric(customerRow.sold_units)} ед.`
+              : `${productRow.organization_name ?? "Организация"} · ${formatMetric(productRow.sold_units)} ед.`;
+            const valueMetric = customerMode ? customerRow.revenue : productRow.revenue;
+            const noteMetric = customerMode ? customerRow.days_since_last_order : productRow.current_stock;
+            return (
+              <div key={`${name ?? "row"}-${index}`} className={cn("rounded-[20px] border border-[#3a3d43] bg-[#343840]/80", variant === "compact" ? "p-3" : "p-4")}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-3">
+                      <span className={cn("inline-flex shrink-0 items-center justify-center rounded-full bg-slate-900 font-semibold text-white", variant === "compact" ? "h-8 w-8 text-xs" : "h-9 w-9 text-sm")}>{index + 1}</span>
+                      <div className="min-w-0">
+                        <p className={cn("truncate font-semibold tracking-[-0.03em] text-[#f4f7fb]", variant === "compact" ? "text-sm" : "text-base")}>{name ?? "Без названия"}</p>
+                        <p className={cn("mt-1 text-slate-400", variant === "compact" ? "text-xs" : "text-sm")}>{sublabel}</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <p className={cn("font-semibold tracking-[-0.03em] text-[#f4f7fb]", variant === "compact" ? "text-base" : "text-lg")}>{formatMetric(valueMetric)}</p>
+                    {noteMetric ? <p className="mt-1 text-xs text-slate-400">{customerMode ? `С последнего заказа: ${formatMetric(noteMetric)}` : `Остаток: ${formatMetric(noteMetric)}`}</p> : null}
+                  </div>
+                </div>
+              </div>
+            );
+          }) : (
+            <div className="rounded-[20px] border border-dashed border-[#3a3d43] bg-[#343840] px-5 py-10 text-center text-sm text-slate-400">
+              Нет строк для текущего контекста.
+            </div>
+          )}
+        </div>
+      </ListShell>
+      {widgetFooter(widget, variant === "compact")}
+    </Surface>
+  );
+}
+
+function OrganizationComparisonWidget({ widget, variant }: { widget: DashboardManifestWidget; variant?: LauncherWidgetVariant }) {
+  const payload = widgetPayload<{ rows?: SerializedOrganizationRow[] }>(widget);
+  const rows = payload.rows ?? [];
+  return (
+    <Surface className={cn("group relative flex h-full min-h-0 flex-col overflow-hidden", widgetSurfacePadding(widget, variant))}>
+      {widgetHeader(widget, variant === "compact")}
+      <div className={cn("mt-4 min-h-0 flex-1 overflow-hidden rounded-[22px] border border-[#3a3d43] bg-[#2E3137]", variant === "compact" && "text-xs")}>
+        <div className="h-full overflow-auto">
+          <table className={cn("min-w-full text-left", variant === "compact" ? "text-xs" : "text-sm")}>
+            <thead className="sticky top-0 bg-[#343840] text-slate-400">
+              <tr>
+                <th className={cn("font-medium", variant === "compact" ? "px-3 py-2" : "px-4 py-3")}>Организация</th>
+                <th className={cn("font-medium", variant === "compact" ? "px-3 py-2" : "px-4 py-3")}>Выручка</th>
+                <th className={cn("font-medium", variant === "compact" ? "px-3 py-2" : "px-4 py-3")}>Заказы</th>
+                <th className={cn("font-medium", variant === "compact" ? "px-3 py-2" : "px-4 py-3")}>Продано</th>
+                <th className={cn("font-medium", variant === "compact" ? "px-3 py-2" : "px-4 py-3")}>Поступления</th>
+                <th className={cn("font-medium", variant === "compact" ? "px-3 py-2" : "px-4 py-3")}>Клиенты</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.organization_id} className="border-t border-[#3a3d43] align-top">
+                  <td className={cn("font-semibold text-[#f4f7fb]", variant === "compact" ? "px-3 py-3" : "px-4 py-4")}>{row.organization_name}</td>
+                  <td className={cn("text-slate-200", variant === "compact" ? "px-3 py-3" : "px-4 py-4")}>{formatMetric(row.metrics.revenue)}</td>
+                  <td className={cn("text-slate-200", variant === "compact" ? "px-3 py-3" : "px-4 py-4")}>{formatMetric(row.metrics.orders)}</td>
+                  <td className={cn("text-slate-200", variant === "compact" ? "px-3 py-3" : "px-4 py-4")}>{formatMetric(row.metrics.sold_units)}</td>
+                  <td className={cn("text-slate-200", variant === "compact" ? "px-3 py-3" : "px-4 py-4")}>{formatMetric(row.metrics.payments_received)}</td>
+                  <td className={cn("text-slate-200", variant === "compact" ? "px-3 py-3" : "px-4 py-4")}>{formatMetric(row.metrics.customers)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {widgetFooter(widget, variant === "compact")}
+    </Surface>
+  );
+}
+
+function InventoryRiskWidget({ widget, variant }: { widget: DashboardManifestWidget; variant?: LauncherWidgetVariant }) {
+  const payload = widgetPayload<{
+    low_stock?: SerializedProductRow[];
+    overstock?: SerializedProductRow[];
+    stockout_risk?: SerializedProductRow[];
+    transfer_opportunities?: SerializedInventoryOpportunity[];
+  }>(widget);
+
+  const sections = [
+    ["Низкий остаток", payload.low_stock ?? []],
+    ["Избыток", payload.overstock ?? []],
+    ["Риск дефицита", payload.stockout_risk ?? []],
+  ] as const;
+  const visibleCount = Math.max(1, Math.min(variant === "compact" ? 1 : 2, widgetListCount(widget, variant)));
+
+  return (
+    <Surface className={cn("group relative flex h-full min-h-0 flex-col overflow-hidden", widgetSurfacePadding(widget, variant))}>
+      {widgetHeader(widget, variant === "compact")}
+      <ListShell>
+        <div className="space-y-4">
+          {sections.map(([title, rows]) =>
+            rows.length ? (
+              <section key={title}>
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <h4 className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-400">{title}</h4>
+                  <Badge variant="soft">{rows.length}</Badge>
+                </div>
+                <div className="space-y-3">
+                  {rows.slice(0, visibleCount).map((row, index) => (
+                    <div key={`${title}-${row.product_external_id ?? row.product_name ?? index}`} className={cn("rounded-[18px] border border-[#3a3d43] bg-[#343840]/80", variant === "compact" ? "p-3" : "p-4")}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className={cn("truncate font-semibold tracking-[-0.03em] text-[#f4f7fb]", variant === "compact" ? "text-sm" : "text-base")}>{row.product_name ?? "Товар без имени"}</p>
+                          <p className={cn("mt-1 text-slate-400", variant === "compact" ? "text-xs" : "text-sm")}>{row.organization_name ?? "Организация"}</p>
+                        </div>
+                        <Badge variant="accent">{title}</Badge>
+                      </div>
+                      <div className={cn("mt-3 grid gap-3", variant === "compact" ? "sm:grid-cols-2" : "sm:grid-cols-3")}>
+                        <SmallStat compact={variant === "compact"} label="Остаток" value={formatMetric(row.current_stock)} />
+                        <SmallStat compact={variant === "compact"} label="Дней запаса" value={formatMetric(row.days_of_stock)} />
+                        <SmallStat compact={variant === "compact"} label="Скорость 30д" value={formatMetric(row.sales_velocity_30d)} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ) : null,
+          )}
+
+          {payload.transfer_opportunities?.length ? (
+            <section>
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <h4 className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-400">Переброска запасов</h4>
+                <Badge variant="soft">{payload.transfer_opportunities.length}</Badge>
+              </div>
+              <div className="space-y-3">
+                {payload.transfer_opportunities.slice(0, visibleCount).map((item, index) => (
+                  <div key={`${item.product_external_id ?? item.product_name ?? index}-transfer`} className={cn("rounded-[18px] border border-[#3a3d43] bg-[#343840]/80", variant === "compact" ? "p-3" : "p-4")}>
+                    <p className={cn("font-semibold tracking-[-0.03em] text-[#f4f7fb]", variant === "compact" ? "text-sm" : "text-base")}>{item.product_name ?? "Товар"}</p>
+                    <p className={cn("mt-1 text-slate-400", variant === "compact" ? "text-xs" : "text-sm")}>{item.from_organization_name} → {item.to_organization_name}</p>
+                    <div className={cn("mt-3 grid gap-3", variant === "compact" ? "sm:grid-cols-1" : "sm:grid-cols-2")}>
+                      <SmallStat compact={variant === "compact"} label="Источник" value={formatMetric(item.source_stock)} note={formatMetric(item.source_days)} />
+                      <SmallStat compact={variant === "compact"} label="Назначение" value={formatMetric(item.destination_stock)} note={formatMetric(item.destination_days)} />
+                    </div>
+                    {item.reason ? <p className="mt-3 text-sm text-[#FFF27A]">{item.reason}</p> : null}
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
+        </div>
+      </ListShell>
+      {widgetFooter(widget, variant === "compact")}
+    </Surface>
+  );
+}
+
+function VisitSummaryWidget({ widget, variant }: { widget: DashboardManifestWidget; variant?: LauncherWidgetVariant }) {
+  const payload = widgetPayload<{ metric?: SerializedMetricValue; sales_reps?: SerializedSalesRepRow[] }>(widget);
+  const reps = payload.sales_reps ?? [];
+  const resolvedStatus = resolveVisibleMetricStatus(payload.metric, widget.data_status);
+  const resolvedWidget = resolvedStatus !== widget.data_status ? { ...widget, data_status: resolvedStatus } : widget;
+  return (
+    <Surface className={cn("group relative flex h-full min-h-0 flex-col overflow-hidden", widgetSurfacePadding(widget, variant))}>
+      {widgetHeader(resolvedWidget, variant === "compact")}
+      <div className={cn("mt-5 grid gap-3", variant === "compact" ? "sm:grid-cols-2" : "sm:grid-cols-3")}>
+        <SmallStat compact={variant === "compact"} label="Визиты" value={formatMetric(payload.metric)} note={payload.metric?.note ?? null} />
+        <SmallStat compact={variant === "compact"} label="Покрытие" value={payload.metric?.coverage !== null && payload.metric?.coverage !== undefined ? formatPlainNumber(payload.metric.coverage) : "—"} />
+        <SmallStat compact={variant === "compact"} label="Статус" value={statusLabel(resolvedStatus, variant === "compact")} />
+      </div>
+      <ListShell scroll>
+        <div className="space-y-3">
+          {reps.length ? reps.map((rep, index) => (
+            <div key={`${rep.sales_rep_external_id ?? rep.sales_rep_name ?? index}`} className={cn("rounded-[18px] border border-[#3a3d43] bg-[#343840]/80", variant === "compact" ? "p-3" : "p-4")}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className={cn("font-semibold tracking-[-0.03em] text-[#f4f7fb]", variant === "compact" ? "text-sm" : "text-base")}>{rep.sales_rep_name ?? "Без имени"}</p>
+                  <p className={cn("mt-1 text-slate-400", variant === "compact" ? "text-xs" : "text-sm")}>{rep.organization_name ?? "Организация"}</p>
+                </div>
+                <Badge variant="soft">{formatMetric(rep.conversion_rate)}</Badge>
+              </div>
+              <div className={cn("mt-3 grid gap-3", variant === "compact" ? "sm:grid-cols-2" : "sm:grid-cols-4")}>
+                <SmallStat compact={variant === "compact"} label="Визиты" value={formatMetric(rep.visits_count)} />
+                <SmallStat compact={variant === "compact"} label="Заказы" value={formatMetric(rep.orders_count)} />
+                <SmallStat compact={variant === "compact"} label="Выручка" value={formatMetric(rep.revenue)} />
+                <SmallStat compact={variant === "compact"} label="Продано" value={formatMetric(rep.sold_units)} />
+              </div>
+            </div>
+          )) : (
+            <div className="rounded-[18px] border border-dashed border-[#3a3d43] bg-[#343840] px-5 py-10 text-center text-sm text-slate-400">Нет данных по полевой команде.</div>
+          )}
+        </div>
+      </ListShell>
+      {widgetFooter(widget, variant === "compact")}
+    </Surface>
+  );
+}
+
+function DataQualityWidget({ widget, variant }: { widget: DashboardManifestWidget; variant?: LauncherWidgetVariant }) {
+  const payload = widgetPayload<{ items?: Array<{ metric_key?: string; data_status?: AnalyticsDataStatus; coverage?: number | null; confidence?: number | null; message?: string | null; missing_fields?: string[] }>; notes?: string[] }>(widget);
+  const items = payload.items ?? [];
+  const visibleItems = items.slice(0, 2);
+  const hiddenItems = Math.max(0, items.length - visibleItems.length);
+  const primaryItem = visibleItems[0] ?? null;
+  return (
+    <Surface className={cn("group relative flex h-full min-h-0 flex-col overflow-hidden", widgetSurfacePadding(widget, variant))}>
+      {widgetHeader(widget, variant === "compact")}
+      <div className="mt-4 flex min-h-0 flex-col gap-3">
+        <div className="rounded-[18px] border border-[#3a3d43] bg-[#2E3137] px-4 py-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold tracking-[-0.03em] text-[#f4f7fb]">Качество данных</p>
+              <p className="mt-1 text-xs leading-5 text-slate-400">
+                {primaryItem ? businessCopy(primaryItem.message) ?? "Есть ограничения по точности некоторых показателей." : "Показатели пока можно использовать как общую сводку без детальной проверки."}
+              </p>
+            </div>
+            <Badge variant={statusVariant(primaryItem?.data_status ?? "NO_DATA")}>{statusLabel(primaryItem?.data_status ?? "NO_DATA", variant === "compact")}</Badge>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {primaryItem?.coverage !== null && primaryItem?.coverage !== undefined ? <Badge variant="soft">Покрытие {formatPercent(primaryItem.coverage)}</Badge> : null}
+            {primaryItem?.confidence !== null && primaryItem?.confidence !== undefined ? <Badge variant="soft">Надёжность {formatPercent(primaryItem.confidence)}</Badge> : null}
+          </div>
+        </div>
+        <div className="space-y-2">
+          {visibleItems.map((item, index) => (
+            <div key={`${item.metric_key ?? "quality"}-${index}`} className={cn("rounded-[18px] border border-[#3a3d43] bg-[#343840]/80", variant === "compact" ? "p-3" : "p-4")}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className={cn("font-semibold tracking-[-0.03em] text-[#f4f7fb]", variant === "compact" ? "text-sm" : "text-base")}>{humanizeMetricKey(item.metric_key ?? "Показатель")}</p>
+                  <p className={cn("mt-1 leading-6 text-slate-200", variant === "compact" ? "text-xs leading-5" : "text-sm")}>
+                    {businessCopy(item.message) ?? "Требуется уточнение части данных."}
+                  </p>
+                </div>
+                <Badge variant={statusVariant(item.data_status ?? "NO_DATA")}>{statusLabel(item.data_status ?? "NO_DATA", variant === "compact")}</Badge>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {item.coverage !== null && item.coverage !== undefined ? <Badge variant="soft">Покрытие {formatPercent(item.coverage)}</Badge> : null}
+                {item.confidence !== null && item.confidence !== undefined ? <Badge variant="soft">Надёжность {formatPercent(item.confidence)}</Badge> : null}
+                {(item.missing_fields ?? []).length ? <Badge variant="neutral">Нужно уточнить {(item.missing_fields ?? []).length} полей</Badge> : null}
+              </div>
+            </div>
+          ))}
+        </div>
+        {(payload.notes ?? []).length ? (
+          <div className="rounded-[18px] border border-[#3a3d43] bg-[#2E3137] px-4 py-3 text-sm text-slate-300">
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">Что влияет на точность</p>
+            <ul className="mt-2 space-y-1.5">
+              {(payload.notes ?? []).slice(0, 2).map((note, index) => (
+                <li key={`${note}-${index}`}>• {businessCopy(note) ?? note}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        {hiddenItems > 0 ? <div className="inline-flex w-fit items-center rounded-full border border-[#3a3d43] bg-[#2E3137] px-4 py-2 text-xs font-medium text-slate-400">Ещё {hiddenItems} ограничений</div> : null}
+      </div>
+      {widgetFooter(widget, variant === "compact")}
+    </Surface>
+  );
+}
+
+function AlertWidget({ widget, variant }: { widget: DashboardManifestWidget; variant?: LauncherWidgetVariant }) {
+  const payload = widgetPayload<SerializedAIInsight>(widget);
+  return (
+    <Surface className={cn("group relative flex h-full min-h-0 flex-col overflow-hidden", widgetSurfacePadding(widget, variant))}>
+      {widgetHeader(widget, variant === "compact")}
+      <div className={cn("mt-4 flex min-h-0 flex-1 flex-col gap-3", variant === "compact" && "gap-2")}>
+        <div className="rounded-[18px] border border-yellow-100 bg-[linear-gradient(180deg,#2E3137_0%,#26292e_100%)] p-4">
+          <p className={cn("font-semibold tracking-[-0.03em] text-[#f4f7fb]", variant === "compact" ? "text-base" : "text-lg")}>{displayMetricLabel(payload.title) ?? displayMetricLabel(widget.title) ?? "Сигнал"}</p>
+          <p className={cn("mt-2 leading-6 text-slate-300", variant === "compact" ? "text-xs" : "text-sm")}>{businessCopy(payload.summary) ?? businessCopy(widget.summary) ?? "Сигнал требует внимания."}</p>
+          {payload.recommendation ? <p className={cn("mt-3 font-medium text-[#FFF27A]", variant === "compact" ? "text-xs" : "text-sm")}>{businessCopy(payload.recommendation) ?? payload.recommendation}</p> : null}
+        </div>
+        {payload.metrics?.length ? (
+          <div className={cn("grid gap-3", variant === "compact" ? "sm:grid-cols-1" : "sm:grid-cols-2")}>
+            {payload.metrics.slice(0, widgetListCount(widget, variant)).map((metric, index) => (
+              <SmallStat
+                compact={variant === "compact"}
+                key={`${metric.label ?? "metric"}-${index}`}
+                label={metric.label ? displayMetricLabel(metric.label) ?? metric.label : `Метрика ${index + 1}`}
+                value={formatPresentationValue(metric.current)}
+                note={metric.delta ? `Δ ${formatPresentationValue(metric.delta)}` : null}
+              />
+            ))}
+          </div>
+        ) : null}
+        {payload.evidence?.length ? (
+          <div className="flex flex-wrap gap-2">
+            {payload.evidence.slice(0, 4).map((evidence, index) => (
+              <Badge key={`${evidence}-${index}`} variant="soft">{businessCopy(evidence) ?? evidence}</Badge>
+            ))}
+          </div>
+        ) : null}
+      </div>
+      {widgetFooter(widget, variant === "compact")}
+    </Surface>
+  );
+}
+
+function WatchlistWidget({ widget, variant }: { widget: DashboardManifestWidget; variant?: LauncherWidgetVariant }) {
+  const payload = widgetPayload<{ rows?: SerializedAIInsight[] }>(widget);
+  const rows = payload.rows ?? [];
+  return (
+    <Surface className={cn("group relative flex h-full min-h-0 flex-col overflow-hidden", widgetSurfacePadding(widget, variant))}>
+      {widgetHeader(widget, variant === "compact")}
+      <ListShell scroll>
+        <div className="space-y-3">
+          {rows.length ? rows.map((row, index) => (
+            <div key={`${row.id ?? row.title ?? index}`} className={cn("rounded-[18px] border border-[#3a3d43] bg-[#343840]/80", variant === "compact" ? "p-3" : "p-4")}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className={cn("font-semibold tracking-[-0.03em] text-[#f4f7fb]", variant === "compact" ? "text-sm" : "text-base")}>{businessCopy(row.title) ?? row.title ?? "Сигнал"}</p>
+                  <p className={cn("mt-1 text-slate-400", variant === "compact" ? "text-xs" : "text-sm")}>{businessCopy(row.summary) ?? "Без описания"}</p>
+                </div>
+                {severityLabel(row.severity) ? <Badge variant="accent">{severityLabel(row.severity)}</Badge> : null}
+              </div>
+            </div>
+          )) : (
+            <div className={cn("rounded-[18px] border border-dashed border-[#3a3d43] bg-[#343840] text-center text-sm text-slate-400", variant === "compact" ? "px-4 py-6" : "px-5 py-10")}>На контроле пока нет сигналов.</div>
+          )}
+        </div>
+      </ListShell>
+      {widgetFooter(widget, variant === "compact")}
+    </Surface>
+  );
+}
+
+function UnknownWidgetCard({ widget }: { widget: DashboardManifestWidget }) {
+  return (
+    <Surface className="group relative flex h-full flex-col justify-between p-5">
+      <div>
+        <p className="text-[11px] uppercase tracking-[0.28em] text-slate-400">Новый тип виджета</p>
+        <h3 className="mt-2 text-[20px] font-semibold tracking-[-0.04em] text-[#f4f7fb]">{widget.title}</h3>
+        <p className="mt-3 text-sm leading-6 text-slate-400">
+          Этот тип виджета пока не поддержан в текущем интерфейсе.
+        </p>
+      </div>
+      <div className="mt-4">
+        <Badge variant="neutral">резервный вариант</Badge>
+      </div>
+    </Surface>
+  );
+}
+
+function renderWidget(widget: DashboardManifestWidget, variant?: LauncherWidgetVariant) {
+  switch (widget.widget_type) {
+    case "kpi":
+      return <KpiWidget widget={widget} variant={variant} />;
+    case "line_chart":
+    case "trend":
+    case "bar_chart":
+      return <TrendWidget widget={widget} variant={variant} />;
+    case "organization_comparison":
+      return <OrganizationComparisonWidget widget={widget} variant={variant} />;
+    case "product_ranking":
+      return <RankingWidget widget={widget} rows={widgetPayload<{ rows?: SerializedProductRow[] }>(widget).rows ?? []} variant={variant} />;
+    case "customer_ranking":
+      return <RankingWidget widget={widget} rows={widgetPayload<{ rows?: SerializedCustomerRow[] }>(widget).rows ?? []} customerMode variant={variant} />;
+    case "inventory_risk":
+      return <InventoryRiskWidget widget={widget} variant={variant} />;
+    case "visit_summary":
+      return <VisitSummaryWidget widget={widget} variant={variant} />;
+    case "data_quality":
+      return <DataQualityWidget widget={widget} variant={variant} />;
+    case "ai_insight":
+    case "ai_recommendation":
+      return widget.widget_id === "executive-brief" ? <ExecutiveBriefWidget widget={widget} variant={variant} /> : <AlertWidget widget={widget} variant={variant} />;
+    case "watchlist":
+      return <WatchlistWidget widget={widget} variant={variant} />;
+    case "alert":
+    case "product_alert":
+    case "customer_alert":
+    case "inventory_alert":
+    case "photo_alert":
+      return <AlertWidget widget={widget} variant={variant} />;
+    default:
+      return <UnknownWidgetCard widget={widget} />;
+  }
+}
+
+export function DashboardGrid() {
+  const { manifest, loading, error } = useDashboardManifest();
+  const [launcherState, setLauncherState] = useState<LauncherState | null>(null);
+  const [editMode, setEditMode] = useState(false);
+  const [interactionLayouts, setInteractionLayouts] = useState<ResponsiveLayouts | null>(null);
+  const [hiddenDrawerOpen, setHiddenDrawerOpen] = useState(false);
+  const [suggestionsDrawerOpen, setSuggestionsDrawerOpen] = useState(false);
+  const [dismissedSuggestionIds, setDismissedSuggestionIds] = useState<string[]>([]);
+  const [previewResult, setPreviewResult] = useState<LauncherSuggestionPreview | null>(null);
+  const [selectedSuggestionId, setSelectedSuggestionId] = useState<string | null>(null);
+  const [widgetsColumnRef, containerWidth] = useMeasuredWidth<HTMLDivElement>();
+  const launcherStateLoaded = useRef(false);
+
+  const allWidgets = useMemo(
+    () => aggregateProductSignalWidgets(
+      dedupeWidgets(dedupeWidgetSignatures(manifest?.widgets.filter((widget) => !widget.hidden) ?? [])),
+    ),
+    [manifest],
+  );
+  const defaultState = useMemo(() => createDefaultLauncherState(allWidgets) as LauncherState, [allWidgets]);
+  const effectiveState = useMemo(
+    () => normalizeLauncherState(launcherState ?? defaultState, allWidgets) as LauncherState,
+    [allWidgets, defaultState, launcherState],
+  );
+  const activeState = previewResult?.previewState ?? effectiveState;
+  const widgetContracts = useMemo(
+    () => new Map(allWidgets.map((widget) => [widget.widget_id, getWidgetSizeContract(widget)])),
+    [allWidgets],
+  );
+  const hiddenWidgetIds = useMemo(
+    () => new Set(activeState.hidden ?? []),
+    [activeState.hidden],
+  );
+  const visibleWidgets = useMemo(
+    () => allWidgets.filter((widget) => !hiddenWidgetIds.has(widget.widget_id)),
+    [allWidgets, hiddenWidgetIds],
+  );
+  const currentLayouts = useMemo(
+    () => composeResponsiveLauncherLayouts(activeState, visibleWidgets) as ResponsiveLayouts,
+    [activeState, visibleWidgets],
+  );
+  const activeBreakpoint = breakpointForWidth(containerWidth || 1024) as keyof typeof LAUNCHER_COLUMNS;
+  const currentLayoutsWithBounds = useMemo(
+    () => applyBoundsToResponsiveLayouts(currentLayouts, visibleWidgets, widgetContracts, editMode, new Set(effectiveState.locked ?? [])),
+    [currentLayouts, editMode, effectiveState.locked, visibleWidgets, widgetContracts],
+  );
+  const renderedLayouts = interactionLayouts ?? currentLayoutsWithBounds;
+  const activeLayout = useMemo(
+    () => (renderedLayouts[activeBreakpoint] ?? []) as LayoutItem[],
+    [activeBreakpoint, renderedLayouts],
+  );
+  const widgetVariantMap = useMemo(() => {
+    const map = new Map<string, "compact" | "regular" | "expanded" | "xl">();
+    for (const item of activeLayout) {
+      map.set(item.i, getLauncherVariantFromGrid(item.w, item.h));
+    }
+    return map;
+  }, [activeLayout]);
+  const hiddenWidgets = useMemo(
+    () => allWidgets.filter((widget) => hiddenWidgetIds.has(widget.widget_id)),
+    [allWidgets, hiddenWidgetIds],
+  );
+  const launcherSuggestions = useMemo(
+    () =>
+      createDevelopmentLauncherSuggestions(allWidgets, effectiveState).filter(
+        (suggestion) => !dismissedSuggestionIds.includes(suggestion.id),
+      ),
+    [allWidgets, dismissedSuggestionIds, effectiveState],
+  );
+  const highlightedWidgetIds = useMemo(
+    () => new Set(previewResult?.suggestion.actions.map((action) => action.widgetId) ?? []),
+    [previewResult],
+  );
+
+  useEffect(() => {
+    if (!launcherStateLoaded.current) {
+      launcherStateLoaded.current = true;
+      setLauncherState(normalizeLauncherState(loadLauncherState() ?? defaultState, allWidgets) as LauncherState);
+      return;
+    }
+    setLauncherState((current) => normalizeLauncherState(current ?? defaultState, allWidgets) as LauncherState);
+  }, [allWidgets, defaultState]);
+
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "development" || containerWidth <= 0) return;
+    console.debug("[launcher]", {
+      containerWidth,
+      breakpoint: activeBreakpoint,
+      columns: LAUNCHER_COLUMNS[activeBreakpoint],
+      widgetCount: visibleWidgets.length,
+      order: effectiveState.order,
+      sizes: effectiveState.sizes,
+      layout: activeLayout.map(({ i, x, y, w, h }) => ({ i, x, y, w, h })),
+    });
+  }, [activeBreakpoint, activeLayout, containerWidth, effectiveState.order, effectiveState.sizes, visibleWidgets.length]);
+
+  const resetLayouts = () => {
+    clearLauncherState();
+    setLauncherState(defaultState);
+    setInteractionLayouts(null);
+    setHiddenDrawerOpen(false);
+    setSuggestionsDrawerOpen(false);
+    cancelPreview();
+  };
+
+  const updateSemanticState = useCallback((updater: (current: LauncherState) => LauncherState) => {
+    setLauncherState((current) => {
+      const next = normalizeLauncherState(updater(current ?? defaultState), allWidgets) as LauncherState;
+      saveLauncherState(next);
+      return next;
+    });
+  }, [allWidgets, defaultState]);
+
+  const openSuggestionsDrawer = useCallback(() => {
+    setSuggestionsDrawerOpen(true);
+  }, []);
+
+  const previewSuggestion = useCallback((suggestion: LauncherSuggestion) => {
+    if (editMode) return;
+    const preview = evaluateLauncherSuggestion(effectiveState, allWidgets, suggestion);
+    setPreviewResult(preview);
+    setSelectedSuggestionId(suggestion.id);
+    setSuggestionsDrawerOpen(false);
+  }, [allWidgets, editMode, effectiveState]);
+
+  const applySuggestion = useCallback((suggestion: LauncherSuggestion) => {
+    if (editMode) return;
+    const applied = evaluateLauncherSuggestion(effectiveState, allWidgets, suggestion);
+    if (applied.appliedActions > 0) {
+      setLauncherState(applied.previewState);
+      saveLauncherState(applied.previewState);
+    }
+    setPreviewResult(applied);
+    setSelectedSuggestionId(suggestion.id);
+    setSuggestionsDrawerOpen(false);
+  }, [allWidgets, editMode, effectiveState]);
+
+  const cancelPreview = useCallback(() => {
+    setPreviewResult(null);
+    setSelectedSuggestionId(null);
+  }, []);
+
+  const dismissSuggestion = useCallback((suggestionId: string) => {
+    setDismissedSuggestionIds((current) => Array.from(new Set([...current, suggestionId])));
+    setSuggestionsDrawerOpen(false);
+    if (selectedSuggestionId === suggestionId) {
+      cancelPreview();
+    }
+  }, [cancelPreview, selectedSuggestionId]);
+
+  const commitWidgetSize = useCallback((widgetId: string, size: LauncherSemanticSize) => {
+    setInteractionLayouts(null);
+    updateSemanticState((current) => updateLauncherWidgetSize(current, allWidgets, widgetId, size) as LauncherState);
+  }, [allWidgets, updateSemanticState]);
+
+  const toggleWidgetLock = useCallback((widgetId: string) => {
+    updateSemanticState((current) => {
+      const locked = new Set(current.locked ?? []);
+      if (locked.has(widgetId)) locked.delete(widgetId);
+      else locked.add(widgetId);
+      return {
+        ...current,
+        locked: Array.from(locked),
+      };
+    });
+  }, [updateSemanticState]);
+
+  const hideWidget = useCallback((widgetId: string) => {
+    updateSemanticState((current) => {
+      const hidden = new Set(current.hidden ?? []);
+      const userHidden = new Set(current.userOverrides?.hidden ?? []);
+      hidden.add(widgetId);
+      userHidden.add(widgetId);
+      return {
+        ...current,
+        hidden: Array.from(hidden),
+        userOverrides: {
+          size: current.userOverrides?.size ?? [],
+          order: Boolean(current.userOverrides?.order),
+          hidden: Array.from(userHidden),
+        },
+      };
+    });
+  }, [updateSemanticState]);
+
+  const restoreWidget = useCallback((widgetId: string) => {
+    updateSemanticState((current) => {
+      const hidden = new Set(current.hidden ?? []);
+      const userHidden = new Set(current.userOverrides?.hidden ?? []);
+      hidden.delete(widgetId);
+      userHidden.delete(widgetId);
+      return {
+        ...current,
+        hidden: Array.from(hidden),
+        userOverrides: {
+          size: current.userOverrides?.size ?? [],
+          order: Boolean(current.userOverrides?.order),
+          hidden: Array.from(userHidden),
+        },
+      };
+    });
+  }, [updateSemanticState]);
+
+  const handleDragStart = useCallback(() => {
+    setInteractionLayouts(cloneResponsiveLayouts(currentLayoutsWithBounds));
+  }, [currentLayoutsWithBounds]);
+
+  const handleDrag = useCallback((currentLayout: ReadonlyArray<LayoutItem>) => {
+    setInteractionLayouts((current) => {
+      const next = cloneResponsiveLayouts(current ?? currentLayoutsWithBounds);
+      next[activeBreakpoint] = currentLayout.map((item) => ({ ...item }));
+      return next;
+    });
+  }, [activeBreakpoint, currentLayoutsWithBounds]);
+
+  const handleDragStop = useCallback((currentLayout: ReadonlyArray<LayoutItem>) => {
+    const order = deriveLauncherOrder(currentLayout, effectiveState.order);
+    const nextState = normalizeLauncherState({
+      ...effectiveState,
+      order,
+      userOverrides: {
+        size: effectiveState.userOverrides?.size ?? [],
+        order: true,
+        hidden: effectiveState.userOverrides?.hidden ?? [],
+      },
+    }, allWidgets) as LauncherState;
+    setInteractionLayouts(null);
+    setLauncherState(nextState);
+    saveLauncherState(nextState);
+  }, [allWidgets, effectiveState]);
+
+  const handleResizeStart = useCallback(() => {
+    setInteractionLayouts(cloneResponsiveLayouts(currentLayoutsWithBounds));
+  }, [currentLayoutsWithBounds]);
+
+  const handleResize = useCallback((currentLayout: ReadonlyArray<LayoutItem>) => {
+    setInteractionLayouts((current) => {
+      const next = cloneResponsiveLayouts(current ?? currentLayoutsWithBounds);
+      next[activeBreakpoint] = currentLayout.map((item) => ({ ...item }));
+      return next;
+    });
+  }, [activeBreakpoint, currentLayoutsWithBounds]);
+
+  const handleResizeStop = useCallback((
+    currentLayout: ReadonlyArray<LayoutItem>,
+    _oldItem?: LayoutItem | null,
+    newItem?: LayoutItem | null,
+  ) => {
+    const resizedItem = newItem ?? currentLayout.find((item) => item.i === _oldItem?.i);
+    if (!resizedItem) {
+      setInteractionLayouts(null);
+      return;
+    }
+    const widget = allWidgets.find((entry) => entry.widget_id === resizedItem.i);
+    if (!widget) {
+      setInteractionLayouts(null);
+      return;
+    }
+    const semanticSize = snapWidgetSemanticSize(
+      widget,
+      resizedItem.w ?? 0,
+      resizedItem.h ?? 0,
+      LAUNCHER_COLUMNS[activeBreakpoint],
+    );
+    setInteractionLayouts(null);
+    commitWidgetSize(widget.widget_id, semanticSize);
+  }, [activeBreakpoint, allWidgets, commitWidgetSize]);
+
+  const hiddenCount = hiddenWidgets.length;
+  const activeSuggestion = previewResult?.suggestion ?? null;
+
+  useEffect(() => {
+    if (editMode && previewResult) {
+      cancelPreview();
+    }
+  }, [cancelPreview, editMode, previewResult]);
+
+  if (loading) {
+    return (
+      <Surface className="p-6">
+        <p className="text-sm text-slate-400">Загружаю данные дашборда…</p>
+      </Surface>
+    );
+  }
+
+  if (error) {
+    return (
+      <Surface className="p-6">
+        <p className="text-sm font-medium text-[#f4f7fb]">Не удалось загрузить дашборд</p>
+        <p className="mt-2 text-sm leading-6 text-slate-400">{error}</p>
+      </Surface>
+    );
+  }
+
+  if (!manifest || allWidgets.length === 0) {
+    return (
+      <Surface className="p-6">
+        <p className="text-sm font-medium text-[#f4f7fb]">Для текущего контекста пока нет виджетов</p>
+        <p className="mt-2 text-sm leading-6 text-slate-400">
+          Попробуйте изменить организацию или период.
+        </p>
+      </Surface>
+    );
+  }
+
+  return (
+    <div ref={widgetsColumnRef} className="w-full min-w-0 space-y-4">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+          <div className="max-w-4xl">
+            <p className="text-[11px] uppercase tracking-[0.32em] text-slate-400">Бизнес-обзор</p>
+            <h2 className="mt-2 text-[32px] font-semibold tracking-[-0.06em] text-[#f4f7fb] sm:text-[36px]">
+              Мой бизнес
+            </h2>
+            <p className="mt-3 max-w-3xl text-sm leading-7 text-slate-400">
+              Виджеты подстраиваются под текущий бизнес-контекст и сохраняют пользовательскую раскладку.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant={statusVariant(manifest.data_quality.overall_status)}>
+              {statusLabel(manifest.data_quality.overall_status)}
+            </Badge>
+            <FilterChip active={visibleWidgets.length > 0}>{visibleWidgets.length} виджетов</FilterChip>
+            <AiSuggestionsButton
+              count={launcherSuggestions.length}
+              open={suggestionsDrawerOpen}
+              onClick={openSuggestionsDrawer}
+            />
+            <Button
+              variant={editMode ? "secondary" : "ghost"}
+              size="sm"
+              onClick={() => {
+                setEditMode((value) => {
+                  const nextValue = !value;
+                  if (!nextValue) {
+                    setHiddenDrawerOpen(false);
+                    setInteractionLayouts(null);
+                  }
+                  return nextValue;
+                });
+              }}
+            >
+              {editMode ? "Готово" : "Режим редактирования"}
+            </Button>
+            {editMode && hiddenCount > 0 ? (
+              <Button variant="secondary" size="sm" onClick={() => setHiddenDrawerOpen(true)}>
+                Добавить виджеты
+              </Button>
+            ) : null}
+            <Button variant="secondary" size="sm" onClick={resetLayouts}>
+              Сбросить раскладку
+            </Button>
+          </div>
+        </div>
+
+        {previewResult && activeSuggestion ? (
+          <AiPreviewBanner
+            preview={previewResult}
+            onApply={() => applySuggestion(activeSuggestion)}
+            onCancel={cancelPreview}
+            onOpenSuggestions={() => setSuggestionsDrawerOpen(true)}
+          />
+        ) : null}
+
+        <Responsive
+          className="layout w-full"
+          width={containerWidth || 1024}
+          layouts={renderedLayouts}
+          breakpoints={LAUNCHER_BREAKPOINTS}
+          cols={LAUNCHER_COLUMNS}
+          rowHeight={74}
+          margin={[18, 18]}
+          containerPadding={[0, 0]}
+          draggableHandle=".drag-handle"
+          resizeHandles={["se"]}
+          compactType={null}
+          preventCollision={false}
+          isResizable={editMode}
+          isDraggable={editMode}
+          onDragStart={() => {
+            if (!editMode) return;
+            handleDragStart();
+          }}
+          onDrag={(currentLayout) => {
+            if (!editMode) return;
+            handleDrag(currentLayout);
+          }}
+          onDragStop={(currentLayout) => {
+            if (!editMode) return;
+            handleDragStop(currentLayout);
+          }}
+          onResizeStart={() => {
+            if (!editMode) return;
+            handleResizeStart();
+          }}
+          onResize={(currentLayout) => {
+            if (!editMode) return;
+            handleResize(currentLayout);
+          }}
+          onResizeStop={(currentLayout, oldItem, newItem) => {
+            if (!editMode) return;
+            handleResizeStop(currentLayout, oldItem, newItem);
+          }}
+        >
+          {visibleWidgets.map((widget) => {
+            const currentSize = activeState.sizes[widget.widget_id] ?? "medium";
+            const locked = Boolean(widget.locked_position || (activeState.locked ?? []).includes(widget.widget_id));
+            return (
+              <div
+                key={widget.widget_id}
+                className={cn(
+                  "relative min-h-0",
+                  previewResult && highlightedWidgetIds.has(widget.widget_id) && "ring-2 ring-yellow-200 ring-offset-2 ring-offset-[#2E3137]",
+                )}
+              >
+                {editMode ? (
+                  <div className="absolute right-3 top-3 z-20">
+                    <WidgetEditMenu
+                      widget={widget}
+                      currentSize={widgetSizeFromContract(widget, currentSize)}
+                      locked={locked}
+                      onChangeSize={(size) => commitWidgetSize(widget.widget_id, size)}
+                      onToggleLock={() => toggleWidgetLock(widget.widget_id)}
+                      onHide={() => hideWidget(widget.widget_id)}
+                    />
+                  </div>
+                ) : null}
+                {renderWidget(widget, widgetVariantMap.get(widget.widget_id))}
+              </div>
+            );
+          })}
+        </Responsive>
+      {editMode ? (
+        <Drawer
+          open={hiddenDrawerOpen && hiddenCount > 0}
+          onClose={() => setHiddenDrawerOpen(false)}
+          title="Скрытые виджеты"
+          description="Верните виджеты в раскладку без потери их настроек."
+          badges={<Badge variant="neutral">{hiddenCount} скрыто</Badge>}
+        >
+          <div className="space-y-3">
+            {hiddenWidgets.map((widget) => (
+              <div key={widget.widget_id} className="rounded-[22px] border border-[#3a3d43] bg-[#2E3137] p-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold tracking-[-0.03em] text-[#f4f7fb]">{widgetTitleFromName(widget.title)}</p>
+                    {widget.subtitle ? <p className="mt-1 text-sm leading-6 text-slate-400">{businessCopy(widget.subtitle)}</p> : null}
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="soft"
+                    onClick={() => {
+                      restoreWidget(widget.widget_id);
+                    }}
+                  >
+                    Показать
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Drawer>
+      ) : null}
+
+      <AiSuggestionsDrawer
+        open={suggestionsDrawerOpen}
+        editMode={editMode}
+        suggestions={launcherSuggestions}
+        selectedSuggestionId={selectedSuggestionId}
+        preview={previewResult}
+        onClose={() => setSuggestionsDrawerOpen(false)}
+        onSelectPreview={previewSuggestion}
+        onApply={applySuggestion}
+        onDismiss={dismissSuggestion}
+      />
+    </div>
+  );
+}

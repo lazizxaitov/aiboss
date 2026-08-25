@@ -1,0 +1,31 @@
+[project]
+name = "core-api"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi[standard]>=0.140.12",
+    "pydantic-settings>=2.14.2",
+    "psycopg[binary]>=3.2.9",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+    "ruff>=0.16.0",
+]
+
+[project.scripts]
+smartup-migrate = "app.cli:main"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"app/core/inventory_workspace/service.py" = ["E501"]
+"tests/test_inventory_workspace_api.py" = ["E501"]
