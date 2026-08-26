@@ -18,6 +18,10 @@ from app.core.ai_conversation import (
 from app.core.data_layer.contracts import CoreDataStore
 from app.core.data_layer.factory import get_core_store
 from app.core.hermes_tools import HermesBusinessTools
+from app.core.ai_routing import AITaskRouter
+from app.core.hermes_model_registry import hermes_model_registry
+from app.core.ai_insight_presentation import AIInsightPresentationService
+from app.core.analytics.widget_builder import WidgetBuilderService
 
 router = APIRouter(prefix="/telegram")
 
@@ -63,6 +67,23 @@ def _telegram_confirmation(text: str) -> str:
     if not trimmed:
         return "Ответ подготовлен."
     return f"Ответ подготовлен: {trimmed[:120]}{'…' if len(trimmed) > 120 else ''}"
+
+
+def _telegram_runtime_context(router: AITaskRouter, store: CoreDataStore) -> str:
+    assignments = router.get_config().roles
+    latest = AIInsightPresentationService(store).latest()
+    latest_text = "нет готового анализа"
+    if latest and latest.status == "completed":
+        latest_text = f"analysis_id={latest.analysis_id}, generated_at={latest.generated_at.isoformat()}"
+    lines = ["AI BOS RUNTIME CONTEXT:", f"last_successful_business_analysis: {latest_text}"]
+    for task_type in ("business_analytics", "system_action", "communications", "ai_chat"):
+        assignment = assignments.get(task_type)
+        if assignment:
+            lines.append(
+                f"{task_type}: primary={assignment.primary_provider_id or '-'} / {assignment.primary_model_id or '-'}; "
+                f"fallback={assignment.fallback_provider_id or '-'} / {assignment.fallback_model_id or '-'}"
+            )
+    return "\n".join(lines)
 
 
 @router.post("/link", response_model=ConversationHistoryResponse)
@@ -120,6 +141,17 @@ async def telegram_chat(
 ) -> TelegramChatResponse:
     service = AIConversationService(store)
     tools_service = HermesBusinessTools(store)
+    await hermes_model_registry.get_providers()
+    router = AITaskRouter(store)
+    task_type = "ai_chat"
+    lowered_text = request.message.lower()
+    if "свеж" in lowered_text and "анализ" in lowered_text:
+        task_type = "business_analytics"
+    elif any(word in lowered_text for word in ("добавь виджет", "удали виджет", "измени виджет", "создай виджет")):
+        task_type = "system_action"
+    routing_candidates = router.resolve_candidates(task_type)
+    routed_model = str(routing_candidates[0]["model_id"]) if routing_candidates else None
+    selected_candidate_index = 0
 
     conversation = service.resolve_or_create_conversation(
         source_channel=AIConversationChannel.TELEGRAM,
@@ -151,18 +183,24 @@ async def telegram_chat(
 
     messages = [
         {"role": "system", "content": service.build_system_prompt(conversation)},
+        {"role": "system", "content": _telegram_runtime_context(router, store)},
         *[{"role": message.role, "content": message.content} for message in conversation.messages],
     ]
     tools = _tool_definitions()
 
-    for _ in range(3):
+    for attempt in range(3):
         response = await _hermes_request(
             messages=messages,
             tools=tools,
             stream=False,
             tool_choice="auto",
+            model=routed_model,
         )
         if response.status_code >= 400:
+            if selected_candidate_index + 1 < len(routing_candidates):
+                selected_candidate_index += 1
+                routed_model = str(routing_candidates[selected_candidate_index]["model_id"])
+                continue
             raise HTTPException(status_code=response.status_code, detail=response.text or "Hermes вернул ошибку.")
         payload = response.json()
         choices = payload.get("choices")
@@ -221,7 +259,7 @@ async def telegram_chat(
                     parsed_arguments = {}
             else:
                 parsed_arguments = {}
-            tool_result = _resolve_tool_result(tool_name, parsed_arguments, tools_service)
+            tool_result = await _resolve_tool_result(tool_name, parsed_arguments, tools_service, WidgetBuilderService(store), router)
             messages.append(
                 {
                     "role": "tool",
@@ -230,4 +268,4 @@ async def telegram_chat(
                 },
             )
 
-    raise HTTPException(status_code=502, detail="Hermes did not return a final answer.")
+    raise HTTPException(status_code=502, detail="AI did not return a final answer.")

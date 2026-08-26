@@ -18,6 +18,8 @@ from app.core.analytics.models import (
     AnalyticsPeriodPreset,
     AnalyticsQuery,
 )
+from app.core.analytics.widget_builder import WidgetBuilderService
+from app.core.auto_business_analytics import AutoBusinessAnalyticsService, AutoAnalyticsRun, apply_dashboard_plan
 from app.core.analytics.snapshot import BusinessAnalyticsSnapshotService
 from app.core.data_layer.contracts import CoreDataStore
 from app.core.data_layer.dashboard import (
@@ -30,6 +32,13 @@ from app.core.data_layer.factory import get_core_store
 from app.core.organization_context import OrganizationContextService
 
 router = APIRouter()
+
+
+@router.get("/dashboard/auto-analysis/latest", response_model=AutoAnalyticsRun | None)
+def get_latest_auto_analysis(
+    store: Annotated[CoreDataStore, Depends(get_core_store)],
+) -> AutoAnalyticsRun | None:
+    return AutoBusinessAnalyticsService(store).latest_successful()
 
 
 def _build_manifest_preferences(
@@ -147,11 +156,32 @@ def get_dashboard_manifest(
         locked_size_widget_ids=locked_size_widget_ids,
     )
     sales_report = BusinessAnalyticsEngine(store).build_sales(query)
-    return DashboardManifestComposerService().compose(
+    manifest = DashboardManifestComposerService().compose(
         snapshot=ai_result.snapshot,
         ai_result=ai_result,
         sales_report=sales_report,
         preferences=preferences,
         language=language,
         force_refresh=force_refresh,
+    ).model_copy(deep=True)
+    manifest = apply_dashboard_plan(manifest, AutoBusinessAnalyticsService(store).latest())
+    custom_widgets_service = WidgetBuilderService(store)
+    custom_widgets = custom_widgets_service.append_custom_widgets(
+        manifest.widgets,
+        organization_ids=selected_organization_ids,
     )
+    if custom_widgets != manifest.widgets:
+        manifest.widgets = custom_widgets
+        manifest.layout_policy.permanent_widget_ids = list(
+            dict.fromkeys(
+                [
+                    *manifest.layout_policy.permanent_widget_ids,
+                    *[widget.widget_id for widget in custom_widgets if widget.widget_id not in manifest.layout_policy.permanent_widget_ids],
+                ],
+            ),
+        )
+        manifest.layout_policy.notes = [
+            *manifest.layout_policy.notes,
+            "User-created widgets from AI Widget Builder are included.",
+        ]
+    return manifest

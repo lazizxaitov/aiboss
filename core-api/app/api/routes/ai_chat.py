@@ -12,10 +12,17 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
+from app.core.ai_routing import AITaskRouter, TaskType
+from app.core.hermes_model_registry import hermes_model_registry
 from app.core.ai_conversation import (
     AIConversationChannel,
     AIConversationService,
     AIConversationTargetChannel,
+)
+from app.core.analytics.widget_builder import (
+    WidgetBuilderDraft,
+    WidgetBuilderService,
+    WidgetBuilderUpdatePatch,
 )
 from app.core.data_layer.contracts import CoreDataStore
 from app.core.data_layer.factory import get_core_store
@@ -39,6 +46,9 @@ class ChatRequest(BaseModel):
     period: str | None = None
     source_channel: AIConversationChannel = AIConversationChannel.WEB
     target_channel: AIConversationTargetChannel | None = None
+    task_type: TaskType = "ai_chat"
+    provider_id: str | None = None
+    model_id: str | None = None
 
 
 def _event(payload: dict[str, str], event: str | None = None) -> str:
@@ -128,6 +138,94 @@ def _tool_definitions() -> list[dict[str, object]]:
                 "parameters": common_org_period_parameters,
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "delegate_ai_task",
+                "description": "Delegate a task to the agent selected by the backend role router. Never choose a provider or model manually.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "task_type": {"type": "string", "enum": ["business_analytics", "system_action", "communications"]},
+                        "instruction": {"type": "string"},
+                        "context": {"type": "object"},
+                    },
+                    "required": ["task_type", "instruction"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "create_dashboard_widget",
+                "description": "Create and persist a dashboard widget from a structured draft.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "draft": {"type": "object"},
+                        "source_channel": {"type": "string", "default": "web"},
+                        "organization_id": {"type": ["string", "null"]},
+                        "period": {"type": ["string", "null"]},
+                    },
+                    "required": ["draft"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "update_dashboard_widget",
+                "description": "Update an existing dashboard widget configuration.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "widget_id": {"type": ["string", "null"]},
+                        "match_text": {"type": ["string", "null"]},
+                        "patch": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": ["string", "null"]},
+                                "widget_type": {"type": ["string", "null"]},
+                                "metric": {"type": ["string", "null"]},
+                                "period": {"type": ["string", "null"]},
+                                "organization_ids": {
+                                    "type": ["array", "null"],
+                                    "items": {"type": "string"},
+                                },
+                                "organization_name": {"type": ["string", "null"]},
+                                "filters": {"type": ["array", "null"]},
+                                "grouping": {"type": ["string", "null"]},
+                                "limit": {"type": ["integer", "null"]},
+                                "size": {"type": ["string", "null"]},
+                                "notes": {"type": ["array", "null"], "items": {"type": "string"}},
+                            },
+                            "additionalProperties": False,
+                        },
+                        "organization_id": {"type": ["string", "null"]},
+                        "period": {"type": ["string", "null"]},
+                    },
+                    "required": ["patch"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "delete_dashboard_widget",
+                "description": "Delete an existing dashboard widget configuration.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "widget_id": {"type": ["string", "null"]},
+                        "match_text": {"type": ["string", "null"]},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+        },
     ]
 
 
@@ -162,6 +260,7 @@ def _system_prompt(context_service: OrganizationContextService) -> str:
         "Use ONLY the provided business data tools when the user asks about revenue, orders, sales, top products, "
         "business comparisons, organizations, or current attention.\n"
         "Do not request or reveal SQL, PostgreSQL, raw SmartUp payloads, terminal/file/system access, or secrets.\n"
+        "If the user wants to create, update, or delete a dashboard widget, use the widget builder tools.\n"
         "If the user does not specify organization or period, rely on the current AI Business OS context.\n"
         "If the user asks for a file or a document, return it as a fenced code block in the form "
         "```file name=\"report.txt\" type=\"text/plain\"\n<content>\n``` so the UI can offer a download.\n"
@@ -169,6 +268,25 @@ def _system_prompt(context_service: OrganizationContextService) -> str:
         f"Current organization context: {organization_text}.\n"
         f"Current period context: {period_text}."
     )
+
+
+def _routing_context(router: AITaskRouter) -> str:
+    assignments = router.get_config().roles
+    lines = [
+        "AI BOS ROLE ROUTING:",
+        "You are the orchestrator. Infer task_type and use delegate_ai_task without selecting a provider or model.",
+        "For system_action assigned to the current agent, use the existing AI BOS tools directly and do not delegate back to yourself.",
+    ]
+    for task_type in ("business_analytics", "system_action", "communications"):
+        assignment = assignments.get(task_type)
+        if assignment is None:
+            continue
+        lines.append(
+            f"{task_type}: primary={assignment.primary_provider_id or 'not configured'} / "
+            f"{assignment.primary_model_id or '-'}; fallback={assignment.fallback_provider_id or 'not configured'} / "
+            f"{assignment.fallback_model_id or '-'}"
+        )
+    return "\n".join(lines)
 
 
 def _message_dump(message: ChatMessage) -> dict[str, str]:
@@ -189,11 +307,12 @@ async def _hermes_request(
     tools: list[dict[str, object]] | None,
     stream: bool,
     tool_choice: str | dict[str, object] | None = None,
+    model: str | None = None,
 ) -> httpx.Response:
     url = f"{settings.hermes_base_url.rstrip('/')}/chat/completions"
     headers = {"Authorization": f"Bearer {settings.hermes_api_key}"}
     body: dict[str, object] = {
-        "model": settings.hermes_model,
+        "model": model or settings.hermes_model,
         "messages": messages,
         "stream": stream,
     }
@@ -263,11 +382,40 @@ def _tool_arguments(tool_call: dict[str, object]) -> dict[str, object]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _resolve_tool_result(
+async def _resolve_tool_result(
     tool_name: str,
     arguments: dict[str, object],
     tools: HermesBusinessTools,
+    widget_builder: WidgetBuilderService,
+    router: AITaskRouter,
 ) -> object:
+    if tool_name == "delegate_ai_task":
+        raw_task_type = str(arguments.get("task_type") or "")
+        if raw_task_type not in {"business_analytics", "system_action", "communications"}:
+            return {"status": "error", "message": "Unsupported task type."}
+        runtime = router.resolve_runtime(raw_task_type)  # type: ignore[arg-type]
+        if not runtime.get("provider_id"):
+            return {"status": "error", "message": "No configured AI agent is available for this task."}
+        if runtime.get("model_id"):
+            response = await _hermes_request(
+                messages=[
+                    {"role": "system", "content": "Complete the delegated AI BOS task using only the supplied instruction and context."},
+                    {"role": "user", "content": str(arguments.get("instruction") or "") + "\nContext: " + json.dumps(arguments.get("context") or {}, ensure_ascii=False)},
+                ],
+                tools=None,
+                stream=False,
+                model=str(runtime["model_id"]),
+            )
+            if response.status_code < 400:
+                message = _extract_assistant_message(response.json()) or {}
+                return {
+                    "status": "completed",
+                    "result": message.get("content") or "",
+                    "provider_used": runtime["provider_name"],
+                    "model_used": runtime["model_id"],
+                    "fallback_used": runtime["fallback_used"],
+                }
+        return {"status": "error", "message": "Selected AI agent is unavailable.", "provider_used": runtime.get("provider_name"), "fallback_used": runtime.get("fallback_used")}
     organization_id = _normalize_uuid(arguments.get("organization_id"))
     period = _normalize_period_value(arguments.get("period"))
     if tool_name == "get_business_summary":
@@ -289,6 +437,40 @@ def _resolve_tool_result(
         return tools.get_organizations()
     if tool_name == "get_business_alerts":
         return tools.get_business_alerts(organization_id=organization_id, period=period)
+    if tool_name == "create_dashboard_widget":
+        draft_payload = arguments.get("draft")
+        if not isinstance(draft_payload, dict):
+            return {"status": "not_found", "message": "Missing draft payload."}
+        draft = WidgetBuilderDraft.model_validate(draft_payload)
+        try:
+            return widget_builder.create_dashboard_widget(
+                draft,
+                source_channel=str(arguments.get("source_channel") or "web"),
+                organization_id=_normalize_uuid(arguments.get("organization_id")),
+                period=_normalize_period_value(arguments.get("period")),
+            ).model_dump(mode="json")
+        except ValueError as error:
+            return {"status": "error", "message": str(error)}
+    if tool_name == "update_dashboard_widget":
+        patch_payload = arguments.get("patch")
+        if not isinstance(patch_payload, dict):
+            return {"status": "not_found", "message": "Missing patch payload."}
+        patch = WidgetBuilderUpdatePatch.model_validate(patch_payload)
+        try:
+            return widget_builder.update_dashboard_widget(
+                widget_id=str(arguments.get("widget_id")) if arguments.get("widget_id") else None,
+                match_text=str(arguments.get("match_text")) if arguments.get("match_text") else None,
+                patch=patch,
+                organization_id=_normalize_uuid(arguments.get("organization_id")),
+                period=_normalize_period_value(arguments.get("period")),
+            ).model_dump(mode="json")
+        except ValueError as error:
+            return {"status": "error", "message": str(error)}
+    if tool_name == "delete_dashboard_widget":
+        return widget_builder.delete_dashboard_widget(
+            widget_id=str(arguments.get("widget_id")) if arguments.get("widget_id") else None,
+            match_text=str(arguments.get("match_text")) if arguments.get("match_text") else None,
+        ).model_dump(mode="json")
     return {"error": f"Unknown tool: {tool_name}"}
 
 
@@ -317,6 +499,19 @@ async def chat(
     async def stream():
         conversation_service = AIConversationService(store)
         tools_service = HermesBusinessTools(store)
+        widget_builder = WidgetBuilderService(store)
+        await hermes_model_registry.get_providers()
+        router = AITaskRouter(store)
+        candidates = router.resolve_candidates(
+            request.task_type,
+            provider_id=request.provider_id,
+            model_id=request.model_id,
+        )
+        if not candidates:
+            yield _event({"message": "Для этой задачи нет доступного provider/model."}, "error")
+            return
+        routing_runtime = candidates[0]
+        routed_model = str(routing_runtime["model_id"])
         conversation = conversation_service.resolve_or_create_conversation(
             source_channel=request.source_channel,
             user_id=request.user_id,
@@ -347,18 +542,30 @@ async def chat(
         )
         messages: list[dict[str, object]] = [
             {"role": "system", "content": conversation_service.build_system_prompt(conversation)},
+            {"role": "system", "content": _routing_context(router)},
             *[{"role": message.role, "content": message.content} for message in conversation.messages],
         ]
         tools = _tool_definitions()
         assistant_text = ""
         try:
-            for _ in range(3):
-                response = await _hermes_request(
+            response = None
+            for candidate in candidates:
+                candidate_response = await _hermes_request(
                     messages=messages,
                     tools=tools,
                     stream=False,
                     tool_choice="auto",
+                    model=str(candidate["model_id"]),
                 )
+                if candidate_response.status_code < 400:
+                    routing_runtime = candidate
+                    routed_model = str(candidate["model_id"])
+                    response = candidate_response
+                    break
+            if response is None:
+                yield _event({"message": "Не удалось выполнить задачу ни через основной, ни через резервный provider."}, "error")
+                return
+            for _ in range(3):
                 if response.status_code >= 400:
                     detail = response.text
                     yield _event({"message": detail or "Hermes вернул ошибку."}, "error")
@@ -382,17 +589,26 @@ async def chat(
                     if not isinstance(function, dict):
                         continue
                     tool_name = str(function.get("name") or "")
-                    tool_result = _resolve_tool_result(
+                    tool_result = await _resolve_tool_result(
                         tool_name,
                         _tool_arguments(tool_call),
                         tools_service,
+                        widget_builder,
+                        router,
                     )
                     messages.append(_tool_message(str(tool_call.get("id")), tool_result))
+                response = await _hermes_request(
+                    messages=messages,
+                    tools=tools,
+                    stream=False,
+                    tool_choice="auto",
+                    model=routed_model,
+                )
 
             url = f"{settings.hermes_base_url.rstrip('/')}/chat/completions"
             headers = {"Authorization": f"Bearer {settings.hermes_api_key}"}
             body: dict[str, object] = {
-                "model": settings.hermes_model,
+                "model": routed_model or settings.hermes_model,
                 "messages": messages,
                 "stream": True,
                 "tool_choice": "none",
@@ -425,6 +641,17 @@ async def chat(
                     source_channel=request.source_channel,
                     target_channel=resolved_target_channel,
                 )
+            yield _event(
+                {
+                    "conversation_id": conversation.conversation_id,
+                    "target_channel": resolved_target_channel.value if resolved_target_channel else "",
+                    "provider_id": str(routing_runtime.get("provider_id") or ""),
+                    "provider_name": str(routing_runtime.get("provider_name") or ""),
+                        "model_id": str(routing_runtime.get("model_id") or ""),
+                    "fallback_used": str(bool(routing_runtime.get("fallback_used"))).lower(),
+                },
+                "meta",
+            )
             yield _event(
                 {
                     "conversation_id": conversation.conversation_id,

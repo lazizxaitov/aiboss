@@ -53,7 +53,7 @@ export function FilterBar({
 
         <div
           className={cn(
-            "grid transition-[grid-template-rows,opacity,margin-top] duration-300 ease-out",
+            "grid transition-all duration-300 ease-out",
             open ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",
           )}
         >

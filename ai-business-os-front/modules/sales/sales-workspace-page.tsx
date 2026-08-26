@@ -6,6 +6,7 @@ import { useBusinessContext, useSelectedOrganizationNames } from "@/components/b
 import { useBusinessRefresh } from "@/components/business/business-refresh-provider";
 import { Drawer } from "@/components/ui/drawer";
 import { Badge } from "@/components/ui/badge";
+import { SmartUpPageRefreshButton } from "@/components/smartup/page-refresh-button";
 import { FilterBar } from "@/components/ui/filter-bar";
 import { MultiSelect } from "@/components/ui/multi-select";
 import { SearchInput } from "@/components/ui/search-input";
@@ -280,6 +281,7 @@ export function SalesWorkspacePage() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <SmartUpPageRefreshButton page="sales" onCompleted={() => setRefreshToken((value) => value + 1)} />
             <Badge variant="soft">{selectedNames.join(", ") || "Все организации"}</Badge>
             <Badge variant="soft">
               {data?.period.label ?? "Период загружается"}
@@ -332,7 +334,7 @@ export function SalesWorkspacePage() {
                     page: 1,
                   }))
                 }
-                placeholder="deal id, заказ, клиент, товар"
+                placeholder="ID сделки, заказ, клиент, товар"
               />
 
               <Select
@@ -796,7 +798,7 @@ export function SalesWorkspacePage() {
                 )}
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                   <div className="rounded-[18px] border border-[#3a3d43] bg-[#2E3137] px-4 py-3">
-                    <p className="text-[11px] uppercase tracking-[0.22em] text-slate-400">Endpoint</p>
+                    <p className="text-[11px] uppercase tracking-[0.22em] text-slate-400">Точка подключения</p>
                     <p className="mt-2 break-all text-sm text-[#f4f7fb]">{detail.provenance.source_endpoint}</p>
                   </div>
                   <div className="rounded-[18px] border border-[#3a3d43] bg-[#2E3137] px-4 py-3">

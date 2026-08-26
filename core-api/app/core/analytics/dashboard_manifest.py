@@ -295,6 +295,19 @@ def default_widget_registry() -> list[DashboardWidgetRegistryEntry]:
             ),
         ),
         DashboardWidgetRegistryEntry(
+            widget_type=DashboardWidgetType.DONUT,
+            description="Circular composition chart.",
+            capabilities=DashboardWidgetCapabilities(
+                min_size=DashboardSemanticSize.M,
+                preferred_size=DashboardSemanticSize.M,
+                max_size=DashboardSemanticSize.L,
+                supports_horizontal_expand=True,
+                flow=DashboardFlowHint.WIDE,
+                preferred_aspect=DashboardAspectHint.SQUARE,
+                content_density=DashboardContentDensity.MEDIUM,
+            ),
+        ),
+        DashboardWidgetRegistryEntry(
             widget_type=DashboardWidgetType.RANKING,
             description="Generic vertical ranking list.",
             capabilities=DashboardWidgetCapabilities(

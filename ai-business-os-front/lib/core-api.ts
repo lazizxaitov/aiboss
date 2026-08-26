@@ -495,6 +495,9 @@ export type SmartUpConnectionCheckResponse = {
   company_id: string | null;
   filial_id: string | null;
   project_code: string | null;
+  ok?: boolean;
+  status?: string;
+  latency_ms?: number | null;
 };
 
 export type SmartUpOrganization = {
@@ -566,6 +569,23 @@ export type NotificationMutationResponse = {
 };
 
 export type SmartUpMigrationStatus = "pending" | "running" | "completed" | "failed";
+
+export type SmartUpLiveSyncStatus = {
+  enabled: boolean;
+  status: "idle" | "running" | "success" | "warning" | "error";
+  last_started_at: string | null;
+  last_completed_at: string | null;
+  last_success_at: string | null;
+  next_run_at: string | null;
+  organizations_processed: number;
+  raw_records: number;
+  core_records: number;
+  canonical_updated: boolean;
+  errors_count: number;
+  skipped_due_to_running: boolean;
+  last_mode: SmartUpMigrationMode | null;
+  message: string | null;
+};
 
 export type SmartUpMigrationJobResponse = {
   job_id: string;
@@ -793,6 +813,7 @@ export async function testSmartUpOrganizationConnection(
       method: "POST",
       body: JSON.stringify(payload),
     },
+    30_000,
   );
 }
 
@@ -809,6 +830,19 @@ export async function getSmartUpMigrationJob(
   jobId: string,
 ): Promise<SmartUpMigrationJobResponse> {
   return requestJson<SmartUpMigrationJobResponse>(`/api/v1/smartup/migration-jobs/${jobId}`);
+}
+
+export async function getSmartUpLiveSyncStatus(): Promise<SmartUpLiveSyncStatus> {
+  return requestJson<SmartUpLiveSyncStatus>("/api/v1/smartup/live-sync/status");
+}
+
+export type SmartUpPage = "sales" | "visits" | "products" | "customers" | "inventory" | "finance";
+
+export async function startSmartUpPageSync(page: SmartUpPage): Promise<SmartUpMigrationJobResponse> {
+  return requestJson<SmartUpMigrationJobResponse>("/api/v1/smartup/sync-page", {
+    method: "POST",
+    body: JSON.stringify({ page }),
+  }, 10_000);
 }
 
 export async function migrateSmartUpOrganization(
@@ -2343,6 +2377,20 @@ export type FinanceWorkspaceFilters = {
 const coreApiBaseUrl = process.env.CORE_API_URL ?? "http://127.0.0.1:8000";
 const requestTimeoutMs = 3_500;
 
+function ownerSessionToken() {
+  if (typeof document === "undefined") return null;
+  return document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("aibos_owner_session="))?.split("=").slice(1).join("=") ?? null;
+}
+
+function authenticatedHeaders(headers?: HeadersInit) {
+  const token = ownerSessionToken();
+  return {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${decodeURIComponent(token)}` } : {}),
+    ...(headers ?? {}),
+  };
+}
+
 export type AiChatMessage = {
   role: "system" | "user" | "assistant";
   content: string | Array<
@@ -2351,15 +2399,95 @@ export type AiChatMessage = {
   >;
 };
 
+export type AiProviderModel = {
+  id: string;
+  name: string;
+  available?: boolean;
+};
+
+export type AiProvider = {
+  id: string;
+  name: string;
+  status: string;
+  models: AiProviderModel[];
+  capabilities?: string[];
+};
+
+export async function getAiProviders(): Promise<AiProvider[]> {
+  return requestJson<AiProvider[]>("/api/v1/ai/providers", {}, 10_000);
+}
+
+export type AiRoutingAssignment = {
+  primary_provider_id: string | null;
+  primary_model_id: string | null;
+  fallback_provider_id: string | null;
+  fallback_model_id: string | null;
+};
+
+export type AiRoutingConfig = {
+  roles: Record<string, AiRoutingAssignment>;
+  business_analytics_auto_enabled?: boolean;
+  business_analytics_triggers?: string[];
+};
+
+export type AiRoutingResponse = {
+  providers: Array<{
+    id: string;
+    name: string;
+    status: "available" | "unavailable" | "not_configured";
+    available_models: Array<{ id: string; name: string }>;
+  }>;
+  config: AiRoutingConfig;
+};
+
+export function getAiRouting(): Promise<AiRoutingResponse> {
+  return requestJson<AiRoutingResponse>("/api/v1/ai/routing", {}, 10_000);
+}
+
+export function saveAiRouting(config: AiRoutingConfig): Promise<AiRoutingResponse> {
+  return requestJson<AiRoutingResponse>("/api/v1/ai/routing", {
+    method: "PUT",
+    body: JSON.stringify(config),
+  }, 10_000);
+}
+
+export type DashboardAIInsight = {
+  type: string;
+  title: string;
+  description: string;
+  priority: "low" | "medium" | "high" | "critical";
+  reason?: string;
+  affected_entity?: string | null;
+  affected_metric?: string | null;
+  evidence?: Array<Record<string, unknown>>;
+};
+
+export type DashboardAIInsightsResponse = {
+  analysis_id: string | null;
+  generated_at: string | null;
+  summary: string | null;
+  status?: string;
+  message?: string;
+  items: DashboardAIInsight[];
+};
+
+export async function getDashboardAIInsights(): Promise<DashboardAIInsightsResponse> {
+  return requestJson<DashboardAIInsightsResponse>("/api/v1/ai/insights/dashboard", {}, 10_000);
+}
+
 export async function streamAiChat(
   messages: AiChatMessage[],
   onChunk: (content: string) => void,
   signal?: AbortSignal,
+  taskType: "business_analytics" | "system_action" | "communications" | "ai_chat" = "ai_chat",
+  providerId?: string,
+  modelId?: string,
+  onMeta?: (meta: { provider_id?: string; provider_name?: string; model_id?: string }) => void,
 ): Promise<void> {
   const response = await fetch(`${coreApiBaseUrl}/api/v1/ai/chat`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages }),
+    headers: authenticatedHeaders(),
+    body: JSON.stringify({ messages, task_type: taskType, provider_id: providerId, model_id: modelId }),
     signal,
   });
   if (!response.ok || !response.body) {
@@ -2377,8 +2505,9 @@ export async function streamAiChat(
       const eventName = event.match(/^event: (.+)$/m)?.[1];
       const data = event.match(/^data: (.+)$/m)?.[1];
       if (!data) continue;
-      const payload = JSON.parse(data) as { content?: string; message?: string };
+      const payload = JSON.parse(data) as { content?: string; message?: string; provider_id?: string; provider_name?: string; model_id?: string };
       if (eventName === "error") throw new Error(payload.message || "Не удалось получить ответ AI.");
+      if (eventName === "meta") onMeta?.(payload);
       if (payload.content) onChunk(payload.content);
     }
     if (done) break;
@@ -3024,10 +3153,7 @@ async function requestJson<T>(
   try {
     const response = await fetch(`${coreApiBaseUrl}${path}`, {
       cache: "no-store",
-      headers: {
-        "Content-Type": "application/json",
-        ...(init.headers ?? {}),
-      },
+      headers: authenticatedHeaders(init.headers),
       ...init,
       signal: controller.signal,
     });

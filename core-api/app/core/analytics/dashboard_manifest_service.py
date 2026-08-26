@@ -9,7 +9,7 @@ from json import dumps
 from time import perf_counter
 from uuid import UUID
 
-from app.core.ai_analytics.models import AIAnalyticsResult
+from app.core.ai_analytics.models import AIAnalyticsResult, AIProviderHealth
 from app.core.analytics.dashboard_manifest import (
     MANIFEST_VERSION,
     WIDGET_REGISTRY_VERSION,
@@ -146,7 +146,7 @@ class DashboardManifestComposerService:
         widgets: list[DashboardManifestWidget] = []
         widgets.extend(self._permanent_kpi_widgets(snapshot, preferences))
         widgets.extend(self._contextual_analytics_widgets(snapshot, preferences, sales_report))
-        widgets.extend(self._dynamic_ai_widgets(ai_result, preferences))
+        widgets.extend(self._dynamic_ai_widgets(snapshot, ai_result, preferences))
         filtered = [
             widget
             for widget in widgets
@@ -442,6 +442,7 @@ class DashboardManifestComposerService:
 
     def _dynamic_ai_widgets(
         self,
+        snapshot: AnalyticsBusinessSnapshot,
         ai_result: AIAnalyticsResult,
         preferences: UserDashboardPreferences,
     ) -> list[DashboardManifestWidget]:
@@ -471,16 +472,7 @@ class DashboardManifestComposerService:
                 payload={
                     "headline": ai_result.executive_brief.headline,
                     "business_status": ai_result.executive_brief.business_status,
-                    "key_numbers": [
-                        {
-                            "label": metric.label,
-                            "current": metric.current,
-                            "previous": metric.previous,
-                            "delta": metric.delta,
-                            "direction": metric.direction,
-                        }
-                        for metric in ai_result.executive_brief.key_numbers
-                    ],
+                    "key_numbers": self._executive_key_numbers(snapshot, ai_result),
                     "top_insights": [
                         self._serialize_ai_insight_card(item)
                         for item in ai_result.executive_brief.top_insights[:4]
@@ -564,6 +556,51 @@ class DashboardManifestComposerService:
             )
 
         return widgets
+
+    def _executive_key_numbers(
+        self,
+        snapshot: AnalyticsBusinessSnapshot,
+        ai_result: AIAnalyticsResult,
+    ) -> list[dict[str, object | None]]:
+        """Prefer successful AI output and keep canonical KPI values as fallback."""
+
+        provider_status = ai_result.provider_status
+        if (
+            provider_status is not None
+            and provider_status.health == AIProviderHealth.AVAILABLE
+            and ai_result.executive_brief.key_numbers
+        ):
+            return [
+                {
+                    "label": metric.label,
+                    "current": metric.current,
+                    "previous": metric.previous,
+                    "delta": metric.delta,
+                    "direction": metric.direction,
+                }
+                for metric in ai_result.executive_brief.key_numbers
+            ]
+
+        metrics = [
+            ("Выручка", snapshot.business.revenue),
+            ("Заказы", snapshot.business.orders),
+            ("Средний заказ", snapshot.business.average_order),
+            ("Продано единиц", snapshot.business.sold_units),
+            ("Возвраты", snapshot.business.returns),
+            ("Клиенты", snapshot.business.customers),
+            ("Товары", snapshot.business.unique_products),
+            ("Визиты", snapshot.business.visits),
+        ]
+        return [
+            {
+                "label": label,
+                "current": self._decimal_to_string(metric.value),
+                "previous": self._decimal_to_string(metric.previous_value),
+                "delta": self._decimal_to_string(metric.delta),
+                "direction": "up" if metric.delta is not None and metric.delta > 0 else "down" if metric.delta is not None and metric.delta < 0 else "flat",
+            }
+            for label, metric in metrics
+        ]
 
     def _widget(
         self,

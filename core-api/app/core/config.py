@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     hermes_base_url: str = "http://127.0.0.1:8642/v1"
     hermes_api_key: str = "aiboss-hermes-local"
     hermes_model: str = "gemma4:26b"
+    owner_login: str | None = None
+    owner_password: str | None = None
+    auth_secret: str = "change-this-ai-business-os-secret"
+    smartup_live_sync_enabled: bool = True
+    smartup_live_sync_interval_seconds: int = 300
+    smartup_reconciliation_interval_seconds: int = 86400
+    smartup_auto_sync_schedule: str = "08:00,14:00,21:00"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

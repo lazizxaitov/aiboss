@@ -1,7 +1,6 @@
 "use client";
 
 import { type ChangeEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import Image from "next/image";
 import {
   Responsive,
   type LayoutItem,
@@ -13,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Drawer } from "@/components/ui/drawer";
 import { FilterChip } from "@/components/ui/filter-chip";
 import { Dropdown } from "@/components/ui/dropdown";
+import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Surface } from "@/components/ui/surface";
 import { useBusinessContext } from "@/components/business/business-context-provider";
@@ -69,7 +69,7 @@ import {
   type DashboardManifestWidget,
   type DashboardWidgetType,
 } from "@/lib/core-api";
-import { getDashboardManifest, streamAiChat } from "@/lib/core-api";
+import { getAiProviders, getDashboardAIInsights, getDashboardManifest, streamAiChat, type AiProvider } from "@/lib/core-api";
 
 type SerializedMetricValue = AnalyticsMetricValue;
 
@@ -198,10 +198,10 @@ type ChatTile = {
 };
 
 type ModelItem = {
+  providerId: string;
   name: string;
-  time: string;
-  description: string;
-  icon: "chatgpt" | "claude" | "grok";
+  models: AiProvider["models"];
+  icon: "ollama" | "chatgpt" | "claude" | "grok" | "deepseek" | "generic";
 };
 
 type ChatAttachment = {
@@ -219,6 +219,8 @@ type ChatMessage = {
   role: "user" | "assistant";
   text: string;
   attachments: ChatAttachment[];
+  providerName?: string;
+  modelName?: string;
 };
 
 type AssistantFileAttachment = {
@@ -985,6 +987,9 @@ const FALLBACK_DASHBOARD_WIDGETS: DashboardManifestWidget[] = [
 export function DashboardAssistantPanel() {
   const [expanded, setExpanded] = useState(false);
   const [selectedModel, setSelectedModel] = useState(0);
+  const [availableModels, setAvailableModels] = useState<ModelItem[]>([]);
+  const [selectedModelId, setSelectedModelId] = useState<string | undefined>();
+  const [aiThoughts, setAiThoughts] = useState<Array<{ label: string; title: string; text: string }>>([]);
   const [selectedTileIndex, setSelectedTileIndex] = useState<number | null>(null);
   const [message, setMessage] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -995,6 +1000,42 @@ export function DashboardAssistantPanel() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const chatSurfaceRef = useRef<HTMLDivElement | null>(null);
   const chatThreadRef = useRef<HTMLDivElement | null>(null);
+  const modelScrollerRef = useRef<HTMLDivElement | null>(null);
+  const modelDragRef = useRef({ active: false, moved: false, startX: 0, scrollLeft: 0, lastX: 0, velocity: 0 });
+  const modelMomentumRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    void getDashboardAIInsights()
+      .then((payload) => {
+        const items = payload.items.length === 0 && payload.status === "AI_UNAVAILABLE"
+          ? [{ label: "Статус", title: "ИИ-аналитика временно недоступна", text: "Базовые показатели и данные бизнеса продолжают работать." }]
+          : payload.items.map((item) => ({
+          label: item.type === "recommendation" ? "Рекомендует" : item.priority === "critical" || item.priority === "high" ? "Требует внимания" : "Наблюдение",
+          title: item.title,
+          text: [item.description, item.affected_entity, item.affected_metric].filter(Boolean).join(" · "),
+        }));
+        setAiThoughts(items);
+      })
+      .catch(() => setAiThoughts([]));
+  }, []);
+
+  useEffect(() => {
+    if (!expanded) return;
+    void getAiProviders()
+      .then((providers) => {
+        const nextModels = providers
+          .filter((provider) => provider.status === "available" && provider.models.some((model) => model.available !== false))
+          .map((provider) => ({
+            providerId: provider.id,
+            name: provider.name,
+            models: provider.models.filter((model) => model.available !== false),
+            icon: providerIconKey(provider.id),
+          }));
+        setAvailableModels(nextModels);
+        setSelectedModelId(nextModels[0]?.models[0]?.id);
+      })
+      .catch(() => setAvailableModels([]));
+  }, [expanded]);
 
   useEffect(() => {
     if (!expanded) return;
@@ -1046,34 +1087,17 @@ export function DashboardAssistantPanel() {
     { title: "Создать виджет через ИИ", icon: "head" },
   ];
 
-  const models: ModelItem[] = [
-    { name: "ChatGPT", time: "22:10", description: "Сформируй краткий обзор по выручке.", icon: "chatgpt" },
-    { name: "Claude", time: "11:23", description: "Подготовь структурный обзор по данным.", icon: "claude" },
-    { name: "Grok", time: "18:40", description: "Сформулируй краткое пояснение по KPI.", icon: "grok" },
-  ];
-
-  const thoughts = [
-    {
-      label: "Предлагает",
-      title: "Проверить продажи",
-      text: "Есть смысл посмотреть последние сделки и выделить самые сильные продукты.",
-    },
-    {
-      label: "Предупреждает",
-      title: "Остатки могут просесть",
-      text: "По части ассортимента лучше проверить товарные сигналы и риск дефицита.",
-    },
-    {
-      label: "Предлагает",
-      title: "Собрать краткий отчёт",
-      text: "Можно быстро собрать обзор по выручке, заказам и поступлениям за выбранный период.",
-    },
-  ];
+  const thoughts = aiThoughts;
 
   const visibleThoughts = expanded ? thoughts.slice(0, 2) : thoughts;
   const smoothTransition = "transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]";
   const hasConversation = chatMessages.length > 0;
-  const activeModel = models[selectedModel] ?? models[0];
+  const activeModel = availableModels[selectedModel] ?? availableModels[0] ?? {
+    providerId: "",
+    name: "ИИ",
+    models: [],
+    icon: "generic" as const,
+  };
   const chatTitle =
     chatMessages.find((item) => item.role === "user")?.text.trim() || "Новый чат";
   const pendingAttachmentChips = pendingAttachments.length ? (
@@ -1084,13 +1108,12 @@ export function DashboardAssistantPanel() {
           className="inline-flex items-center gap-2 rounded-full border border-[#4a4e56] bg-[#343840] px-3 py-1.5 text-[11px] text-slate-300"
         >
           {attachment.kind === "image" && attachment.dataUrl ? (
-            <Image
+            <img
               src={attachment.dataUrl}
               alt=""
               width={20}
               height={20}
               className="h-5 w-5 rounded-full object-cover"
-              unoptimized
               aria-hidden="true"
             />
           ) : (
@@ -1129,7 +1152,11 @@ export function DashboardAssistantPanel() {
     setPendingAttachments((current) => current.filter((item) => item.id !== attachmentId));
   };
 
-  const handleSendMessage = async (messageOverride?: string, attachmentsOverride?: ChatAttachment[]) => {
+  const handleSendMessage = async (
+    messageOverride?: string,
+    attachmentsOverride?: ChatAttachment[],
+    taskType: "business_analytics" | "system_action" | "communications" | "ai_chat" = "ai_chat",
+  ) => {
     const text = (messageOverride ?? message).trim();
     const attachments = attachmentsOverride ?? pendingAttachments;
     if ((!text && attachments.length === 0) || isGenerating) return;
@@ -1160,6 +1187,23 @@ export function DashboardAssistantPanel() {
           setChatMessages((current) =>
             current.map((item) => (item.id === assistantId ? { ...item, text: item.text + content } : item)),
           ),
+        undefined,
+        taskType,
+        activeModel.providerId || undefined,
+        selectedModelId,
+        (meta) => {
+          if (meta.provider_id) {
+            const index = availableModels.findIndex((model) => model.providerId === meta.provider_id);
+            if (index >= 0) setSelectedModel(index);
+          }
+          setChatMessages((current) =>
+            current.map((item) =>
+              item.id === assistantId
+                ? { ...item, providerName: meta.provider_name, modelName: meta.model_id }
+                : item,
+            ),
+          );
+        },
       );
     } catch (error) {
       setChatError(error instanceof Error ? error.message : "Не удалось получить ответ AI.");
@@ -1170,8 +1214,12 @@ export function DashboardAssistantPanel() {
 
   const handleQuickAction = (tile: ChatTile, index: number) => {
     const prompt = QUICK_ACTION_PROMPTS[tile.title] ?? tile.title;
+    const taskType = tile.title === "Создать виджет через ИИ" ? "system_action" : "business_analytics" as const;
     setSelectedTileIndex(index);
-    void handleSendMessage(prompt, []);
+    if (tile.title === "Создать виджет через ИИ") {
+      window.dispatchEvent(new CustomEvent("ai-business-os:open-ai-widget-builder"));
+    }
+    void handleSendMessage(prompt, [], taskType);
   };
 
   const handleBackToStart = () => {
@@ -1186,7 +1234,7 @@ export function DashboardAssistantPanel() {
 
   return (
     <div className="flex min-h-0 flex-col gap-3 xl:sticky xl:top-[6.5rem] xl:h-[calc(100dvh-8rem)]">
-      <div ref={chatSurfaceRef}>
+      <div id="ai-chat" ref={chatSurfaceRef}>
         <Surface
           className={cn(
             "relative flex min-h-0 shrink-0 flex-col overflow-hidden border-[#3c4048] bg-[radial-gradient(circle_at_78%_12%,rgba(255,255,255,0.05),transparent_32%),linear-gradient(180deg,#2E3137_0%,#2A2D33_100%)] px-4",
@@ -1283,7 +1331,7 @@ export function DashboardAssistantPanel() {
                   aria-label="Прикрепить файл"
                   title="Прикрепить файл"
                 >
-                  <Image src="/attachmenticon.png" alt="" width={24} height={24} className="h-5 w-5 select-none object-contain" aria-hidden="true" />
+                  <img src="/attachmenticon.png" alt="" width={24} height={24} className="h-5 w-5 select-none object-contain" aria-hidden="true" />
                 </button>
                 <input
                   ref={messageInputRef}
@@ -1334,13 +1382,12 @@ export function DashboardAssistantPanel() {
                                   className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-[11px] text-[#f4f7fb]"
                                 >
                                   {attachment.kind === "image" && attachment.dataUrl ? (
-                                    <Image
+                                    <img
                                       src={attachment.dataUrl}
                                       alt=""
                                       width={20}
                                       height={20}
                                       className="h-5 w-5 rounded-full object-cover"
-                                      unoptimized
                                       aria-hidden="true"
                                     />
                                   ) : (
@@ -1357,6 +1404,7 @@ export function DashboardAssistantPanel() {
                         </div>
                       ) : (
                         <div key={item.id} className="mr-auto max-w-[82%] rounded-[22px] bg-[#f4f7fb] px-4 py-3 text-[#1E1E21] shadow-[0_10px_22px_rgba(0,0,0,0.14)]">
+                          {item.providerName ? <p className="mb-1 text-[10px] uppercase tracking-[0.2em] text-slate-500">{item.providerName}{item.modelName ? ` · ${item.modelName}` : ""}</p> : null}
                           <p className="whitespace-pre-wrap text-[15px] leading-6 text-[#1E1E21]">{visibleText || " "}</p>
                           {parsed?.attachments.length ? (
                             <div className="mt-3 flex flex-wrap gap-2">
@@ -1404,7 +1452,7 @@ export function DashboardAssistantPanel() {
                     aria-label="Прикрепить файл"
                     title="Прикрепить файл"
                   >
-                    <Image src="/attachmenticon.png" alt="" width={24} height={24} className="h-5 w-5 select-none object-contain" aria-hidden="true" />
+                    <img src="/attachmenticon.png" alt="" width={24} height={24} className="h-5 w-5 select-none object-contain" aria-hidden="true" />
                   </button>
                   <input
                     ref={messageInputRef}
@@ -1483,17 +1531,57 @@ export function DashboardAssistantPanel() {
                 </div>
 
                 <div className="min-h-0 flex-1 overflow-hidden">
-                  <div className="grid grid-cols-3 gap-4">
-                    {models.map((model, index) => {
+                  <div
+                    ref={modelScrollerRef}
+                    className="flex cursor-grab select-none gap-4 overflow-x-auto scroll-smooth pb-2 snap-x snap-proximity [scrollbar-width:none] [&::-webkit-scrollbar]:hidden active:cursor-grabbing"
+                    onMouseDown={(event) => {
+                      const scroller = modelScrollerRef.current;
+                      if (!scroller) return;
+                      if (modelMomentumRef.current !== null) cancelAnimationFrame(modelMomentumRef.current);
+                      modelDragRef.current = { active: true, moved: false, startX: event.clientX, scrollLeft: scroller.scrollLeft, lastX: event.clientX, velocity: 0 };
+                    }}
+                    onMouseMove={(event) => {
+                      const scroller = modelScrollerRef.current;
+                      const drag = modelDragRef.current;
+                      if (!scroller || !drag.active) return;
+                      if (Math.abs(event.clientX - drag.startX) > 5) drag.moved = true;
+                      scroller.scrollLeft = drag.scrollLeft - (event.clientX - drag.startX);
+                      drag.velocity = drag.lastX - event.clientX;
+                      drag.lastX = event.clientX;
+                    }}
+                    onMouseUp={() => {
+                      const scroller = modelScrollerRef.current;
+                      const drag = modelDragRef.current;
+                      drag.active = false;
+                      if (!scroller || Math.abs(drag.velocity) < 0.5) return;
+                      const glide = () => {
+                        if (!modelScrollerRef.current || Math.abs(drag.velocity) < 0.2) {
+                          modelMomentumRef.current = null;
+                          return;
+                        }
+                        modelScrollerRef.current.scrollLeft += drag.velocity;
+                        drag.velocity *= 0.92;
+                        modelMomentumRef.current = requestAnimationFrame(glide);
+                      };
+                      modelMomentumRef.current = requestAnimationFrame(glide);
+                    }}
+                    onMouseLeave={() => {
+                      modelDragRef.current.active = false;
+                    }}
+                  >
+                    {availableModels.map((model, index) => {
                       const selected = index === selectedModel;
 
                       return (
                         <button
                           key={model.name}
                           type="button"
-                          onClick={() => setSelectedModel(index)}
+                          onClick={() => {
+                            setSelectedModel(index);
+                            setSelectedModelId(model.models[0]?.id);
+                          }}
                           className={cn(
-                            "flex h-[112px] w-full flex-col items-center justify-between rounded-[24px] border px-2 py-3 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] hover:-translate-y-0.5",
+                            "flex h-[112px] min-w-[118px] shrink-0 snap-start flex-col items-center justify-between rounded-[24px] border px-2 py-3 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] hover:-translate-y-0.5",
                             selected
                               ? "border-[#FFF27A] bg-[#FFF27A] text-[#1E1E21] shadow-[0_12px_28px_rgba(255,242,122,0.18)]"
                               : "border-[#3a3d43] bg-[#4b4f56] text-[#f4f7fb] hover:bg-[#52565d]",
@@ -1533,7 +1621,7 @@ export function DashboardAssistantPanel() {
                     aria-label="Прикрепить файл"
                     title="Прикрепить файл"
                   >
-                    <Image src="/attachmenticon.png" alt="" width={24} height={24} className="h-5 w-5 select-none object-contain" aria-hidden="true" />
+                    <img src="/attachmenticon.png" alt="" width={24} height={24} className="h-5 w-5 select-none object-contain" aria-hidden="true" />
                   </button>
                   <input
                     ref={messageInputRef}
@@ -1613,15 +1701,24 @@ export function DashboardAssistantPanel() {
 }
 
 function ModelIcon({ kind, selected }: { kind: ModelItem["icon"]; selected: boolean }) {
+  if (kind === "generic") {
+    return <span className="flex h-[56px] w-[56px] items-center justify-center rounded-[18px] bg-[#343840] text-sm font-semibold text-slate-200">AI</span>;
+  }
   const src =
-    kind === "chatgpt"
+    kind === "ollama"
+      ? "/ai-model-icons/Ollama.png"
+      : kind === "chatgpt"
       ? "/ai-model-icons/ChatGPT.png"
       : kind === "claude"
         ? "/ai-model-icons/Claude.png"
-        : "/ai-model-icons/Grok.png";
+        : kind === "grok"
+          ? "/ai-model-icons/Grok.png"
+          : kind === "deepseek"
+            ? "/ai-model-icons/DeepSeek.png"
+            : "/ai-model-icons/Ollama.png";
 
   return (
-    <Image
+    <img
       src={src}
       alt=""
       width={56}
@@ -1634,6 +1731,16 @@ function ModelIcon({ kind, selected }: { kind: ModelItem["icon"]; selected: bool
       aria-hidden="true"
     />
   );
+}
+
+function providerIconKey(providerId: string): ModelItem["icon"] {
+  const normalized = providerId.toLowerCase();
+  if (normalized.includes("ollama")) return "ollama";
+  if (normalized.includes("chatgpt") || normalized.includes("openai")) return "chatgpt";
+  if (normalized.includes("claude") || normalized.includes("anthropic")) return "claude";
+  if (normalized.includes("grok")) return "grok";
+  if (normalized.includes("deepseek")) return "deepseek";
+  return "generic";
 }
 
 function ChatTileIcon({ kind }: { kind: ChatTile["icon"] }) {
@@ -1796,7 +1903,8 @@ export function formatPresentationValue(value: string | number | null | undefine
 export function presentationMetricLabel(key: string) {
   const normalized = key.trim();
   if (!normalized) return "Показатель";
-  if (METRIC_LABELS[normalized]) return METRIC_LABELS[normalized];
+  const normalizedKey = normalized.toLowerCase();
+  if (METRIC_LABELS[normalizedKey]) return METRIC_LABELS[normalizedKey];
   const upper = normalized.toUpperCase();
   if (upper === "CUSTOMER_RETURN_VALUE") return "Сумма документов возврата";
   if (upper === "SALE_REVENUE") return "Выручка";
@@ -1805,6 +1913,10 @@ export function presentationMetricLabel(key: string) {
   if (upper === "CASH_FLOW") return "Чистый денежный поток";
   if (upper === "ORDER_COUNT") return "Заказы";
   if (upper === "SOLD_UNITS") return "Продано единиц";
+  if (upper === "AVERAGE_ORDER" || upper === "AVERAGE_ORDER_VALUE" || upper === "AVERAGE_CHECK") return "Средний заказ";
+  if (upper === "CUSTOMERS" || upper === "CUSTOMERS_COUNT" || upper === "UNIQUE_CUSTOMERS") return "Клиенты";
+  if (upper === "PRODUCTS" || upper === "PRODUCTS_COUNT" || upper === "UNIQUE_PRODUCTS") return "Товары";
+  if (upper === "VISITS" || upper === "VISITS_COUNT") return "Визиты";
   return "Показатель";
 }
 
@@ -1882,8 +1994,9 @@ export function displayMetricLabel(label?: string | null) {
     return copy;
   }
 
-  if (/^[A-Z0-9_]+$/.test(normalized) || normalized.includes("_")) {
-    return presentationMetricLabel(normalized);
+  const metricLabel = presentationMetricLabel(normalized);
+  if (metricLabel !== "Показатель") {
+    return metricLabel;
   }
 
   return copy;
@@ -1894,13 +2007,18 @@ function widgetHeader(widget: DashboardManifestWidget, compact = false) {
   return (
     <div className="drag-handle flex items-start justify-between gap-3">
       <div className="min-w-0">
-        <h3 className={cn("mt-2 font-semibold tracking-[-0.04em] text-[#f4f7fb]", compact ? "text-[18px]" : "text-[22px]")}>
+        <h3 className={cn("mt-1 line-clamp-2 font-semibold leading-[1.1] tracking-[-0.04em] text-[#f4f7fb]", compact ? "text-[16px]" : "text-[18px]")}>
           {widgetTitleFromName(widget.title)}
         </h3>
         {subtitle ? <p className={cn("mt-1 leading-6 text-slate-400", compact ? "text-xs" : "text-sm")}>{subtitle}</p> : null}
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        <Badge variant={statusVariant(widget.data_status)}>{statusLabel(widget.data_status, compact)}</Badge>
+        <Badge
+          variant={statusVariant(widget.data_status)}
+          className={cn("px-2 py-0.5 text-[10px] leading-4", compact && "text-[9px]")}
+        >
+          {statusLabel(widget.data_status, compact)}
+        </Badge>
       </div>
     </div>
   );
@@ -2077,6 +2195,16 @@ function widgetSurfacePadding(widget: DashboardManifestWidget, variant?: Launche
 }
 
 function widgetTitleFromName(title: string) {
+  const metricLabel = displayMetricLabel(title);
+  if (metricLabel && metricLabel !== "Показатель") return metricLabel;
+  if (title === "Revenue" || title === "Revenue KPI") return "Выручка";
+  if (title === "Orders" || title === "Orders KPI") return "Заказы";
+  if (title === "Sold Units" || title === "Sold Units KPI") return "Продано единиц";
+  if (title === "Average Order" || title === "Average Order Value") return "Средний заказ";
+  if (title === "Customers" || title === "Customers KPI") return "Клиенты";
+  if (title === "Products" || title === "Products KPI") return "Товары";
+  if (title === "Visits" || title === "Visits KPI") return "Визиты";
+  if (title === "Sales Summary") return "Сводка продаж";
   if (title === "Executive brief") return "Сводка руководителя";
   if (title === "Watchlist") return "На контроле";
   if (title === "Product Signals") return "Товарные сигналы";
@@ -2197,6 +2325,21 @@ const METRIC_LABELS: Record<string, string> = {
   orders: "Заказы",
   sold_units: "Продано единиц",
   customers: "Клиенты",
+  customers_count: "Клиенты",
+  unique_customers: "Клиенты",
+  products: "Товары",
+  products_count: "Товары",
+  unique_products: "Товары",
+  visits: "Визиты",
+  visits_count: "Визиты",
+  orders_count: "Заказы",
+  average_order: "Средний заказ",
+  average_order_value: "Средний заказ",
+  average_check: "Средний заказ",
+  sales: "Продажи",
+  sales_count: "Продажи",
+  conversion_rate: "Конверсия",
+  return_rate: "Доля возвратов",
   current_stock: "Остаток",
   days_of_stock: "Дней запаса",
   sales_velocity_30d: "Скорость 30д",
@@ -2288,7 +2431,7 @@ function TrendWidget({ widget, variant }: { widget: DashboardManifestWidget; var
   const values = (payload.series ?? []).map((item) => parseNumber(item.value) ?? 0);
   const hasSeries = values.some((value) => value > 0);
   const seriesLimit = widgetListCount(widget, variant);
-  const chartHeight = variant === "compact" ? 104 : variant === "regular" ? 144 : 188;
+  const chartHeight = variant === "compact" ? 80 : variant === "regular" ? 108 : variant === "expanded" ? 128 : 140;
   const periodLabel = businessCopy(payload.period_label) ?? businessCopy(widget.summary) ?? "За выбранный период";
   return (
     <Surface className={cn("group relative flex h-full min-h-0 flex-col overflow-hidden", widgetSurfacePadding(widget, variant))}>
@@ -2301,7 +2444,7 @@ function TrendWidget({ widget, variant }: { widget: DashboardManifestWidget; var
           </div>
           {metricDelta(metric) ? <Badge variant="accent">{metricDelta(metric)}</Badge> : null}
         </div>
-        <div className="rounded-[24px] border border-[#3a3d43] bg-[linear-gradient(180deg,#2E3137_0%,#26292e_100%)] p-4">
+        <div className="rounded-[24px] border border-[#3a3d43] bg-[linear-gradient(180deg,#2E3137_0%,#26292e_100%)] p-3">
           {hasSeries ? (
             <>
               <svg viewBox="0 0 520 180" className="w-full" style={{ height: `${chartHeight}px` }}>
@@ -2361,7 +2504,7 @@ function ExecutiveBriefWidget({ widget, variant }: { widget: DashboardManifestWi
   return (
     <Surface className={cn("group relative flex h-full min-h-0 flex-col overflow-hidden", widgetSurfacePadding(widget, variant))}>
       {widgetHeader(widget, variant === "compact")}
-      <div className={cn("mt-4 flex min-h-0 flex-1 flex-col gap-4", variant === "compact" && "gap-3")}>
+      <div className={cn("mt-4 min-h-0 flex-1 overflow-y-auto pr-1", variant === "compact" ? "space-y-3" : "space-y-4")}>
         <div className="space-y-3">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
@@ -2378,7 +2521,7 @@ function ExecutiveBriefWidget({ widget, variant }: { widget: DashboardManifestWi
               <div className={cn("grid gap-2", variant === "compact" ? "grid-cols-1" : "grid-cols-2 sm:grid-cols-2 xl:grid-cols-4")}>
                 {payload.key_numbers.slice(0, keyLimit).map((item, index) => (
                   <div key={`${item.label ?? "num"}-${index}`} className="rounded-[18px] border border-[#3a3d43] bg-[#2E3137] px-3 py-2">
-                    <p className="text-[11px] uppercase tracking-[0.24em] text-slate-400">{businessCopy(item.label) ?? item.label ?? `Метрика ${index + 1}`}</p>
+                    <p className="text-[11px] uppercase tracking-[0.24em] text-slate-400">{displayMetricLabel(item.label) ?? businessCopy(item.label) ?? item.label ?? `Метрика ${index + 1}`}</p>
                     <p className={cn("mt-2 font-semibold tracking-[-0.03em] text-[#f4f7fb]", variant === "compact" ? "text-base" : "text-lg")}>{formatPresentationValue(item.current)}</p>
                     {item.delta !== null && item.delta !== undefined && item.delta !== "" ? (
                       <p className="mt-1 text-xs text-slate-400">Δ {formatPresentationValue(item.delta)}</p>
@@ -2558,7 +2701,7 @@ function InventoryRiskWidget({ widget, variant }: { widget: DashboardManifestWid
   return (
     <Surface className={cn("group relative flex h-full min-h-0 flex-col overflow-hidden", widgetSurfacePadding(widget, variant))}>
       {widgetHeader(widget, variant === "compact")}
-      <ListShell>
+      <ListShell scroll>
         <div className="space-y-4">
           {sections.map(([title, rows]) =>
             rows.length ? (
@@ -2790,7 +2933,7 @@ function UnknownWidgetCard({ widget }: { widget: DashboardManifestWidget }) {
     <Surface className="group relative flex h-full flex-col justify-between p-5">
       <div>
         <p className="text-[11px] uppercase tracking-[0.28em] text-slate-400">Новый тип виджета</p>
-        <h3 className="mt-2 text-[20px] font-semibold tracking-[-0.04em] text-[#f4f7fb]">{widget.title}</h3>
+        <h3 className="mt-2 text-[20px] font-semibold tracking-[-0.04em] text-[#f4f7fb]">{widgetTitleFromName(widget.title)}</h3>
         <p className="mt-3 text-sm leading-6 text-slate-400">
           Этот тип виджета пока не поддержан в текущем интерфейсе.
         </p>
@@ -2845,6 +2988,10 @@ export function DashboardGrid() {
   const [editMode, setEditMode] = useState(false);
   const [interactionLayouts, setInteractionLayouts] = useState<ResponsiveLayouts | null>(null);
   const [widgetLibraryOpen, setWidgetLibraryOpen] = useState(false);
+  const [aiWidgetBuilderOpen, setAiWidgetBuilderOpen] = useState(false);
+  const [aiWidgetBuilderPrompt, setAiWidgetBuilderPrompt] = useState("");
+  const [aiWidgetBuilderReply, setAiWidgetBuilderReply] = useState("");
+  const [aiWidgetBuilderLoading, setAiWidgetBuilderLoading] = useState(false);
   const [customWidgets, setCustomWidgets] = useState<DashboardManifestWidget[]>(() => readStoredCustomWidgets());
   const [librarySelectedType, setLibrarySelectedType] = useState<DashboardWidgetType>("kpi");
   const [librarySelectedOrganizationId, setLibrarySelectedOrganizationId] = useState<string>("");
@@ -2854,8 +3001,34 @@ export function DashboardGrid() {
   const [dismissedSuggestionIds, setDismissedSuggestionIds] = useState<string[]>([]);
   const [previewResult, setPreviewResult] = useState<LauncherSuggestionPreview | null>(null);
   const [selectedSuggestionId, setSelectedSuggestionId] = useState<string | null>(null);
+  const [gridMounted, setGridMounted] = useState(false);
   const [widgetsColumnRef, containerWidth] = useMeasuredWidth<HTMLDivElement>();
   const launcherStateLoaded = useRef(false);
+
+  useEffect(() => {
+    const handleOpenWidgetBuilder = () => {
+      setEditMode(true);
+      setLibraryError(null);
+      setLibrarySelectedType((current) => current ?? widgetCatalog[0]?.widget_type ?? "kpi");
+      setLibrarySelectedOrganizationId(
+        (current) => current || businessState.selectedOrganizationIds[0] || availableOrganizations[0]?.id || "",
+      );
+      setWidgetLibraryOpen(true);
+    };
+
+    const handleOpenAiWidgetBuilder = () => {
+      setEditMode(true);
+      setAiWidgetBuilderReply("");
+      setAiWidgetBuilderOpen(true);
+    };
+
+    window.addEventListener("ai-business-os:open-widget-builder", handleOpenWidgetBuilder);
+    window.addEventListener("ai-business-os:open-ai-widget-builder", handleOpenAiWidgetBuilder);
+    return () => {
+      window.removeEventListener("ai-business-os:open-widget-builder", handleOpenWidgetBuilder);
+      window.removeEventListener("ai-business-os:open-ai-widget-builder", handleOpenAiWidgetBuilder);
+    };
+  }, [availableOrganizations, businessState.selectedOrganizationIds]);
 
   const manifestWidgets = useMemo(
     () => [...(manifest?.widgets.filter((widget) => !widget.hidden) ?? []), ...customWidgets],
@@ -2891,14 +3064,27 @@ export function DashboardGrid() {
     [activeState, visibleWidgets],
   );
   const activeBreakpoint = breakpointForWidth(containerWidth || 1024) as keyof typeof LAUNCHER_COLUMNS;
+  const lockedWidgetIds = useMemo(
+    () => new Set(effectiveState.locked ?? []),
+    [effectiveState.locked],
+  );
   const currentLayoutsWithBounds = useMemo(
-    () => applyBoundsToResponsiveLayouts(currentLayouts, visibleWidgets, widgetContracts, editMode, new Set(effectiveState.locked ?? [])),
-    [currentLayouts, editMode, effectiveState.locked, visibleWidgets, widgetContracts],
+    () => applyBoundsToResponsiveLayouts(currentLayouts, visibleWidgets, widgetContracts, editMode, lockedWidgetIds),
+    [currentLayouts, editMode, lockedWidgetIds, visibleWidgets, widgetContracts],
   );
   const renderedLayouts = interactionLayouts ?? currentLayoutsWithBounds;
+  const renderedLayoutsSignature = JSON.stringify(renderedLayouts);
+  const stableRenderedLayoutsRef = useRef<{ signature: string; value: ResponsiveLayouts }>({
+    signature: renderedLayoutsSignature,
+    value: renderedLayouts,
+  });
+  if (stableRenderedLayoutsRef.current.signature !== renderedLayoutsSignature) {
+    stableRenderedLayoutsRef.current = { signature: renderedLayoutsSignature, value: renderedLayouts };
+  }
+  const stableRenderedLayouts = stableRenderedLayoutsRef.current.value;
   const activeLayout = useMemo(
-    () => (renderedLayouts[activeBreakpoint] ?? []) as LayoutItem[],
-    [activeBreakpoint, renderedLayouts],
+    () => (stableRenderedLayouts[activeBreakpoint] ?? []) as LayoutItem[],
+    [activeBreakpoint, stableRenderedLayouts],
   );
   const widgetVariantMap = useMemo(() => {
     const map = new Map<string, "compact" | "regular" | "expanded" | "xl">();
@@ -2954,13 +3140,27 @@ export function DashboardGrid() {
   );
 
   useEffect(() => {
+    setGridMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (loading) return;
     if (!launcherStateLoaded.current) {
       launcherStateLoaded.current = true;
-      setLauncherState(normalizeLauncherState(loadLauncherState() ?? defaultState, allWidgets) as LauncherState);
+      const nextState = normalizeLauncherState(loadLauncherState() ?? defaultState, allWidgets) as LauncherState;
+      setLauncherState(nextState);
       return;
     }
-    setLauncherState((current) => normalizeLauncherState(current ?? defaultState, allWidgets) as LauncherState);
-  }, [allWidgets, defaultState]);
+    setLauncherState((current) => {
+      const nextState = normalizeLauncherState(current ?? defaultState, allWidgets) as LauncherState;
+      return JSON.stringify(current) === JSON.stringify(nextState) ? current : nextState;
+    });
+  }, [allWidgets, defaultState, loading]);
+
+  useEffect(() => {
+    if (!launcherStateLoaded.current || !launcherState) return;
+    saveLauncherState(launcherState);
+  }, [launcherState]);
 
   useEffect(() => {
     if (process.env.NODE_ENV !== "development" || containerWidth <= 0) return;
@@ -3320,10 +3520,12 @@ export function DashboardGrid() {
           />
         ) : null}
 
+        <div suppressHydrationWarning>
+        {gridMounted ? (
         <Responsive
           className="layout w-full"
           width={containerWidth || 1024}
-          layouts={renderedLayouts}
+          layouts={stableRenderedLayouts}
           breakpoints={LAUNCHER_BREAKPOINTS}
           cols={LAUNCHER_COLUMNS}
           rowHeight={74}
@@ -3388,6 +3590,82 @@ export function DashboardGrid() {
             );
           })}
         </Responsive>
+        ) : (
+          <div className="min-h-[320px]" aria-hidden="true" />
+        )}
+        </div>
+      <Drawer
+        open={aiWidgetBuilderOpen}
+        onClose={() => setAiWidgetBuilderOpen(false)}
+        title="Создать виджет через ИИ"
+        description="Опишите, какие данные должны быть на виджете. ИИ поможет собрать конфигурацию."
+        badges={<Badge variant="neutral">AI-конструктор</Badge>}
+        className="max-w-[min(52rem,calc(100vw-2rem))]"
+      >
+        <div className="grid gap-5">
+          <div className="space-y-4 rounded-[28px] border border-[#3a3d43] bg-[#26292e] p-4">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.28em] text-slate-400">Конструктор</p>
+              <h3 className="mt-2 text-xl font-semibold tracking-[-0.04em] text-[#f4f7fb]">Параметры виджета</h3>
+            </div>
+            <Input placeholder="Название виджета" aria-label="Название виджета" />
+            <Select
+              label="Тип виджета"
+              value={librarySelectedType}
+              options={widgetCatalog.map((item) => ({ value: item.widget_type, label: item.title }))}
+              onChange={(value) => setLibrarySelectedType(value as DashboardWidgetType)}
+              placeholder="Выберите тип"
+            />
+            <Select
+              label="Организация"
+              value={librarySelectedOrganizationId}
+              options={availableOrganizations.map((item) => ({ value: item.id, label: item.name }))}
+              onChange={setLibrarySelectedOrganizationId}
+              placeholder="Выберите организацию"
+            />
+            <div className="rounded-2xl border border-dashed border-[#4a4e56] bg-[#2E3137] p-4 text-sm leading-6 text-slate-400">
+              Период, метрика и фильтры будут определены по вашему описанию и текущему контексту бизнеса.
+            </div>
+          </div>
+
+          <div className="flex min-h-[360px] flex-col rounded-[28px] border border-[#3a3d43] bg-[#26292e] p-4">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.28em] text-slate-400">ИИ</p>
+              <h3 className="mt-2 text-xl font-semibold tracking-[-0.04em] text-[#f4f7fb]">Опишите нужный виджет</h3>
+            </div>
+            <div className="mt-4 min-h-0 flex-1 rounded-2xl border border-[#3a3d43] bg-[#2E3137] p-4 text-sm leading-6 text-slate-300">
+              {aiWidgetBuilderReply || "Например: покажи продажи Бекзода за неделю простой цифрой."}
+            </div>
+            <div className="mt-4 space-y-3">
+              <textarea
+                value={aiWidgetBuilderPrompt}
+                onChange={(event) => setAiWidgetBuilderPrompt(event.target.value)}
+                placeholder="Что должен показывать виджет?"
+                className="min-h-24 w-full resize-none rounded-2xl border border-[#3a3d43] bg-[#2E3137] px-4 py-3 text-sm text-[#f4f7fb] outline-none transition placeholder:text-slate-400 focus:border-[#6a6f79] focus:ring-4 focus:ring-white/10"
+              />
+              <Button
+                className="w-full"
+                disabled={aiWidgetBuilderLoading || !aiWidgetBuilderPrompt.trim()}
+                onClick={() => {
+                  const prompt = aiWidgetBuilderPrompt.trim();
+                  if (!prompt) return;
+                  setAiWidgetBuilderLoading(true);
+                  setAiWidgetBuilderReply("");
+                  void streamAiChat(
+                    [{ role: "user", content: prompt }],
+                    (content) => setAiWidgetBuilderReply((current) => current + content),
+                    undefined,
+                    "system_action",
+                  ).catch((error) => setAiWidgetBuilderReply(error instanceof Error ? error.message : "Не удалось получить ответ AI."))
+                    .finally(() => setAiWidgetBuilderLoading(false));
+                }}
+              >
+                {aiWidgetBuilderLoading ? "ИИ думает..." : "Отдать команду ИИ"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      </Drawer>
       {editMode ? (
         <Drawer
           open={widgetLibraryOpen}

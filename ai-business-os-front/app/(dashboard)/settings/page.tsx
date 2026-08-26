@@ -1,8 +1,14 @@
+"use client";
+
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Surface } from "@/components/ui/surface";
+import { AiRoutingSettings } from "@/components/settings/ai-routing-settings";
+import { MobileAccessCard } from "@/components/settings/mobile-access-card";
+import { getSmartUpLiveSyncStatus, type SmartUpLiveSyncStatus } from "@/lib/core-api";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +32,35 @@ const securityRows = [
 ];
 
 export default function Page() {
+  const router = useRouter();
+  const [liveSync, setLiveSync] = useState<SmartUpLiveSyncStatus | null>(null);
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const refresh = () => {
+      void getSmartUpLiveSyncStatus()
+        .then((status) => {
+          if (active) setLiveSync(status);
+        })
+        .catch(() => undefined);
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 30_000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  const logout = () => {
+    document.cookie = "aibos_owner_session=; Path=/; Max-Age=0; SameSite=Lax";
+    router.replace("/login");
+  };
+
   return (
     <section className="space-y-6">
       <Surface className="overflow-hidden">
@@ -46,63 +81,16 @@ export default function Page() {
             <div className="flex flex-wrap gap-3">
               <Button variant="secondary">Сбросить изменения</Button>
               <Button variant="primary">Сохранить настройки</Button>
+              <Button variant="ghost" onClick={logout}>Выйти</Button>
             </div>
           </div>
         </div>
       </Surface>
 
-      <div className="grid gap-6 xl:grid-cols-[1.25fr_0.95fr]">
-        <Surface>
-          <div className="min-h-0 rounded-[28px] bg-[#2E3137] p-6 sm:p-7">
-            <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-              <div className="space-y-2">
-                <p className="text-xs uppercase tracking-[0.32em] text-slate-400">Общие</p>
-                <h2 className="text-2xl font-semibold tracking-[-0.04em] text-[#f4f7fb]">
-                  Профиль пользователя
-                </h2>
-                <p className="max-w-xl text-sm leading-6 text-slate-400">
-                  Основные данные профиля, которые используются в интерфейсе и уведомлениях.
-                </p>
-              </div>
+      <MobileAccessCard />
 
-              <div className="grid grid-cols-2 gap-3">
-                <div className="rounded-2xl border border-[#3a3d43] bg-[#343840] px-4 py-3">
-                  <p className="text-xs uppercase tracking-[0.24em] text-slate-400">Статус</p>
-                  <p className="mt-1 text-sm font-medium text-slate-200">Активен</p>
-                </div>
-                <div className="rounded-2xl border border-[#3a3d43] bg-[#343840] px-4 py-3">
-                  <p className="text-xs uppercase tracking-[0.24em] text-slate-400">Роль</p>
-                  <p className="mt-1 text-sm font-medium text-slate-200">Administrator</p>
-                </div>
-              </div>
-            </div>
 
-            <div className="mt-6 grid gap-4 md:grid-cols-2">
-              <label className="space-y-2">
-                <span className="text-sm font-medium text-slate-200">Имя</span>
-                <Input defaultValue="Administrator" />
-              </label>
-              <label className="space-y-2">
-                <span className="text-sm font-medium text-slate-200">Фамилия</span>
-                <Input defaultValue="User" />
-              </label>
-              <label className="space-y-2">
-                <span className="text-sm font-medium text-slate-200">Email</span>
-                <Input placeholder="user@example.com" />
-              </label>
-              <label className="space-y-2">
-                <span className="text-sm font-medium text-slate-200">Телефон</span>
-                <Input placeholder="+998 90 000 00 00" />
-              </label>
-            </div>
-
-            <div className="mt-6 flex flex-wrap gap-3">
-              <Button variant="primary">Обновить профиль</Button>
-              <Button variant="ghost">Сменить пароль</Button>
-            </div>
-          </div>
-        </Surface>
-
+      <div className="grid gap-6">
         <div className="grid gap-6">
           <Surface>
             <div className="min-h-0 rounded-[28px] bg-[#2E3137] p-6 sm:p-7">
@@ -191,7 +179,7 @@ export default function Page() {
 
             <div className="mt-5 grid gap-3 md:grid-cols-2">
               <CompactPanel title="Автосохранение" value="Включено" note="Настройки сохраняются автоматически" />
-              <CompactPanel title="Окружение" value="Production" note="Основная рабочая среда" />
+              <CompactPanel title="Окружение" value="Рабочее" note="Основная рабочая среда" />
               <CompactPanel title="Обновления" value="Авто" note="Интерфейс обновляется в фоне" />
               <CompactPanel title="Сессия" value="12 ч" note="Срок активности пользователя" />
             </div>
@@ -211,17 +199,44 @@ export default function Page() {
               </p>
             </div>
 
-            <Link
-              href="/settings/integrations/smartup"
-              className="inline-flex h-11 items-center justify-center rounded-full bg-slate-950 px-4 text-sm font-medium text-white transition hover:bg-slate-800"
-            >
-              Открыть SmartUp
-            </Link>
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="rounded-2xl border border-[#3a3d43] bg-[#343840] px-4 py-3">
+                <div className="flex items-center gap-2">
+                  <span className={`h-2.5 w-2.5 rounded-full ${liveSync?.status === "running" ? "bg-yellow-300" : liveSync?.status === "success" ? "bg-emerald-400" : liveSync?.status === "error" ? "bg-rose-400" : "bg-slate-500"}`} />
+                  <p className="text-sm font-medium text-slate-200">
+                    {liveSync?.status === "running" ? "Live-синхронизация выполняется" : liveSync?.status === "success" ? "Live-синхронизация активна" : liveSync?.status === "error" ? "Ошибка live-синхронизации" : "Статус live-синхронизации загружается"}
+                  </p>
+                </div>
+                <p className="mt-1 text-xs text-slate-400">
+                  {liveSync?.last_success_at ? `Последний успех: ${formatDateTime(liveSync.last_success_at)}` : "Ожидание первого успешного запуска"}
+                </p>
+              </div>
+              <Link
+                href="/settings/integrations/smartup"
+                className="inline-flex h-11 items-center justify-center rounded-full bg-slate-950 px-4 text-sm font-medium text-white transition hover:bg-slate-800"
+              >
+                Открыть SmartUp
+              </Link>
+            </div>
           </div>
         </div>
       </Surface>
+
+      <AiRoutingSettings />
     </section>
   );
+}
+
+function formatDateTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("ru-RU", {
+    timeZone: "Asia/Tashkent",
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
 }
 
 function SettingRow({ title, description }: { title: string; description: string }) {

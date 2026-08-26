@@ -9,6 +9,8 @@ import {
 } from "@/components/business/business-context-provider";
 import { useBusinessRefresh } from "@/components/business/business-refresh-provider";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { SmartUpPageRefreshButton } from "@/components/smartup/page-refresh-button";
 import { FilterBar } from "@/components/ui/filter-bar";
 import { Drawer } from "@/components/ui/drawer";
 import { MultiSelect } from "@/components/ui/multi-select";
@@ -454,8 +456,8 @@ export function VisitsWorkspacePage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
-      <Surface className="px-6 py-5">
-        <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+      <Surface className="h-auto shrink-0 px-6 py-5">
+        <div className="flex flex-col gap-5">
           <div className="max-w-3xl">
             <p className="text-[11px] uppercase tracking-[0.32em] text-slate-400">
               Полевые продажи
@@ -466,7 +468,8 @@ export function VisitsWorkspacePage() {
               Конверсия визита отключена, пока нет детерминированной связи визит → продажа.
             </p>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2 xl:w-[440px]">
+          <SmartUpPageRefreshButton page="visits" onCompleted={() => setRefreshToken((value) => value + 1)} />
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {summaryCards.slice(0, 4).map((card) => (
               <div
                 key={card.key}
@@ -485,8 +488,8 @@ export function VisitsWorkspacePage() {
         </div>
       </Surface>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-        <Surface className="px-6 py-5">
+      <div className="grid items-start gap-4">
+        <Surface className="h-auto px-6 py-5">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <p className="text-[11px] uppercase tracking-[0.28em] text-slate-400">Контекст</p>
@@ -528,7 +531,7 @@ export function VisitsWorkspacePage() {
           </div>
         </Surface>
 
-        <Surface className="px-6 py-5">
+        <Surface className="h-auto px-6 py-5">
           <p className="text-[11px] uppercase tracking-[0.28em] text-slate-400">Статус</p>
           <div className="mt-3 flex flex-wrap gap-2">
             {(data?.data_quality.items ?? []).map((item) => (
@@ -792,7 +795,7 @@ export function VisitsWorkspacePage() {
             </Surface>
 
             <Surface className="p-5">
-              <p className="text-[11px] uppercase tracking-[0.24em] text-slate-400">Provenance</p>
+              <p className="text-[11px] uppercase tracking-[0.24em] text-slate-400">Источник данных</p>
               <div className="mt-4 grid gap-3 md:grid-cols-2 text-sm text-slate-300">
                 <p><span className="font-medium text-[#f4f7fb]">Источник:</span> {detail.provenance.source_endpoint}</p>
                 <p><span className="font-medium text-[#f4f7fb]">Внешний ID:</span> {detail.provenance.source_external_id}</p>

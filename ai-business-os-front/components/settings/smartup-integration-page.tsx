@@ -12,6 +12,7 @@ import {
   getCachedSmartUpOrganizations,
   getSmartUpMigrationCompleteness,
   getSmartUpMigrationJob,
+  getSmartUpLiveSyncStatus,
   getSmartUpOrganizations,
   resetSmartUpImportedData,
   startSmartUpMigrationJob,
@@ -19,6 +20,7 @@ import {
   type SmartUpAccessPayload,
   type SmartUpCompletenessReport,
   type SmartUpMigrationJobResponse,
+  type SmartUpLiveSyncStatus,
   type SmartUpMigrationMode,
   type SmartUpOrganization,
   type SmartUpConnectionCheckResponse,
@@ -80,6 +82,7 @@ export function SmartUpIntegrationPage() {
   const [syncState, setSyncState] = useState<RequestState>({ status: "idle", message: "" });
   const [completeness, setCompleteness] = useState<SmartUpCompletenessReport | null>(null);
   const [job, setJob] = useState<SmartUpMigrationJobResponse | null>(null);
+  const [liveSync, setLiveSync] = useState<SmartUpLiveSyncStatus | null>(null);
   const [loadingOrganizations, setLoadingOrganizations] = useState<boolean>(() => cachedOrganizations === null);
   const [organizationsError, setOrganizationsError] = useState<string | null>(null);
 
@@ -142,6 +145,21 @@ export function SmartUpIntegrationPage() {
       window.clearInterval(interval);
     };
   }, [job]);
+
+  useEffect(() => {
+    let active = true;
+    const refresh = () => {
+      void getSmartUpLiveSyncStatus().then((response) => {
+        if (active) setLiveSync(response);
+      }).catch(() => undefined);
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 30_000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, []);
 
   const selectedOrganization = useMemo(
     () => organizations.find((item) => item.id === selectedOrganizationId) ?? organizations[0] ?? null,
@@ -207,9 +225,18 @@ export function SmartUpIntegrationPage() {
       });
       await refreshStatus();
     } catch (error) {
+      const rawMessage = error instanceof Error ? error.message : "";
       setConnectionState({
         status: "error",
-        message: error instanceof Error ? redactMessage(error.message) : "Не удалось проверить подключение.",
+        message: rawMessage.includes("aborted by timeout") || rawMessage.includes("SMARTUP_TIMEOUT")
+          ? "SmartUp не ответил за 20 секунд. Проверьте доступность сервера и повторите попытку."
+          : rawMessage.includes("INVALID_CREDENTIALS")
+            ? "Неверный логин или пароль SmartUp."
+            : rawMessage.includes("SMARTUP_UNAVAILABLE")
+              ? "SmartUp недоступен. Проверьте адрес сервера и повторите попытку."
+              : rawMessage
+                ? redactMessage(rawMessage)
+                : "Не удалось проверить подключение.",
       });
     }
   };
@@ -342,7 +369,7 @@ export function SmartUpIntegrationPage() {
                 </select>
               </label>
               <label className="space-y-2 md:col-span-2">
-                <span className="text-sm font-medium text-slate-200">Base URL</span>
+                <span className="text-sm font-medium text-slate-200">Адрес сервера</span>
                 <Input
                   value={form.baseUrl}
                   onChange={(event) =>
@@ -352,24 +379,24 @@ export function SmartUpIntegrationPage() {
                 />
               </label>
               <label className="space-y-2">
-                <span className="text-sm font-medium text-slate-200">Login</span>
+                <span className="text-sm font-medium text-slate-200">Логин</span>
                 <Input
                   value={form.username}
                   onChange={(event) =>
                     setForm((current) => ({ ...current, username: event.target.value }))
                   }
-                  placeholder="username"
+                  placeholder="имя пользователя"
                 />
               </label>
               <label className="space-y-2">
-                <span className="text-sm font-medium text-slate-200">Password</span>
+                <span className="text-sm font-medium text-slate-200">Пароль</span>
                 <Input
                   type="password"
                   value={form.password}
                   onChange={(event) =>
                     setForm((current) => ({ ...current, password: event.target.value }))
                   }
-                  placeholder="password"
+                  placeholder="пароль"
                 />
               </label>
             </div>
@@ -424,23 +451,24 @@ export function SmartUpIntegrationPage() {
           <div className="min-h-0 rounded-[28px] bg-[#2E3137] p-6 sm:p-7">
             <div className="flex items-start justify-between gap-4">
               <div className="space-y-2">
-                <p className="text-xs uppercase tracking-[0.32em] text-slate-400">Live Sync</p>
+                <p className="text-xs uppercase tracking-[0.32em] text-slate-400">Синхронизация</p>
                 <h2 className="text-2xl font-semibold tracking-[-0.04em] text-[#f4f7fb]">
                   Статус синхронизации
                 </h2>
               </div>
-              <Badge variant={job?.status === "running" ? "accent" : job?.status === "failed" ? "dark" : "soft"}>
-                {job?.status ?? "готово"}
+              <Badge variant={liveSync?.status === "running" ? "accent" : liveSync?.status === "error" ? "dark" : "soft"}>
+                {liveSync?.status === "running" ? "выполняется" : liveSync?.status === "warning" ? "с предупреждениями" : liveSync?.status === "success" ? "активен" : "готово"}
               </Badge>
             </div>
 
             <div className="mt-5 grid gap-3 sm:grid-cols-2">
               <InfoPanel title="Активных организаций" value={String(activeCount)} note={`${inactiveCount} отключено`} />
               <InfoPanel title="Последняя синхронизация" value={formatTashkentDateTime(latestSync)} note="по организациям SmartUp" />
+              <InfoPanel title="Следующая синхронизация" value={formatTashkentDateTime(liveSync?.next_run_at ?? null)} note="автоматически в 08:00, 14:00 и 21:00" />
               <InfoPanel
                 title="Последний запуск"
                 value={job ? job.message : "Нет активного задания"}
-                note={job ? `job ${job.job_id.slice(0, 8)} · ${job.migration_mode}` : "Недельная и полная синхронизация запускаются вручную"}
+                note={liveSync?.message ?? (job ? `job ${job.job_id.slice(0, 8)} · ${job.migration_mode}` : "Автоматическая синхронизация активна")}
                 className="sm:col-span-2"
               />
             </div>
@@ -481,7 +509,7 @@ export function SmartUpIntegrationPage() {
                 <p className="text-sm font-medium text-[#f4f7fb]">{syncState.message}</p>
                 {job ? (
                   <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                    <MiniStat title="Job" value={job.job_id.slice(0, 12)} />
+                    <MiniStat title="Задача" value={job.job_id.slice(0, 12)} />
                     <MiniStat title="Старт" value={formatTashkentDateTime(job.started_at)} />
                     <MiniStat title="Завершение" value={formatTashkentDateTime(job.completed_at)} />
                     <MiniStat title="Организаций" value={`${job.progress_organizations}/${job.total_organizations}`} />
@@ -547,7 +575,7 @@ export function SmartUpIntegrationPage() {
                           compact
                         />
                         <InfoPanel
-                          title="Integration"
+                          title="Интеграция"
                           value={organization.integration_id.slice(0, 8)}
                           note="связка с ядром"
                           compact

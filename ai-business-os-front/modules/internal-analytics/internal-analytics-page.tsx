@@ -407,7 +407,7 @@ function SalesAnalyticsPage({ overview }: { overview: DashboardOverviewResponse 
         <Surface className="p-5 sm:p-6">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="text-xs uppercase tracking-[0.3em] text-slate-400">AI-обзор</p>
+                <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Обзор ИИ</p>
               <h3 className="mt-2 text-xl font-semibold tracking-[-0.05em] text-[#f4f7fb]">Куда смотреть в продажах</h3>
             </div>
             <Badge variant="accent">{overview.analysis_engine}</Badge>
@@ -1151,7 +1151,7 @@ function InventoryAnalyticsPage({ overview }: { overview: DashboardOverviewRespo
               <p className="text-xs uppercase tracking-[0.28em] text-slate-400">Контекст склада</p>
               <div className="mt-3 space-y-2 text-sm leading-6 text-slate-300">
                 <p>Здесь можно детально смотреть остаток по складу и оценку риска.</p>
-                <p>Drawer не мешает основной таблице и открывается по клику строки.</p>
+                <p>Панель деталей не мешает основной таблице и открывается по клику строки.</p>
               </div>
             </div>
           </div>
@@ -1358,7 +1358,7 @@ function CustomersAnalyticsPage({ overview }: { overview: DashboardOverviewRespo
                 >
                   <td className="px-4 py-3">
                     <p className="font-semibold text-[#f4f7fb]">{item.name}</p>
-                    <p className="mt-1 text-xs text-slate-400">LTV / repeat view</p>
+                <p className="mt-1 text-xs text-slate-400">LTV / повторные покупки</p>
                   </td>
                   <td className="px-4 py-3 text-slate-300">{item.organizations.join(" · ") || "—"}</td>
                   <td className="px-4 py-3 text-slate-300">{item.deals}</td>
@@ -1437,7 +1437,7 @@ function CustomersAnalyticsPage({ overview }: { overview: DashboardOverviewRespo
             <div className="rounded-2xl border border-[#3a3d43] bg-[#2E3137] p-4">
               <p className="text-xs uppercase tracking-[0.28em] text-slate-400">Контекст клиента</p>
               <div className="mt-3 space-y-2 text-sm leading-6 text-slate-300">
-                <p>Drawer показывает профиль клиента без ухода со страницы.</p>
+                <p>Панель деталей показывает профиль клиента без ухода со страницы.</p>
                 <p>Здесь можно быстро расширить карточку списком последних сделок и историей оплат.</p>
               </div>
             </div>
@@ -1707,7 +1707,7 @@ function FinanceAnalyticsPage({ overview }: { overview: DashboardOverviewRespons
             <div className="rounded-2xl border border-[#3a3d43] bg-[#2E3137] p-4">
               <p className="text-xs uppercase tracking-[0.28em] text-slate-400">Контекст платежа</p>
               <div className="mt-3 space-y-2 text-sm leading-6 text-slate-300">
-                <p>Drawer помогает быстро проверить источник поступления и сумму.</p>
+                <p>Панель деталей помогает быстро проверить источник поступления и сумму.</p>
                 <p>Можно расширить его историей связанной сделки и платежными событиями.</p>
               </div>
             </div>

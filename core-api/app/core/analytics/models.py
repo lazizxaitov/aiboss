@@ -96,6 +96,7 @@ class DashboardWidgetType(StrEnum):
     TREND = "trend"
     LINE_CHART = "line_chart"
     BAR_CHART = "bar_chart"
+    DONUT = "donut"
     RANKING = "ranking"
     TABLE = "table"
     ALERT = "alert"

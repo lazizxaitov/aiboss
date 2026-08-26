@@ -9,6 +9,7 @@ import {
 } from "@/components/business/business-context-provider";
 import { useBusinessRefresh } from "@/components/business/business-refresh-provider";
 import { Badge } from "@/components/ui/badge";
+import { SmartUpPageRefreshButton } from "@/components/smartup/page-refresh-button";
 import { FilterBar } from "@/components/ui/filter-bar";
 import { Drawer } from "@/components/ui/drawer";
 import { MultiSelect } from "@/components/ui/multi-select";
@@ -561,13 +562,14 @@ export function InventoryWorkspacePage() {
       <div className="space-y-3">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <p className="text-[11px] uppercase tracking-[0.28em] text-slate-400">Inventory / Warehouse</p>
+            <p className="text-[11px] uppercase tracking-[0.28em] text-slate-400">Склад / товары</p>
             <h1 className="mt-2 text-3xl font-semibold tracking-[-0.05em] text-[#f4f7fb]">Склад</h1>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
               Канонический слой по остаткам, складам, закупкам, поступлениям, списаниям и движениям.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <SmartUpPageRefreshButton page="inventory" onCompleted={() => setRefreshToken((value) => value + 1)} />
             <Badge variant="soft">{selectedNames.join(", ") || "Все организации"}</Badge>
             <Badge variant="soft">{data?.period.label ?? "Период загружается"}</Badge>
           </div>
@@ -630,7 +632,7 @@ export function InventoryWorkspacePage() {
             <SearchInput
               value={query.search}
               onChange={(event) => setQuery((current) => ({ ...current, search: event.target.value, page: 1 }))}
-              placeholder="товар, код, склад, batch"
+              placeholder="товар, код, склад, партия"
             />
             <Select
               label="Наличие"

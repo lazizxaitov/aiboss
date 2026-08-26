@@ -8,6 +8,7 @@ import {
 } from "@/components/business/business-context-provider";
 import { useBusinessRefresh } from "@/components/business/business-refresh-provider";
 import { Badge } from "@/components/ui/badge";
+import { SmartUpPageRefreshButton } from "@/components/smartup/page-refresh-button";
 import { FilterBar } from "@/components/ui/filter-bar";
 import { Drawer } from "@/components/ui/drawer";
 import { MultiSelect } from "@/components/ui/multi-select";
@@ -290,6 +291,7 @@ export function ProductsWorkspacePage() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <SmartUpPageRefreshButton page="products" onCompleted={() => setRefreshToken((value) => value + 1)} />
             <Badge variant="soft">{selectedNames.join(", ") || "Все организации"}</Badge>
             <Badge variant="soft">{data?.period.label ?? "Период загружается"}</Badge>
           </div>
@@ -328,7 +330,7 @@ export function ProductsWorkspacePage() {
               onChange={(event) =>
                 setQuery((current) => ({ ...current, search: event.target.value, page: 1 }))
               }
-              placeholder="название, код, article, barcode"
+              placeholder="название, код, артикул, штрихкод"
             />
             <Select
               label="Продажи"
@@ -804,7 +806,7 @@ export function ProductsWorkspacePage() {
 
             <Surface className="overflow-hidden">
               <div className="border-b border-[#3a3d43] px-5 py-4">
-                <h3 className="text-lg font-semibold tracking-[-0.04em] text-[#f4f7fb]">Timeline и ограничения</h3>
+                <h3 className="text-lg font-semibold tracking-[-0.04em] text-[#f4f7fb]">История и ограничения</h3>
               </div>
               <div className="grid gap-4 px-5 py-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
                 <div className="max-h-[340px] overflow-y-auto">

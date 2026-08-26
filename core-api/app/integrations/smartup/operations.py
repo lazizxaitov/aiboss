@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from time import perf_counter
 from threading import Lock, Thread
 from typing import Literal
 from uuid import UUID, uuid4
@@ -68,6 +69,7 @@ class SmartUpAuthPayload(BaseModel):
         default=SmartUpMigrationMode.FULL_BACKFILL,
         validation_alias=AliasChoices("migration_mode", "migrationMode"),
     )
+    datasets: list[str] | None = Field(default=None, description="Internal dataset groups to sync")
     history_start: datetime | None = Field(
         default=None,
         validation_alias=AliasChoices("history_start", "historyStart"),
@@ -157,6 +159,9 @@ class SmartUpConnectionCheckResponse(BaseModel):
     company_id: str | None = None
     filial_id: str | None = None
     project_code: str | None = None
+    ok: bool | None = None
+    status: str | None = None
+    latency_ms: float | None = None
 
 
 class SmartUpMigrationOrganizationResult(BaseModel):
@@ -303,6 +308,7 @@ class _SmartUpMigrationJobRegistry:
 
 
 _MIGRATION_JOBS = _SmartUpMigrationJobRegistry()
+SMARTUP_MIGRATION_LOCK = Lock()
 
 
 @dataclass(slots=True)
@@ -436,6 +442,7 @@ class SmartUpAccountService:
         )
 
     def check_connection(self, *args: object) -> SmartUpConnectionCheckResponse:
+        started = perf_counter()
         if len(args) == 1:
             payload = self._normalize_auth_payload(args[0])
             organization = self._fallback_organization(payload)
@@ -451,6 +458,12 @@ class SmartUpAccountService:
             organization,
             payload,
             persist_credentials=False,
+        )
+        resolved_auth = SmartUpResolvedAuth(
+            payload=resolved_auth.payload.model_copy(update={"timeout_seconds": 20.0}),
+            source=resolved_auth.source,
+            credentials_available=resolved_auth.credentials_available,
+            client=None,
         )
         client = resolved_auth.client or self.build_client_for_organization(
             organization,
@@ -498,11 +511,26 @@ class SmartUpAccountService:
             if organization_filial_code:
                 request_payload["filial_code"] = organization_filial_code
             response = client.request_response("POST", endpoint, request_payload)
+        except httpx.ReadTimeout:
+            return SmartUpConnectionCheckResponse(
+                connected=False,
+                code="SMARTUP_TIMEOUT",
+                message="SmartUp не ответил за 20 секунд. Проверьте доступность сервера и повторите попытку.",
+                requested_url=requested_url,
+                organization_id=organization.id,
+                organization_name=organization.name,
+                company_id=organization.company_id,
+                filial_id=organization.filial_id,
+                project_code=organization.project_code,
+                ok=False,
+                status="timeout",
+                latency_ms=round((perf_counter() - started) * 1000, 2),
+            )
         except httpx.RequestError as exc:
             return SmartUpConnectionCheckResponse(
                 connected=False,
-                code="SMARTUP_CONNECTION_FAILED",
-                message=str(exc),
+                code="SMARTUP_UNAVAILABLE",
+                message="SmartUp недоступен. Проверьте адрес сервера и повторите попытку.",
                 upstream_status=None,
                 upstream_response=str(exc),
                 requested_url=requested_url,
@@ -511,13 +539,33 @@ class SmartUpAccountService:
                 company_id=organization.company_id,
                 filial_id=organization.filial_id,
                 project_code=organization.project_code,
+                ok=False,
+                status="unavailable",
+                latency_ms=round((perf_counter() - started) * 1000, 2),
+            )
+        if response.status_code in {401, 403}:
+            return SmartUpConnectionCheckResponse(
+                connected=False,
+                code="INVALID_CREDENTIALS",
+                message="Неверный логин или пароль SmartUp.",
+                upstream_status=response.status_code,
+                upstream_response=response.text or response.reason_phrase or "",
+                requested_url=requested_url,
+                organization_id=organization.id,
+                organization_name=organization.name,
+                company_id=organization.company_id,
+                filial_id=organization.filial_id,
+                project_code=organization.project_code,
+                ok=False,
+                status="invalid_credentials",
+                latency_ms=round((perf_counter() - started) * 1000, 2),
             )
         if response.is_success and resolved_auth.source in {"payload", "global"}:
             self._persist_organization_credentials(organization, resolved_auth.payload)
         if response.status_code in {403, 404}:
             return SmartUpConnectionCheckResponse(
                 connected=False,
-                code="SMARTUP_ACCESS_DENIED",
+                code="SMARTUP_UNAVAILABLE" if response.status_code == 404 else "SMARTUP_ACCESS_DENIED",
                 message=(
                     "Пользователь не имеет доступа к endpoint, проекту или выбранной организации"
                 ),
@@ -542,11 +590,15 @@ class SmartUpAccountService:
             company_id=organization.company_id,
             filial_id=organization.filial_id,
             project_code=organization.project_code,
+            ok=response.is_success,
+            status="connected" if response.is_success else "unavailable",
+            latency_ms=round((perf_counter() - started) * 1000, 2),
         )
 
     def migrate_all(self, payload: SmartUpAuthPayload) -> SmartUpMigrationAllResponse:
-        self.discover_filial_codes()
-        return self._migrate_all_core(payload)
+        with SMARTUP_MIGRATION_LOCK:
+            self.discover_filial_codes()
+            return self._migrate_all_core(payload)
 
     def start_migration_job(self, payload: SmartUpAuthPayload) -> SmartUpMigrationJobResponse:
         job = _MIGRATION_JOBS.create("Миграция SmartUp поставлена в очередь.")
@@ -564,39 +616,40 @@ class SmartUpAccountService:
 
     def _run_migration_job(self, job_id: UUID, payload_data: dict[str, object]) -> None:
         payload = SmartUpAuthPayload.model_validate(payload_data)
-        self.discover_filial_codes()
-        organizations = self._active_organizations()
-        started_at = datetime.now(UTC)
-        _MIGRATION_JOBS.update(
-            job_id,
-            status="running",
-            started_at=started_at,
-            total_organizations=len(organizations),
-            progress_organizations=0,
-            message=f"Миграция запущена: {len(organizations)} организаций.",
-        )
-        try:
-            result = self._migrate_all_core(
-                payload,
-                progress_callback=lambda **changes: _MIGRATION_JOBS.update(job_id, **changes),
-            )
+        with SMARTUP_MIGRATION_LOCK:
+            self.discover_filial_codes()
+            organizations = self._active_organizations()
+            started_at = datetime.now(UTC)
             _MIGRATION_JOBS.update(
                 job_id,
-                status="completed",
-                completed_at=datetime.now(UTC),
-                progress_organizations=result.organizations_count,
-                total_organizations=result.organizations_count,
-                result=result,
-                message=result.message,
+                status="running",
+                started_at=started_at,
+                total_organizations=len(organizations),
+                progress_organizations=0,
+                message=f"Миграция запущена: {len(organizations)} организаций.",
             )
-        except Exception as exc:  # pragma: no cover - background safety guard
-            _MIGRATION_JOBS.update(
-                job_id,
-                status="failed",
-                completed_at=datetime.now(UTC),
-                error=str(exc),
-                message=f"Миграция SmartUp завершилась с ошибкой: {exc}",
-            )
+            try:
+                result = self._migrate_all_core(
+                    payload,
+                    progress_callback=lambda **changes: _MIGRATION_JOBS.update(job_id, **changes),
+                )
+                _MIGRATION_JOBS.update(
+                    job_id,
+                    status="completed",
+                    completed_at=datetime.now(UTC),
+                    progress_organizations=result.organizations_count,
+                    total_organizations=result.organizations_count,
+                    result=result,
+                    message=result.message,
+                )
+            except Exception as exc:  # pragma: no cover - background safety guard
+                _MIGRATION_JOBS.update(
+                    job_id,
+                    status="failed",
+                    completed_at=datetime.now(UTC),
+                    error=str(exc),
+                    message=f"Миграция SmartUp завершилась с ошибкой: {exc}",
+                )
 
     def _materialize_canonical_v2(
         self,
@@ -881,10 +934,11 @@ class SmartUpAccountService:
         organization_id: UUID,
         payload: SmartUpAuthPayload,
     ) -> SmartUpMigrationAllResponse:
-        self.discover_filial_codes()
-        organization = self._get_required_organization(organization_id)
-        client = self._build_client_compat(payload, organization)
-        result, runs, errors, counters, summary = self._migrate_organization_with_client(
+        with SMARTUP_MIGRATION_LOCK:
+            self.discover_filial_codes()
+            organization = self._get_required_organization(organization_id)
+            client = self._build_client_compat(payload, organization)
+            result, runs, errors, counters, summary = self._migrate_organization_with_client(
             client=client,
             payload=payload,
             organization=organization,
@@ -896,10 +950,10 @@ class SmartUpAccountService:
             history_end=payload.history_end or datetime.now(UTC),
             migration_mode=payload.migration_mode,
             chunk_days=self._resolve_chunk_days(payload.migration_mode, None),
-        )
-        self._touch_organization_sync(organization.id)
-        self._materialize_canonical_v2([organization.id])
-        return SmartUpMigrationAllResponse(
+            )
+            self._touch_organization_sync(organization.id)
+            self._materialize_canonical_v2([organization.id])
+            return SmartUpMigrationAllResponse(
             status="completed_with_errors" if errors else "completed",
             message="Миграция SmartUp завершена."
             if not errors
@@ -1098,7 +1152,10 @@ class SmartUpAccountService:
             ),
         )
 
+        selected_datasets = set(payload.datasets or _ENTITY_IMPORT_PLAN)
         for entity_type, mapping_names in _ENTITY_IMPORT_PLAN.items():
+            if entity_type not in selected_datasets:
+                continue
             if progress_callback is not None:
                 progress_callback(
                     current_organization_id=organization.id,

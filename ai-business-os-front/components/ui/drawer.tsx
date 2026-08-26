@@ -56,7 +56,7 @@ export function Drawer({
     <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 sm:p-6">
       <button
         type="button"
-        aria-label="Закрыть drawer"
+        aria-label="Закрыть панель"
         className="absolute inset-0 cursor-default bg-black/55 backdrop-blur-[2px]"
         onClick={onClose}
       />

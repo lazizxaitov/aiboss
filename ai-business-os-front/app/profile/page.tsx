@@ -1,0 +1,129 @@
+"use client";
+
+import { type ChangeEvent, type FormEvent, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Surface } from "@/components/ui/surface";
+import { DashboardShell } from "@/components/shell/dashboard-shell";
+
+const coreApiUrl = process.env.NEXT_PUBLIC_CORE_API_URL ?? "http://127.0.0.1:8000";
+
+export default function ProfilePage() {
+  const router = useRouter();
+  const [login, setLogin] = useState("");
+  const [name, setName] = useState("");
+  const [about, setAbout] = useState("");
+  const [photo, setPhoto] = useState<string | null>(null);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [notice, setNotice] = useState<string | null>(null);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const token = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("aibos_owner_session="))?.split("=").slice(1).join("=");
+    if (token) setLogin(decodeURIComponent(token).split(":")[0] ?? "");
+    setName(localStorage.getItem("aibos_profile_name") ?? "");
+    setAbout(localStorage.getItem("aibos_profile_about") ?? "");
+    setPhoto(localStorage.getItem("aibos_profile_photo"));
+  }, []);
+
+  const saveAbout = () => {
+    localStorage.setItem("aibos_profile_name", name);
+    localStorage.setItem("aibos_profile_about", about);
+    window.dispatchEvent(new Event("aibos-profile-updated"));
+    setNotice("Профиль сохранён");
+  };
+
+  const selectPhoto = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== "string") return;
+      localStorage.setItem("aibos_profile_photo", reader.result);
+      setPhoto(reader.result);
+      window.dispatchEvent(new Event("aibos-profile-updated"));
+      setNotice("Фото профиля обновлено");
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const changePassword = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setPasswordError(null);
+    setNotice(null);
+    try {
+      const response = await fetch(`${coreApiUrl}/api/v1/auth/password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ login, current_password: currentPassword, new_password: newPassword }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail ?? "Не удалось изменить пароль.");
+      setCurrentPassword("");
+      setNewPassword("");
+      setNotice("Пароль изменён");
+    } catch (error) {
+      setPasswordError(error instanceof Error ? error.message : "Не удалось изменить пароль.");
+    }
+  };
+
+  return (
+    <DashboardShell>
+      <section className="mx-auto w-full max-w-4xl space-y-4">
+      <Surface>
+        <div className="rounded-[28px] bg-[#2E3137] p-5 sm:p-6">
+          <p className="text-xs uppercase tracking-[0.32em] text-slate-400">Профиль</p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-[-0.04em] text-[#f4f7fb]">Личные данные</h1>
+          <p className="mt-2 max-w-2xl text-sm leading-5 text-slate-400">Эта информация помогает ИИ лучше понимать вас, ваши задачи и предпочтения в общении.</p>
+        </div>
+      </Surface>
+
+      <div className="grid gap-4">
+        <Surface className="h-fit">
+          <div className="rounded-[28px] bg-[#2E3137] p-5 sm:p-6">
+            <h2 className="text-xl font-semibold text-[#f4f7fb]">Фото профиля</h2>
+            <div className="mt-4 flex flex-col items-center gap-3">
+              {photo ? <img src={photo} alt="Фото профиля" className="h-24 w-24 rounded-full object-cover" /> : <div className="flex h-24 w-24 items-center justify-center rounded-full bg-[#f3d5b4] text-2xl text-[#1E1E21]">{(name || login || "А").slice(0, 3).toUpperCase()}</div>}
+              <label className="inline-flex cursor-pointer items-center rounded-full border border-[#4a4e56] px-4 py-2 text-sm text-slate-200 transition hover:bg-[#343840]">
+                Загрузить фото
+                <input type="file" accept="image/*" className="sr-only" onChange={selectPhoto} />
+              </label>
+            </div>
+          </div>
+        </Surface>
+
+        <Surface>
+          <div className="rounded-[28px] bg-[#2E3137] p-5 sm:p-6">
+              <h2 className="text-xl font-semibold text-[#f4f7fb]">О себе для ИИ</h2>
+              <p className="mt-2 text-sm leading-6 text-slate-400">Напишите, кто вы, чем занимаетесь, какие у вас цели и как с вами лучше общаться.</p>
+            <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Имя" className="mt-4" />
+            <textarea value={about} onChange={(event) => setAbout(event.target.value)} placeholder="Например: Я владелец бизнеса..." className="mt-3 min-h-32 w-full resize-y rounded-2xl border border-[#3a3d43] bg-[#343840] px-4 py-3 text-sm leading-6 text-[#f4f7fb] outline-none placeholder:text-slate-400 focus:border-[#6a6f79]" />
+            <div className="mt-3 flex items-center gap-3">
+              <Button variant="primary" onClick={saveAbout}>Сохранить</Button>
+              {notice ? <span className="text-sm text-slate-300">{notice}</span> : null}
+            </div>
+          </div>
+        </Surface>
+      </div>
+
+      <Surface>
+        <div className="rounded-[28px] bg-[#2E3137] p-5 sm:p-6">
+          <h2 className="text-xl font-semibold text-[#f4f7fb]">Данные входа</h2>
+          <div className="mt-4 grid gap-3">
+            <label className="space-y-2"><span className="text-sm text-slate-300">Логин</span><Input value={login} readOnly /></label>
+            <label className="space-y-2"><span className="text-sm text-slate-300">Пароль</span><Input value="••••••••" readOnly /></label>
+          </div>
+          <form className="mt-4 grid gap-3" onSubmit={changePassword}>
+            <Input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} placeholder="Текущий пароль" required />
+            <Input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder="Новый пароль (от 8 символов)" minLength={8} required />
+            <div className="flex flex-wrap items-center gap-3"><Button type="submit" variant="secondary">Изменить пароль</Button>{passwordError ? <span className="text-sm text-rose-300">{passwordError}</span> : null}</div>
+          </form>
+        </div>
+      </Surface>
+      </section>
+    </DashboardShell>
+  );
+}

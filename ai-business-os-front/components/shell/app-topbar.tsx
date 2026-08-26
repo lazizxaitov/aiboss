@@ -1,8 +1,8 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import { cn } from "@/lib/cn";
 import { getNotifications, markAllNotificationsRead } from "@/lib/core-api";
@@ -18,10 +18,23 @@ import {
 } from "@/modules/alerts/notifications-data";
 
 export function AppTopbar() {
+  const router = useRouter();
+  const [profilePhoto, setProfilePhoto] = useState<string | null>(null);
+  const [profileName, setProfileName] = useState("А");
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<NotificationTab>("All");
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [isSyncing, setIsSyncing] = useState(false);
+
+  useEffect(() => {
+    const loadProfile = () => {
+      setProfilePhoto(localStorage.getItem("aibos_profile_photo"));
+      setProfileName(localStorage.getItem("aibos_profile_name") || "А");
+    };
+    loadProfile();
+    window.addEventListener("aibos-profile-updated", loadProfile);
+    return () => window.removeEventListener("aibos-profile-updated", loadProfile);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -84,6 +97,7 @@ export function AppTopbar() {
 
         <Dropdown
           align="right"
+          className="h-12 w-12 shrink-0"
           open={notificationsOpen}
           onOpenChange={setNotificationsOpen}
           trigger={
@@ -92,7 +106,7 @@ export function AppTopbar() {
               className="relative flex h-12 w-12 items-center justify-center rounded-full border border-[#3a3d43] bg-[#2E3137] text-slate-300 transition hover:border-[#4a4e56] hover:text-white"
               aria-label="Уведомления"
             >
-              <Image src="/notifications.png" alt="" width={24} height={24} className="h-6 w-6 select-none object-contain" />
+              <img src="/notifications.png" alt="" width={24} height={24} className="h-6 w-6 select-none object-contain" />
               {unreadCount > 0 ? <span className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-rose-500 ring-2 ring-white" /> : null}
             </button>
           }
@@ -118,7 +132,7 @@ export function AppTopbar() {
                   <button
                     type="button"
                     className="flex h-10 w-10 items-center justify-center rounded-full border border-[#3a3d43] text-slate-300 transition hover:bg-[#2E3137]/5 hover:text-white"
-                    aria-label="Settings"
+                    aria-label="Настройки"
                   >
                     ⚙
                   </button>
@@ -209,13 +223,46 @@ export function AppTopbar() {
           )}
         </Dropdown>
 
-        <Link
-          href="/settings"
-        className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-full bg-[#f3d5b4] text-sm font-semibold text-[#1E1E21] shadow-[0_8px_22px_rgba(15,23,42,0.08)]"
-          aria-label="Профиль"
+        <Dropdown
+          align="right"
+          className="h-12 w-12 shrink-0"
+          panelClassName="w-[220px] overflow-hidden rounded-[20px]"
+          trigger={(
+            <button
+              type="button"
+              className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-full bg-[#f3d5b4] text-sm font-semibold text-[#1E1E21] shadow-[0_8px_22px_rgba(15,23,42,0.08)]"
+              aria-label="Профиль"
+            >
+              {profilePhoto ? (
+                <span className="h-full w-full bg-cover bg-center" style={{ backgroundImage: `url(${profilePhoto})` }} />
+              ) : (
+                <span className="text-[12px]">{profileName.slice(0, 3).toUpperCase()}</span>
+              )}
+            </button>
+          )}
         >
-          <span className="text-[12px]">А</span>
-        </Link>
+          {(close) => (
+            <nav className="p-2" aria-label="Меню профиля">
+              <Link href="/profile" onClick={close} className="block rounded-2xl px-4 py-3 text-sm text-slate-200 transition hover:bg-[#343840]">
+                Профиль
+              </Link>
+              <Link href="/settings" onClick={close} className="block rounded-2xl px-4 py-3 text-sm text-slate-200 transition hover:bg-[#343840]">
+                Настройки
+              </Link>
+              <button
+                type="button"
+                onClick={() => {
+                  close();
+                  document.cookie = "aibos_owner_session=; Path=/; Max-Age=0; SameSite=Lax";
+                  router.replace("/login");
+                }}
+                className="block w-full rounded-2xl px-4 py-3 text-left text-sm text-rose-300 transition hover:bg-[#343840]"
+              >
+                Выйти
+              </button>
+            </nav>
+          )}
+        </Dropdown>
       </div>
     </header>
   );

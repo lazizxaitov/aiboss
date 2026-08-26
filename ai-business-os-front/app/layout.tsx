@@ -1,4 +1,5 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
+import { PwaClient } from "@/components/pwa/pwa-client";
 import { Montserrat } from "next/font/google";
 import "react-grid-layout/css/styles.css";
 import "react-resizable/css/styles.css";
@@ -13,6 +14,16 @@ const montserrat = Montserrat({
 export const metadata: Metadata = {
   title: "AI БОС — панель управления",
   description: "Единый интерфейс бизнес-данных, аналитики и управления.",
+  applicationName: "AI Business OS",
+  manifest: "/manifest.webmanifest",
+  appleWebApp: { capable: true, title: "AI BOS", statusBarStyle: "black-translucent" },
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: "#1E1E21",
 };
 
 export default function RootLayout({
@@ -22,7 +33,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="ru" className={`${montserrat.variable} h-full antialiased`}>
-      <body className="min-h-full flex flex-col bg-[#1E1E21] text-[#f4f7fb]">{children}</body>
+      <body className="min-h-full flex flex-col bg-[#1E1E21] text-[#f4f7fb]"><PwaClient />{children}</body>
     </html>
   );
 }

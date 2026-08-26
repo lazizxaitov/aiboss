@@ -1,9 +1,11 @@
 """SmartUp operational endpoints."""
 
-from typing import Annotated
+from datetime import UTC, datetime, timedelta
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 
 from app.core.data_layer.contracts import CoreDataStore
 from app.core.data_layer.factory import get_core_store
@@ -32,13 +34,61 @@ from app.integrations.smartup.operations import (
     SmartUpMigrationJobResponse,
     SmartUpOrganizationListResponse,
     SmartUpResetResponse,
+    SMARTUP_MIGRATION_LOCK,
 )
+from app.integrations.smartup.live_sync import SmartUpLiveSyncService, SmartUpLiveSyncStatus
+from app.integrations.smartup.models import SmartUpMigrationMode
 from app.integrations.smartup.rebuild import (
     SmartUpCoreRebuildReport,
     SmartUpCoreRebuildService,
 )
 
 router = APIRouter()
+
+
+class SmartUpPageSyncRequest(BaseModel):
+    page: Literal["sales", "visits", "products", "customers", "inventory", "finance"]
+
+
+PAGE_DATASETS: dict[str, list[str]] = {
+    "sales": ["sales"],
+    "visits": ["sales"],
+    "products": ["products"],
+    "customers": ["customers"],
+    "inventory": ["stock"],
+    "finance": ["finance"],
+}
+
+
+@router.get("/smartup/live-sync/status", response_model=SmartUpLiveSyncStatus)
+def get_smartup_live_sync_status(
+    store: Annotated[CoreDataStore, Depends(get_core_store)],
+) -> SmartUpLiveSyncStatus:
+    """Return the persisted status of the automatic SmartUp sync."""
+
+    return SmartUpLiveSyncService(store).status()
+
+
+@router.post("/smartup/sync-page", response_model=SmartUpMigrationJobResponse)
+def sync_smartup_page(
+    payload: SmartUpPageSyncRequest,
+    store: Annotated[CoreDataStore, Depends(get_core_store)],
+) -> SmartUpMigrationJobResponse:
+    """Queue a short recent-window sync for one supported data module."""
+
+    if SMARTUP_MIGRATION_LOCK.locked():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="SYNC_ALREADY_RUNNING",
+        )
+    now = datetime.now(UTC)
+    migration = SmartUpAuthPayload(
+        migration_mode=SmartUpMigrationMode.ONE_DAY_CHECK,
+        history_start=now - timedelta(days=1),
+        history_end=now,
+        datasets=PAGE_DATASETS[payload.page],
+    )
+    return SmartUpAccountService(target=store).start_migration_job(migration)
 
 
 @router.post("/smartup/rebuild-core", response_model=SmartUpCoreRebuildReport)
@@ -403,7 +453,8 @@ def migrate_smartup_history_legacy(
 ) -> SmartUpMigrationAllResponse:
     service = SmartUpAccountService(target=store)
     try:
-        return service.migrate_history(payload)
+        with SMARTUP_MIGRATION_LOCK:
+            return service.migrate_history(payload)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

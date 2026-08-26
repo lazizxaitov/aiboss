@@ -8,6 +8,7 @@ import {
 } from "@/components/business/business-context-provider";
 import { useBusinessRefresh } from "@/components/business/business-refresh-provider";
 import { Badge } from "@/components/ui/badge";
+import { SmartUpPageRefreshButton } from "@/components/smartup/page-refresh-button";
 import { FilterBar } from "@/components/ui/filter-bar";
 import { Drawer } from "@/components/ui/drawer";
 import { MultiSelect } from "@/components/ui/multi-select";
@@ -293,13 +294,14 @@ export function CustomersWorkspacePage() {
       <div className="space-y-3">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <p className="text-[11px] uppercase tracking-[0.28em] text-slate-400">Customers / 360</p>
+            <p className="text-[11px] uppercase tracking-[0.28em] text-slate-400">Клиенты / 360</p>
             <h1 className="mt-2 text-3xl font-semibold tracking-[-0.05em] text-[#f4f7fb]">Клиенты</h1>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
               Единое окно по клиентам, продажам, платежам, возвратам и визитам.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <SmartUpPageRefreshButton page="customers" onCompleted={() => setRefreshToken((value) => value + 1)} />
             <Badge variant="soft">{selectedNames.join(", ") || "Все организации"}</Badge>
             <Badge variant="soft">{data?.period.label ?? "Период загружается"}</Badge>
           </div>
@@ -345,7 +347,7 @@ export function CustomersWorkspacePage() {
                   page: 1,
                 }))
               }
-              placeholder="имя клиента, код, phone, source id"
+              placeholder="имя клиента, код, телефон, ID источника"
             />
             {[
               ["Продажи", "hasSales"],

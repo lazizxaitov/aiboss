@@ -163,15 +163,7 @@ export function BusinessContextProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const [state, setState] = useState<BusinessContextState>(DEFAULT_STATE);
-  const [availableOrganizations, setAvailableOrganizations] = useState<BusinessContextOrganizationOption[]>(
-    () =>
-      (getCachedSmartUpOrganizations() ?? [])
-        .map((item) => ({
-          id: item.id,
-          name: item.name,
-        }))
-        .sort((left, right) => left.name.localeCompare(right.name, "ru")),
-  );
+  const [availableOrganizations, setAvailableOrganizations] = useState<BusinessContextOrganizationOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [hydrated, setHydrated] = useState(false);
   const initialised = useRef(false);

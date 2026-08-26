@@ -9,6 +9,7 @@ import {
 } from "@/components/business/business-context-provider";
 import { useBusinessRefresh } from "@/components/business/business-refresh-provider";
 import { Badge } from "@/components/ui/badge";
+import { SmartUpPageRefreshButton } from "@/components/smartup/page-refresh-button";
 import { FilterBar } from "@/components/ui/filter-bar";
 import { Drawer } from "@/components/ui/drawer";
 import { MultiSelect } from "@/components/ui/multi-select";
@@ -659,6 +660,7 @@ export function FinanceWorkspacePage() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <SmartUpPageRefreshButton page="finance" onCompleted={() => setRefreshToken((value) => value + 1)} />
             <Badge variant="soft">{selectedNames.join(", ") || "Все организации"}</Badge>
             <Badge variant="soft">{data?.period.label ?? "Период загружается"}</Badge>
           </div>

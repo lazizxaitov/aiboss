@@ -188,7 +188,7 @@ export function MetricCard({ label, value, note, formula, change, active, onClic
             <p className="mt-3 text-[28px] font-semibold tracking-[-0.05em] text-[#f4f7fb]">{value}</p>
             <p className="mt-2 text-sm leading-5 text-slate-400">{note}</p>
           </div>
-          {change ? <Badge variant="soft">{change}</Badge> : <Badge variant="accent">KPI</Badge>}
+          {change ? <Badge variant="soft">{change}</Badge> : <Badge variant="accent">Показатель</Badge>}
         </div>
       </Surface>
     </button>
