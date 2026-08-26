@@ -19,7 +19,7 @@ export function SessionLockGuard({ children }: { children: ReactNode }) {
   const timer = useRef<number | null>(null);
   const [locked, setLocked] = useState(false);
   const [login, setLogin] = useState("Пользователь");
-  const [password, setPassword] = useState("");
+  const [pin, setPin] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const resetTimer = () => {
@@ -54,12 +54,13 @@ export function SessionLockGuard({ children }: { children: ReactNode }) {
   async function unlock(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
-    const response = await fetch(`${apiUrl}/api/v1/auth/unlock`, { method: "POST", headers: authHeaders(), body: JSON.stringify({ password }) });
+    const response = await fetch(`${apiUrl}/api/v1/auth/unlock`, { method: "POST", headers: authHeaders(), body: JSON.stringify({ pin }) });
+    const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      setError("Неверный пароль");
+      setError(payload.detail ?? "Неверный PIN");
       return;
     }
-    setPassword("");
+    setPin("");
     setLocked(false);
     resetTimer();
   }
@@ -80,7 +81,7 @@ export function SessionLockGuard({ children }: { children: ReactNode }) {
             <p className="text-xs uppercase tracking-[0.3em] text-slate-400">AI БОС</p>
             <h2 className="mt-3 text-2xl font-semibold text-[#f4f7fb]">Система заблокирована</h2>
             <p className="mt-2 text-sm text-slate-400">{login}</p>
-            <input autoFocus type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Пароль" className="mt-6 h-12 w-full rounded-full border border-[#5b5f67] bg-transparent px-5 text-[#f4f7fb] outline-none placeholder:text-slate-400 focus:border-[#FFF27A]" />
+            <input autoFocus type="password" inputMode="numeric" maxLength={4} pattern="[0-9]{4}" value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="PIN из 4 цифр" className="mt-6 h-12 w-full rounded-full border border-[#5b5f67] bg-transparent px-5 text-[#f4f7fb] outline-none placeholder:text-slate-400 focus:border-[#FFF27A]" />
             {error ? <p className="mt-2 text-sm text-rose-300">{error}</p> : null}
             <button type="submit" className="mt-5 h-12 w-full rounded-full bg-[#FFF27A] font-medium text-[#1E1E21]">Разблокировать</button>
             <button type="button" onClick={logout} className="mt-3 h-10 w-full rounded-full border border-[#454952] text-sm text-slate-300">Выйти</button>

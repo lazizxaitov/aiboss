@@ -20,7 +20,7 @@ export function DashboardShell({
       <SessionLockGuard>
       <BusinessRefreshProvider>
         <BusinessContextProvider>
-          <div className="min-h-screen overflow-x-hidden bg-[#1E1E21] p-4 pb-24 text-[#f4f7fb] lg:pb-4">
+          <div className="min-h-screen overflow-x-clip bg-[#1E1E21] p-4 pb-24 text-[#f4f7fb] lg:pb-4">
             <div className="flex min-h-[calc(100vh-2rem)] w-full flex-col gap-4">
               <AppTopbar />
               <div className="flex min-h-0 min-w-0 flex-1 items-stretch gap-4">

@@ -18,6 +18,8 @@ export default function ProfilePage() {
   const [photo, setPhoto] = useState<string | null>(null);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
+  const [unlockPin, setUnlockPin] = useState("");
+  const [unlockPinError, setUnlockPinError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [passwordError, setPasswordError] = useState<string | null>(null);
 
@@ -67,6 +69,25 @@ export default function ProfilePage() {
       setNotice("Пароль изменён");
     } catch (error) {
       setPasswordError(error instanceof Error ? error.message : "Не удалось изменить пароль.");
+    }
+  };
+
+  const saveUnlockPin = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setUnlockPinError(null);
+    try {
+      const token = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("aibos_owner_session="))?.split("=").slice(1).join("=");
+      const response = await fetch(`${coreApiUrl}/api/v1/auth/unlock-pin`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${decodeURIComponent(token)}` } : {}) },
+        body: JSON.stringify({ pin: unlockPin }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail ?? "Не удалось сохранить PIN.");
+      setUnlockPin("");
+      setNotice("PIN разблокировки сохранён");
+    } catch (error) {
+      setUnlockPinError(error instanceof Error ? error.message : "Не удалось сохранить PIN.");
     }
   };
 
@@ -120,6 +141,14 @@ export default function ProfilePage() {
             <Input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} placeholder="Текущий пароль" required />
             <Input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder="Новый пароль (от 8 символов)" minLength={8} required />
             <div className="flex flex-wrap items-center gap-3"><Button type="submit" variant="secondary">Изменить пароль</Button>{passwordError ? <span className="text-sm text-rose-300">{passwordError}</span> : null}</div>
+          </form>
+          <form className="mt-6 grid gap-3 border-t border-[#3a3d43] pt-5" onSubmit={saveUnlockPin}>
+            <div>
+              <h3 className="text-base font-semibold text-[#f4f7fb]">PIN разблокировки</h3>
+              <p className="mt-1 text-sm text-slate-400">Отдельный PIN из 4 цифр для снятия блокировки сессии.</p>
+            </div>
+            <Input type="password" inputMode="numeric" maxLength={4} pattern="[0-9]{4}" value={unlockPin} onChange={(event) => setUnlockPin(event.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="Новый PIN из 4 цифр" required />
+            <div className="flex flex-wrap items-center gap-3"><Button type="submit" variant="secondary">Сохранить PIN</Button>{unlockPinError ? <span className="text-sm text-rose-300">{unlockPinError}</span> : null}</div>
           </form>
         </div>
       </Surface>

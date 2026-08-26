@@ -1239,7 +1239,7 @@ export function DashboardAssistantPanel() {
           className={cn(
             "relative flex min-h-0 shrink-0 flex-col overflow-hidden border-[#3c4048] bg-[radial-gradient(circle_at_78%_12%,rgba(255,255,255,0.05),transparent_32%),linear-gradient(180deg,#2E3137_0%,#2A2D33_100%)] px-4",
             smoothTransition,
-            expanded ? "h-[699px] xl:h-[739px] pt-5 pb-4" : "h-[165px] xl:h-[165px] py-3",
+            expanded ? "h-[699px] xl:!h-[calc(100dvh_-_23.625rem)] pt-5 pb-4" : "h-[165px] xl:h-[165px] py-3",
           )}
         >
           <button

@@ -31,7 +31,11 @@ class ChangePasswordRequest(BaseModel):
 
 
 class UnlockRequest(BaseModel):
-    password: str
+    pin: str
+
+
+class UnlockPinRequest(BaseModel):
+    pin: str
 
 
 @dataclass
@@ -44,6 +48,7 @@ class _SessionState:
 
 _SESSIONS: dict[str, _SessionState] = {}
 _SESSIONS_LOCK = Lock()
+_UNLOCK_PIN: str | None = None
 
 
 def _token_for(login: str) -> str:
@@ -113,7 +118,29 @@ def me(token: str | None = Query(default=None), authorization: str | None = Head
     session = _session(_token_from_request(token, authorization))
     if session is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Сессия недействительна")
-    return {"authenticated": True, "locked": session.locked, "user": {"login": session.login}}
+    return {
+        "authenticated": True,
+        "locked": session.locked,
+        "unlock_pin_configured": _UNLOCK_PIN is not None,
+        "user": {"login": session.login},
+    }
+
+
+@router.post("/unlock-pin")
+def set_unlock_pin(
+    payload: UnlockPinRequest,
+    token: str | None = Query(default=None),
+    authorization: str | None = Header(default=None),
+) -> dict[str, bool]:
+    session = _session(_token_from_request(token, authorization))
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Сессия недействительна")
+    if len(payload.pin) != 4 or not payload.pin.isdigit():
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="PIN должен содержать ровно 4 цифры")
+    global _UNLOCK_PIN
+    with _SESSIONS_LOCK:
+        _UNLOCK_PIN = payload.pin
+    return {"configured": True}
 
 
 @router.post("/lock")
@@ -132,8 +159,10 @@ def unlock_session(payload: UnlockRequest, token: str | None = Query(default=Non
     session = _session(_token_from_request(token, authorization))
     if session is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Сессия недействительна")
-    if not settings.owner_password or not compare_digest(payload.password, settings.owner_password):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверный пароль")
+    if _UNLOCK_PIN is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="PIN разблокировки не настроен. Создайте его в профиле.")
+    if not compare_digest(payload.pin, _UNLOCK_PIN):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверный PIN")
     with _SESSIONS_LOCK:
         session.locked = False
         session.locked_at = None
