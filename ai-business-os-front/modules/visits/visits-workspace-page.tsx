@@ -540,11 +540,6 @@ export function VisitsWorkspacePage() {
               </Badge>
             ))}
           </div>
-          <div className="mt-4 space-y-2 text-sm text-slate-400">
-            {(data?.data_quality.notes ?? []).map((note) => (
-              <p key={note}>{note}</p>
-            ))}
-          </div>
         </Surface>
       </div>
 
