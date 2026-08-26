@@ -138,7 +138,7 @@ class AIConversationService:
             if mapped_identity:
                 return mapped_identity
         if user_id:
-            return f"user:{user_id}"
+            return user_id
         context = OrganizationContextService(self.store).get_context()
         organization_value = organization_id or self._context_organization_id(context)
         period_value = period or self._context_period_value(context)
