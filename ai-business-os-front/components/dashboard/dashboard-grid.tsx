@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ChangeEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import {
   Responsive,
@@ -13,7 +13,9 @@ import { Badge } from "@/components/ui/badge";
 import { Drawer } from "@/components/ui/drawer";
 import { FilterChip } from "@/components/ui/filter-chip";
 import { Dropdown } from "@/components/ui/dropdown";
+import { Select } from "@/components/ui/select";
 import { Surface } from "@/components/ui/surface";
+import { useBusinessContext } from "@/components/business/business-context-provider";
 import { AiPreviewBanner } from "@/components/dashboard/ai-preview-banner";
 import { AiSuggestionsButton } from "@/components/dashboard/ai-suggestions-button";
 import { AiSuggestionsDrawer } from "@/components/dashboard/ai-suggestions-drawer";
@@ -49,6 +51,7 @@ import {
   clampSize,
   getLauncherVariantFromGrid,
   launcherSemanticSizeOptions,
+  semanticSizeToLauncherSize,
 } from "@/lib/launcher/size-mapping";
 import { getWidgetSizeContract } from "@/lib/launcher/widget-registry";
 import type {
@@ -64,8 +67,9 @@ import {
   type DashboardManifestDataQuality,
   type DashboardSemanticSize,
   type DashboardManifestWidget,
+  type DashboardWidgetType,
 } from "@/lib/core-api";
-import { streamAiChat } from "@/lib/core-api";
+import { getDashboardManifest, streamAiChat } from "@/lib/core-api";
 
 type SerializedMetricValue = AnalyticsMetricValue;
 
@@ -190,7 +194,6 @@ type SerializedAIInsight = {
 
 type ChatTile = {
   title: string;
-  accent: "yellow" | "slate";
   icon: "chat" | "head";
 };
 
@@ -200,6 +203,408 @@ type ModelItem = {
   description: string;
   icon: "chatgpt" | "claude" | "grok";
 };
+
+type ChatAttachment = {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  kind: "file" | "image";
+  content: string | null;
+  dataUrl: string | null;
+};
+
+type ChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  attachments: ChatAttachment[];
+};
+
+type AssistantFileAttachment = {
+  id: string;
+  name: string;
+  type: string;
+  content: string;
+  size: number;
+};
+
+const QUICK_ACTION_PROMPTS: Record<string, string> = {
+  "Обсудить продажи":
+    "Проведи краткий анализ продаж по текущей выбранной организации и текущему периоду. Покажи выручку, количество заказов, средний заказ, проданные единицы и возвраты. Затем выдели самые важные изменения или проблемы и кратко объясни, на что руководителю стоит обратить внимание. Используй только реальные данные AI Business OS. Если каких-либо данных нет, прямо скажи об этом.",
+  "Проверить склад":
+    "Проверь текущее состояние склада по выбранной организации. Найди товары с риском дефицита, отсутствующими остатками, необычными остатками или другими доступными товарными сигналами. Сначала покажи наиболее важные проблемы, затем дай краткие рекомендации руководителю. Используй только реальные данные AI Business OS. Не придумывай остатки или проблемы, которых нет в данных.",
+  "Собрать сводку":
+    "Подготовь краткую управленческую сводку по текущей организации и выбранному периоду. Включи основные показатели бизнеса: выручку, заказы, средний заказ, проданные единицы, возвраты и другие доступные важные показатели. После цифр выдели 3 самых важных вывода для руководителя и действия, которые стоит рассмотреть. Используй только реальные данные AI Business OS.",
+  "Создать виджет через ИИ":
+    "Я хочу создать новый виджет для панели AI Business OS. Помоги определить, какой виджет нужен. Сначала спроси меня, какую информацию или показатель я хочу видеть на виджете. Не создавай виджет, пока не получишь от меня описание.",
+};
+
+type WidgetCatalogItem = {
+  widget_type: DashboardWidgetType;
+  title: string;
+  description: string;
+};
+
+const CUSTOM_WIDGETS_STORAGE_KEY = "ai-business-os:dashboard-custom-widgets:v1";
+const ALL_WIDGET_TYPES: DashboardWidgetType[] = [
+  "kpi",
+  "trend",
+  "line_chart",
+  "bar_chart",
+  "ranking",
+  "table",
+  "alert",
+  "product_alert",
+  "customer_alert",
+  "inventory_alert",
+  "watchlist",
+  "organization_comparison",
+  "product_ranking",
+  "customer_ranking",
+  "inventory_risk",
+  "visit_summary",
+  "data_quality",
+  "sales_rep_performance",
+  "ai_insight",
+  "ai_recommendation",
+  "photo_alert",
+];
+
+function readStoredCustomWidgets() {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(CUSTOM_WIDGETS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? (parsed as DashboardManifestWidget[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function storeCustomWidgets(widgets: DashboardManifestWidget[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(CUSTOM_WIDGETS_STORAGE_KEY, JSON.stringify(widgets));
+  } catch {
+    // Ignore persistence failures. The grid still works with in-memory state.
+  }
+}
+
+function widgetCatalogTitle(widgetType: DashboardWidgetType) {
+  switch (widgetType) {
+    case "kpi":
+      return "KPI";
+    case "trend":
+      return "Динамика";
+    case "line_chart":
+      return "Линейный график";
+    case "bar_chart":
+      return "Столбчатый график";
+    case "ranking":
+      return "Рейтинг";
+    case "table":
+      return "Таблица";
+    case "alert":
+      return "Сигнал";
+    case "product_alert":
+      return "Товарный сигнал";
+    case "customer_alert":
+      return "Клиентский сигнал";
+    case "inventory_alert":
+      return "Складской сигнал";
+    case "watchlist":
+      return "На контроле";
+    case "organization_comparison":
+      return "Сравнение организаций";
+    case "product_ranking":
+      return "Топ товаров";
+    case "customer_ranking":
+      return "Топ клиентов";
+    case "inventory_risk":
+      return "Риски запасов";
+    case "visit_summary":
+      return "Визиты";
+    case "data_quality":
+      return "Качество данных";
+    case "sales_rep_performance":
+      return "Менеджеры";
+    case "ai_insight":
+      return "AI вывод";
+    case "ai_recommendation":
+      return "AI рекомендация";
+    case "photo_alert":
+      return "Фото-сигнал";
+    default:
+      return widgetType;
+  }
+}
+
+function widgetCatalogDescription(widgetType: DashboardWidgetType) {
+  switch (widgetType) {
+    case "kpi":
+      return "Одна ключевая метрика с крупным числом.";
+    case "trend":
+    case "line_chart":
+    case "bar_chart":
+      return "График динамики по периоду.";
+    case "ranking":
+    case "product_ranking":
+    case "customer_ranking":
+      return "Список лидеров с ранжированием.";
+    case "table":
+    case "organization_comparison":
+      return "Табличное сравнение показателей.";
+    case "alert":
+    case "product_alert":
+    case "customer_alert":
+    case "inventory_alert":
+    case "photo_alert":
+      return "Сигнал с рекомендацией и доказательствами.";
+    case "watchlist":
+      return "Сводка важных сигналов.";
+    case "inventory_risk":
+      return "Риски по остаткам и перемещениям.";
+    case "visit_summary":
+      return "Краткая сводка по визитам и менеджерам.";
+    case "data_quality":
+      return "Статус качества данных и ограничения.";
+    case "sales_rep_performance":
+      return "Показатели по менеджерам продаж.";
+    case "ai_insight":
+    case "ai_recommendation":
+      return "Подсказка или рекомендация от AI.";
+    default:
+      return "Готовый виджет для дашборда.";
+  }
+}
+
+function createMetricPreview(value: number, previous: number, unit = "number"): SerializedMetricValue {
+  return {
+    value,
+    previous_value: previous,
+    delta: value - previous,
+    percent_delta: previous === 0 ? null : ((value - previous) / previous) * 100,
+    unit,
+    status: "AVAILABLE",
+    data_status: "AVAILABLE",
+    coverage: 1,
+    confidence: 0.98,
+    currency: unit === "currency" ? "UZS" : null,
+    record_count: 42,
+    note: "Шаблонные данные для превью",
+  };
+}
+
+function buildWidgetPreviewPayload(widgetType: DashboardWidgetType, organizationName: string): Record<string, unknown> {
+  const series = [
+    { organization_name: organizationName, value: 128000 },
+    { organization_name: "Сегмент 2", value: 94000 },
+    { organization_name: "Сегмент 3", value: 151000 },
+  ];
+
+  switch (widgetType) {
+    case "kpi":
+      return { metric: createMetricPreview(128000, 118000, "currency"), metric_key: "revenue" };
+    case "trend":
+    case "line_chart":
+    case "bar_chart":
+      return {
+        metric: createMetricPreview(128000, 118000, "currency"),
+        series,
+        period_label: "За последние 30 дней",
+      };
+    case "organization_comparison":
+      return {
+        rows: [
+          {
+            organization_id: "org-1",
+            organization_name: organizationName,
+            metrics: {
+              revenue: createMetricPreview(128000, 118000, "currency"),
+              orders: createMetricPreview(840, 790),
+              sold_units: createMetricPreview(1420, 1330),
+              payments_received: createMetricPreview(121500, 117200, "currency"),
+              customers: createMetricPreview(210, 198),
+            },
+          },
+          {
+            organization_id: "org-2",
+            organization_name: "Сравнение 2",
+            metrics: {
+              revenue: createMetricPreview(97000, 90500, "currency"),
+              orders: createMetricPreview(630, 590),
+              sold_units: createMetricPreview(1010, 960),
+              payments_received: createMetricPreview(94000, 90500, "currency"),
+              customers: createMetricPreview(174, 162),
+            },
+          },
+        ],
+      };
+    case "product_ranking":
+    case "ranking":
+      return {
+        rows: [
+          {
+            product_name: "Товар A",
+            organization_name: organizationName,
+            revenue: createMetricPreview(54000, 48200, "currency"),
+            sold_units: createMetricPreview(420, 390),
+            current_stock: createMetricPreview(88, 75),
+            orders_count: createMetricPreview(112, 101),
+          },
+          {
+            product_name: "Товар B",
+            organization_name: organizationName,
+            revenue: createMetricPreview(47000, 44000, "currency"),
+            sold_units: createMetricPreview(380, 360),
+            current_stock: createMetricPreview(61, 54),
+            orders_count: createMetricPreview(98, 90),
+          },
+        ],
+      };
+    case "customer_ranking":
+      return {
+        rows: [
+          {
+            customer_name: "Клиент А",
+            orders_count: createMetricPreview(14, 12),
+            revenue: createMetricPreview(64000, 58000, "currency"),
+            sold_units: createMetricPreview(240, 220),
+            days_since_last_order: createMetricPreview(5, 7),
+          },
+          {
+            customer_name: "Клиент B",
+            orders_count: createMetricPreview(11, 10),
+            revenue: createMetricPreview(52000, 50100, "currency"),
+            sold_units: createMetricPreview(190, 175),
+            days_since_last_order: createMetricPreview(9, 11),
+          },
+        ],
+      };
+    case "inventory_risk":
+      return {
+        low_stock: [
+          {
+            product_name: "Товар A",
+            organization_name: organizationName,
+            current_stock: createMetricPreview(12, 18),
+            days_of_stock: createMetricPreview(4, 5),
+            sales_velocity_30d: createMetricPreview(80, 72),
+          },
+        ],
+        overstock: [
+          {
+            product_name: "Товар B",
+            organization_name: organizationName,
+            current_stock: createMetricPreview(310, 280),
+            days_of_stock: createMetricPreview(48, 42),
+            sales_velocity_30d: createMetricPreview(18, 16),
+          },
+        ],
+        stockout_risk: [
+          {
+            product_name: "Товар C",
+            organization_name: organizationName,
+            current_stock: createMetricPreview(8, 14),
+            days_of_stock: createMetricPreview(2, 4),
+            sales_velocity_30d: createMetricPreview(92, 85),
+          },
+        ],
+        transfer_opportunities: [],
+      };
+    case "visit_summary":
+      return {
+        metric: createMetricPreview(426, 398),
+        sales_reps: [
+          {
+            sales_rep_name: "Менеджер 1",
+            organization_name: organizationName,
+            visits_count: createMetricPreview(62, 58),
+            orders_count: createMetricPreview(18, 15),
+            revenue: createMetricPreview(21500, 18800, "currency"),
+            sold_units: createMetricPreview(154, 143),
+            conversion_rate: createMetricPreview(29, 26),
+          },
+        ],
+      };
+    case "data_quality":
+      return {
+        items: [
+          {
+            metric_key: "revenue",
+            data_status: "AVAILABLE",
+            coverage: 0.95,
+            confidence: 0.98,
+            message: "Данные по выручке подтверждены.",
+            missing_fields: [],
+          },
+          {
+            metric_key: "orders",
+            data_status: "PARTIAL",
+            coverage: 0.84,
+            confidence: 0.9,
+            message: "Часть данных по заказам требует уточнения.",
+            missing_fields: ["source_channel"],
+          },
+        ],
+        notes: ["Шаблонные данные для preview", "Показывается текущее состояние структуры."],
+      };
+    case "watchlist":
+      return {
+        rows: [
+          {
+            id: "watch-1",
+            title: "Проверить продажи",
+            summary: `В ${organizationName} есть сигнал по динамике продаж.`,
+            severity: "warning",
+            recommendation: "Посмотри последние сделки и выдели сильные товары.",
+            evidence: ["Продажи", "Тренд"],
+          },
+          {
+            id: "watch-2",
+            title: "Проверить склад",
+            summary: "Есть риск дефицита по части ассортимента.",
+            severity: "attention",
+            recommendation: "Сверь остатки и переноси приоритет на дефицитные позиции.",
+            evidence: ["Остатки", "Склад"],
+          },
+        ],
+      };
+    case "alert":
+    case "product_alert":
+    case "customer_alert":
+    case "inventory_alert":
+    case "photo_alert":
+    case "ai_insight":
+    case "ai_recommendation":
+      return {
+        id: `preview-${widgetType}`,
+        type: widgetType,
+        severity: "warning",
+        title: widgetCatalogTitle(widgetType),
+        summary: `Шаблонный сигнал для ${organizationName}.`,
+        recommendation: "Сформировать действия по этому сигналу.",
+        metrics: [
+          { label: "Влияние", current: 18, delta: 4 },
+          { label: "Тренд", current: 72, delta: 6 },
+        ],
+        evidence: ["Шаблон", "Preview"],
+      };
+    default:
+      return {
+        metric: createMetricPreview(128000, 118000, "currency"),
+        rows: [
+          {
+            title: "Сегмент A",
+            summary: `Превью для ${organizationName}.`,
+            severity: "info",
+          },
+        ],
+      };
+  }
+}
 
 function statusLabel(status: AnalyticsDataStatus, compact = false) {
   switch (status) {
@@ -340,6 +745,139 @@ function createFallbackWidget({
   };
 }
 
+function createId(prefix: string) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function formatBytes(size: number) {
+  if (!Number.isFinite(size) || size <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let value = size;
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024;
+    index += 1;
+  }
+  return `${value.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function isTextFile(file: File) {
+  if (file.type.startsWith("text/")) return true;
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  return new Set(["txt", "md", "csv", "json", "yaml", "yml", "xml", "html", "htm", "ts", "tsx", "js", "jsx", "py", "sql", "log"]).has(extension);
+}
+
+function isImageFile(file: File) {
+  return file.type.startsWith("image/");
+}
+
+function readFileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error("Не удалось прочитать файл."));
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function buildAttachmentDraft(file: File): Promise<ChatAttachment> {
+  const kind: ChatAttachment["kind"] = isImageFile(file) ? "image" : "file";
+  let content: string | null = null;
+  let dataUrl: string | null = null;
+
+  if (kind === "image") {
+    try {
+      dataUrl = await readFileAsDataUrl(file);
+    } catch {
+      dataUrl = null;
+    }
+  } else if (isTextFile(file)) {
+    try {
+      content = await file.text();
+    } catch {
+      content = null;
+    }
+  }
+
+  return {
+    id: createId("attachment"),
+    name: file.name,
+    type: file.type || "application/octet-stream",
+    size: file.size,
+    kind,
+    content,
+    dataUrl,
+  };
+}
+
+function buildAttachmentPrompt(attachments: ChatAttachment[]) {
+  if (!attachments.length) return "";
+  const lines = ["Вложенные файлы:"];
+  for (const attachment of attachments) {
+    lines.push(`- ${attachment.name} (${attachment.type}, ${formatBytes(attachment.size)})`);
+    if (attachment.kind === "image") {
+      lines.push("  Это изображение. Используй его содержимое, если модель поддерживает картинки.");
+    } else if (attachment.content) {
+      lines.push("  Содержимое:");
+      lines.push(attachment.content.trim().slice(0, 4000) || "Пустой файл.");
+    } else {
+      lines.push("  Содержимое не извлечено, используй только метаданные.");
+    }
+  }
+  return lines.join("\n");
+}
+
+function buildMessageContent(message: ChatMessage): string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }> {
+  if (message.role !== "user") {
+    return message.text;
+  }
+
+  const parts: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }> = [];
+  const trimmedText = message.text.trim();
+
+  if (trimmedText) {
+    parts.push({ type: "text", text: trimmedText });
+  }
+
+  if (message.attachments.length) {
+    parts.push({ type: "text", text: buildAttachmentPrompt(message.attachments) });
+    for (const attachment of message.attachments) {
+      if (attachment.kind === "image" && attachment.dataUrl) {
+        parts.push({ type: "image_url", image_url: { url: attachment.dataUrl } });
+      }
+    }
+  }
+
+  if (!parts.length) {
+    return "";
+  }
+
+  if (parts.length === 1 && parts[0].type === "text") {
+    return parts[0].text;
+  }
+
+  return parts;
+}
+
+function parseAssistantFiles(rawText: string) {
+  const matches = [...rawText.matchAll(/```file(?:\s+name="([^"]+)")?(?:\s+type="([^"]+)")?\s*\n([\s\S]*?)```/gi)];
+  const attachments: AssistantFileAttachment[] = matches.map((match, index) => {
+    const content = match[3].trim();
+    return {
+      id: createId("assistant-file"),
+      name: match[1] || `file-${index + 1}.txt`,
+      type: match[2] || "text/plain",
+      content,
+      size: new Blob([content]).size,
+    };
+  });
+  const text = rawText
+    .replace(/```file(?:\s+name="([^"]+)")?(?:\s+type="([^"]+)")?\s*\n[\s\S]*?```/gi, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return { text, attachments };
+}
+
 const FALLBACK_DASHBOARD_DATA_QUALITY: DashboardManifestDataQuality = {
   overall_status: "ANALYSIS_PENDING",
   surfaced_items: [],
@@ -447,11 +985,14 @@ const FALLBACK_DASHBOARD_WIDGETS: DashboardManifestWidget[] = [
 export function DashboardAssistantPanel() {
   const [expanded, setExpanded] = useState(false);
   const [selectedModel, setSelectedModel] = useState(0);
+  const [selectedTileIndex, setSelectedTileIndex] = useState<number | null>(null);
   const [message, setMessage] = useState("");
-  const [chatMessages, setChatMessages] = useState<Array<{ id: string; role: "user" | "assistant"; text: string }>>([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
   const messageInputRef = useRef<HTMLInputElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const chatSurfaceRef = useRef<HTMLDivElement | null>(null);
   const chatThreadRef = useRef<HTMLDivElement | null>(null);
 
@@ -499,10 +1040,10 @@ export function DashboardAssistantPanel() {
     return () => window.cancelAnimationFrame(frame);
   }, [chatMessages]);
   const tiles: ChatTile[] = [
-    { title: "Обсудить продажи", accent: "yellow", icon: "chat" },
-    { title: "Проверить склад", accent: "slate", icon: "head" },
-    { title: "Собрать сводку", accent: "slate", icon: "chat" },
-    { title: "Спросить про KPI", accent: "yellow", icon: "head" },
+    { title: "Обсудить продажи", icon: "chat" },
+    { title: "Проверить склад", icon: "head" },
+    { title: "Собрать сводку", icon: "chat" },
+    { title: "Создать виджет через ИИ", icon: "head" },
   ];
 
   const models: ModelItem[] = [
@@ -535,23 +1076,90 @@ export function DashboardAssistantPanel() {
   const activeModel = models[selectedModel] ?? models[0];
   const chatTitle =
     chatMessages.find((item) => item.role === "user")?.text.trim() || "Новый чат";
+  const pendingAttachmentChips = pendingAttachments.length ? (
+    <div className="flex flex-wrap gap-2">
+      {pendingAttachments.map((attachment) => (
+        <span
+          key={attachment.id}
+          className="inline-flex items-center gap-2 rounded-full border border-[#4a4e56] bg-[#343840] px-3 py-1.5 text-[11px] text-slate-300"
+        >
+          {attachment.kind === "image" && attachment.dataUrl ? (
+            <Image
+              src={attachment.dataUrl}
+              alt=""
+              width={20}
+              height={20}
+              className="h-5 w-5 rounded-full object-cover"
+              unoptimized
+              aria-hidden="true"
+            />
+          ) : (
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white/10 text-[10px] uppercase text-slate-200">
+              {attachment.name.split(".").pop()?.slice(0, 3) || "file"}
+            </span>
+          )}
+          <span className="max-w-[180px] truncate">{attachment.name}</span>
+          <span className="opacity-60">{formatBytes(attachment.size)}</span>
+          <button
+            type="button"
+            onClick={() => handleRemoveAttachment(attachment.id)}
+            className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-white/10 text-[12px] leading-none text-slate-200 hover:bg-white/20"
+            aria-label={`Удалить файл ${attachment.name}`}
+          >
+            ×
+          </button>
+        </span>
+      ))}
+    </div>
+  ) : null;
 
-  const handleSendMessage = async () => {
-    const text = message.trim();
-    if (!text || isGenerating) return;
+  const handleAttachmentPick = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    if (!files.length) return;
+    const drafts = await Promise.all(files.map((file) => buildAttachmentDraft(file)));
+    setPendingAttachments((current) => [...current, ...drafts]);
+    setExpanded(true);
+    requestAnimationFrame(() => {
+      messageInputRef.current?.focus();
+    });
+  };
+
+  const handleRemoveAttachment = (attachmentId: string) => {
+    setPendingAttachments((current) => current.filter((item) => item.id !== attachmentId));
+  };
+
+  const handleSendMessage = async (messageOverride?: string, attachmentsOverride?: ChatAttachment[]) => {
+    const text = (messageOverride ?? message).trim();
+    const attachments = attachmentsOverride ?? pendingAttachments;
+    if ((!text && attachments.length === 0) || isGenerating) return;
 
     setExpanded(true);
     setChatError(null);
-    const userId = `user-${Date.now()}-${chatMessages.length}`;
-    const assistantId = `assistant-${Date.now()}-${chatMessages.length}`;
-    const history = [...chatMessages, { id: userId, role: "user" as const, text }];
-    setChatMessages((current) => [...current, { id: userId, role: "user", text }, { id: assistantId, role: "assistant", text: "" }]);
+    const userId = createId("user");
+    const assistantId = createId("assistant");
+    const userMessage: ChatMessage = {
+      id: userId,
+      role: "user",
+      text,
+      attachments,
+    };
+    const history = [...chatMessages, userMessage];
+    setChatMessages((current) => [
+      ...current,
+      userMessage,
+      { id: assistantId, role: "assistant", text: "", attachments: [] },
+    ]);
     setMessage("");
+    setPendingAttachments([]);
     setIsGenerating(true);
     try {
       await streamAiChat(
-        history.map((item) => ({ role: item.role, content: item.text })),
-        (content) => setChatMessages((current) => current.map((item) => item.id === assistantId ? { ...item, text: item.text + content } : item)),
+        history.map((item) => ({ role: item.role, content: buildMessageContent(item) })),
+        (content) =>
+          setChatMessages((current) =>
+            current.map((item) => (item.id === assistantId ? { ...item, text: item.text + content } : item)),
+          ),
       );
     } catch (error) {
       setChatError(error instanceof Error ? error.message : "Не удалось получить ответ AI.");
@@ -560,9 +1168,16 @@ export function DashboardAssistantPanel() {
     }
   };
 
+  const handleQuickAction = (tile: ChatTile, index: number) => {
+    const prompt = QUICK_ACTION_PROMPTS[tile.title] ?? tile.title;
+    setSelectedTileIndex(index);
+    void handleSendMessage(prompt, []);
+  };
+
   const handleBackToStart = () => {
     setChatMessages([]);
     setMessage("");
+    setPendingAttachments([]);
     setExpanded(true);
     requestAnimationFrame(() => {
       messageInputRef.current?.focus();
@@ -593,6 +1208,15 @@ export function DashboardAssistantPanel() {
             </p>
           ) : null}
           <div className={cn("relative flex min-h-0 flex-col", smoothTransition, expanded ? "flex-1 gap-4" : "flex-1 justify-center gap-3")}>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(event) => {
+                void handleAttachmentPick(event);
+              }}
+            />
             {expanded && hasConversation ? (
               <div className="flex items-center gap-4">
                 <button
@@ -604,10 +1228,18 @@ export function DashboardAssistantPanel() {
                 >
                   <span aria-hidden>‹</span>
                 </button>
-                <div className="min-w-0 flex-1">
-                  <p className="max-w-full truncate text-[18px] font-semibold leading-[1.1] tracking-[-0.05em] text-[#f4f7fb] xl:text-[20px]">
-                    {chatTitle}
-                  </p>
+                <div className="flex min-w-0 flex-1 items-center gap-3">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full border border-[#4a4e56] bg-[#343840]">
+                    <ModelIcon kind={activeModel.icon} selected />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="max-w-full truncate text-[18px] font-semibold leading-[1.1] tracking-[-0.05em] text-[#f4f7fb] xl:text-[20px]">
+                      {chatTitle}
+                    </p>
+                    <p className="mt-0.5 text-[11px] uppercase tracking-[0.28em] text-slate-500">
+                      {activeModel.name}
+                    </p>
+                  </div>
                 </div>
               </div>
             ) : (
@@ -634,6 +1266,8 @@ export function DashboardAssistantPanel() {
               </div>
             )}
 
+            {expanded ? pendingAttachmentChips : null}
+
             {!expanded ? (
               <form
                 className="flex h-[58px] w-full items-center gap-3 rounded-[24px] border border-[#3a3d43] bg-[#343840] px-4 pr-2 text-left shadow-[0_18px_30px_rgba(0,0,0,0.16)] transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]"
@@ -642,6 +1276,15 @@ export function DashboardAssistantPanel() {
                   handleSendMessage();
                 }}
               >
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#343840] text-[#f4f7fb] transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] hover:bg-[#3d424a] hover:text-[#FFF27A]"
+                  aria-label="Прикрепить файл"
+                  title="Прикрепить файл"
+                >
+                  <Image src="/attachmenticon.png" alt="" width={24} height={24} className="h-5 w-5 select-none object-contain" aria-hidden="true" />
+                </button>
                 <input
                   ref={messageInputRef}
                   value={message}
@@ -677,29 +1320,73 @@ export function DashboardAssistantPanel() {
               <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
                 <div ref={chatThreadRef} className="min-h-0 flex-1 overflow-y-auto pr-1">
                   <div className="flex flex-col gap-4 pb-3">
-                    {chatMessages.map((item) =>
-                      item.role === "user" ? (
-                        <div key={item.id} className="ml-auto flex max-w-[82%] items-start gap-2.5 rounded-[20px] bg-[#565b63] px-3 py-3 text-[#f4f7fb]">
-                          <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#FFF27A] text-[11px] font-semibold text-[#1E1E21]">
-                            Вы
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <p className="text-[14px] font-semibold tracking-[-0.04em] text-[#f4f7fb]">Вы</p>
-                            <p className="mt-1.5 text-[13px] leading-6 text-[#f4f7fb]">{item.text}</p>
-                          </div>
+                    {chatMessages.map((item) => {
+                      const parsed = item.role === "assistant" ? parseAssistantFiles(item.text) : null;
+                      const visibleText = parsed ? parsed.text || item.text : item.text;
+                      return item.role === "user" ? (
+                        <div key={item.id} className="ml-auto max-w-[82%] rounded-[22px] bg-[#565b63] px-4 py-3 text-[#f4f7fb] shadow-[0_10px_22px_rgba(0,0,0,0.14)]">
+                          <p className="whitespace-pre-wrap text-[15px] leading-6 text-[#f4f7fb]">{item.text}</p>
+                          {item.attachments.length > 0 ? (
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {item.attachments.map((attachment) => (
+                                <span
+                                  key={attachment.id}
+                                  className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-[11px] text-[#f4f7fb]"
+                                >
+                                  {attachment.kind === "image" && attachment.dataUrl ? (
+                                    <Image
+                                      src={attachment.dataUrl}
+                                      alt=""
+                                      width={20}
+                                      height={20}
+                                      className="h-5 w-5 rounded-full object-cover"
+                                      unoptimized
+                                      aria-hidden="true"
+                                    />
+                                  ) : (
+                                    <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white/10 text-[10px] uppercase text-[#f4f7fb]">
+                                      {attachment.name.split(".").pop()?.slice(0, 3) || "file"}
+                                    </span>
+                                  )}
+                                  <span className="max-w-[180px] truncate">{attachment.name}</span>
+                                  <span className="opacity-60">{formatBytes(attachment.size)}</span>
+                                </span>
+                              ))}
+                            </div>
+                          ) : null}
                         </div>
                       ) : (
-                        <div key={item.id} className="mr-auto flex max-w-[82%] items-start gap-2.5 rounded-[20px] bg-[#f4f7fb] px-3 py-3 text-[#1E1E21]">
-                          <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#7fb8b0]">
-                            <ModelIcon kind={activeModel.icon} selected />
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <p className="text-[14px] font-semibold tracking-[-0.04em] text-[#1E1E21]">{activeModel.name}</p>
-                            <p className="mt-1.5 text-[13px] leading-6 text-[#1E1E21]">{item.text}</p>
-                          </div>
+                        <div key={item.id} className="mr-auto max-w-[82%] rounded-[22px] bg-[#f4f7fb] px-4 py-3 text-[#1E1E21] shadow-[0_10px_22px_rgba(0,0,0,0.14)]">
+                          <p className="whitespace-pre-wrap text-[15px] leading-6 text-[#1E1E21]">{visibleText || " "}</p>
+                          {parsed?.attachments.length ? (
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {parsed.attachments.map((attachment) => (
+                                <button
+                                  key={attachment.id}
+                                  type="button"
+                                  onClick={() => {
+                                    const blob = new Blob([attachment.content], { type: attachment.type });
+                                    const url = URL.createObjectURL(blob);
+                                    const anchor = document.createElement("a");
+                                    anchor.href = url;
+                                    anchor.download = attachment.name;
+                                    anchor.click();
+                                    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+                                  }}
+                                  className="inline-flex items-center gap-2 rounded-full border border-[#d7dae3] bg-white px-3 py-1.5 text-[11px] text-[#1E1E21] transition hover:border-[#FFF27A]/40"
+                                >
+                                  <span className="max-w-[180px] truncate font-medium">{attachment.name}</span>
+                                  <span className="opacity-60">{formatBytes(attachment.size)}</span>
+                                  <span className="rounded-full bg-[#FFF27A] px-2 py-0.5 text-[10px] font-semibold text-[#1E1E21]">
+                                    Скачать
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
                         </div>
-                      ),
-                    )}
+                      );
+                    })}
                   </div>
                 </div>
 
@@ -710,6 +1397,15 @@ export function DashboardAssistantPanel() {
                     handleSendMessage();
                   }}
                 >
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#343840] text-[#f4f7fb] transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] hover:bg-[#3d424a] hover:text-[#FFF27A]"
+                    aria-label="Прикрепить файл"
+                    title="Прикрепить файл"
+                  >
+                    <Image src="/attachmenticon.png" alt="" width={24} height={24} className="h-5 w-5 select-none object-contain" aria-hidden="true" />
+                  </button>
                   <input
                     ref={messageInputRef}
                     value={message}
@@ -743,13 +1439,19 @@ export function DashboardAssistantPanel() {
             ) : (
               <>
                 <div className="grid grid-cols-2 gap-4 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]">
-                  {tiles.map((tile) => (
+                  {tiles.map((tile, index) => {
+                    const selected = index === selectedTileIndex;
+
+                    return (
                     <button
                       key={`${tile.title}-${tile.icon}`}
                       type="button"
+                      onClick={() => {
+                        handleQuickAction(tile, index);
+                      }}
                       className={cn(
                         "group relative flex min-h-[154px] flex-col justify-between overflow-hidden rounded-[24px] px-4 py-4 text-left transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] hover:-translate-y-0.5",
-                        tile.accent === "yellow"
+                        selected
                           ? "bg-[#FFF27A] text-[#1E1E21] shadow-[0_16px_36px_rgba(255,242,122,0.18)]"
                           : "bg-[#4a4a4a] text-[#f4f7fb]",
                       )}
@@ -761,7 +1463,7 @@ export function DashboardAssistantPanel() {
                         <div
                           className={cn(
                             "flex h-[52px] w-[52px] items-center justify-center rounded-full",
-                            tile.accent === "yellow" ? "bg-[#1E1E21]/10" : "bg-white/10",
+                            selected ? "bg-[#1E1E21]/10" : "bg-white/10",
                           )}
                         >
                           <ChatTileIcon kind={tile.icon} />
@@ -769,7 +1471,8 @@ export function DashboardAssistantPanel() {
                         <span className="text-3xl font-light leading-none">↗</span>
                       </div>
                     </button>
-                  ))}
+                    );
+                  })}
                 </div>
 
                 <div className="flex items-center justify-between gap-3 pt-2">
@@ -823,6 +1526,15 @@ export function DashboardAssistantPanel() {
                     handleSendMessage();
                   }}
                 >
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#343840] text-[#f4f7fb] transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] hover:bg-[#3d424a] hover:text-[#FFF27A]"
+                    aria-label="Прикрепить файл"
+                    title="Прикрепить файл"
+                  >
+                    <Image src="/attachmenticon.png" alt="" width={24} height={24} className="h-5 w-5 select-none object-contain" aria-hidden="true" />
+                  </button>
                   <input
                     ref={messageInputRef}
                     value={message}
@@ -1541,9 +2253,14 @@ function KpiWidget({ widget, variant }: { widget: DashboardManifestWidget; varia
   return (
     <Surface className={cn("group relative flex h-full min-h-0 flex-col overflow-hidden", widgetSurfacePadding(widget, variant))}>
       {widgetHeader(widget, compact)}
-      <div className={cn("mt-5 flex min-h-0 flex-1 flex-col justify-between gap-4", compact && "mt-4 gap-3")}>
-        <div>
+      <div className={cn("mt-5 flex min-h-0 flex-1 items-center justify-center", compact && "mt-4")}>
+        <div className="w-full text-center">
           <p className={cn(compact ? "text-[28px]" : "text-[40px]", "font-semibold tracking-[-0.08em]", metricTone(metric))}>{formatMetric(metric)}</p>
+          {!compact && payload.metric_key ? (
+            <p className="mt-2 text-sm leading-6 text-slate-400">
+              {displayMetricLabel(payload.metric_key) ?? "Показатель"}
+            </p>
+          ) : null}
         </div>
       </div>
       {compact ? null : widgetFooter(widget, compact)}
@@ -2123,10 +2840,16 @@ function renderWidget(widget: DashboardManifestWidget, variant?: LauncherWidgetV
 
 export function DashboardGrid() {
   const { manifest, loading, error } = useDashboardManifest();
+  const { state: businessState, availableOrganizations } = useBusinessContext();
   const [launcherState, setLauncherState] = useState<LauncherState | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [interactionLayouts, setInteractionLayouts] = useState<ResponsiveLayouts | null>(null);
-  const [hiddenDrawerOpen, setHiddenDrawerOpen] = useState(false);
+  const [widgetLibraryOpen, setWidgetLibraryOpen] = useState(false);
+  const [customWidgets, setCustomWidgets] = useState<DashboardManifestWidget[]>(() => readStoredCustomWidgets());
+  const [librarySelectedType, setLibrarySelectedType] = useState<DashboardWidgetType>("kpi");
+  const [librarySelectedOrganizationId, setLibrarySelectedOrganizationId] = useState<string>("");
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const [libraryError, setLibraryError] = useState<string | null>(null);
   const [suggestionsDrawerOpen, setSuggestionsDrawerOpen] = useState(false);
   const [dismissedSuggestionIds, setDismissedSuggestionIds] = useState<string[]>([]);
   const [previewResult, setPreviewResult] = useState<LauncherSuggestionPreview | null>(null);
@@ -2135,8 +2858,8 @@ export function DashboardGrid() {
   const launcherStateLoaded = useRef(false);
 
   const manifestWidgets = useMemo(
-    () => manifest?.widgets.filter((widget) => !widget.hidden) ?? [],
-    [manifest],
+    () => [...(manifest?.widgets.filter((widget) => !widget.hidden) ?? []), ...customWidgets],
+    [customWidgets, manifest],
   );
   const allWidgets = useMemo(
     () => {
@@ -2145,7 +2868,6 @@ export function DashboardGrid() {
     },
     [manifestWidgets],
   );
-  const resolvedDataQuality = manifest?.data_quality ?? FALLBACK_DASHBOARD_DATA_QUALITY;
   const defaultState = useMemo(() => createDefaultLauncherState(allWidgets) as LauncherState, [allWidgets]);
   const effectiveState = useMemo(
     () => normalizeLauncherState(launcherState ?? defaultState, allWidgets) as LauncherState,
@@ -2189,6 +2911,36 @@ export function DashboardGrid() {
     () => allWidgets.filter((widget) => hiddenWidgetIds.has(widget.widget_id)),
     [allWidgets, hiddenWidgetIds],
   );
+  const widgetCatalog = useMemo<WidgetCatalogItem[]>(() => {
+    const registryMap = new Map((manifest?.widget_registry ?? []).map((entry) => [entry.widget_type, entry]));
+    return ALL_WIDGET_TYPES.map((widget_type) => ({
+      widget_type,
+      title: widgetCatalogTitle(widget_type),
+      description: registryMap.get(widget_type)?.description ?? widgetCatalogDescription(widget_type),
+    }));
+  }, [manifest]);
+  const selectedCatalogItem = useMemo(
+    () => widgetCatalog.find((item) => item.widget_type === librarySelectedType) ?? widgetCatalog[0] ?? null,
+    [librarySelectedType, widgetCatalog],
+  );
+  const selectedOrganizationName = useMemo(
+    () => availableOrganizations.find((item) => item.id === librarySelectedOrganizationId)?.name ?? null,
+    [availableOrganizations, librarySelectedOrganizationId],
+  );
+  const previewWidget = useMemo(() => {
+    if (!selectedCatalogItem) return null;
+    const orgName = selectedOrganizationName ?? "Организация";
+    return createFallbackWidget({
+      widget_id: `preview-${selectedCatalogItem.widget_type}`,
+      widget_type: selectedCatalogItem.widget_type,
+      title: selectedCatalogItem.title,
+      subtitle: orgName,
+      semantic_size: "L",
+      priority: 0,
+      summary: selectedCatalogItem.description,
+      payload: buildWidgetPreviewPayload(selectedCatalogItem.widget_type, orgName),
+    });
+  }, [selectedCatalogItem, selectedOrganizationName]);
   const launcherSuggestions = useMemo(
     () =>
       createDevelopmentLauncherSuggestions(allWidgets, effectiveState).filter(
@@ -2227,7 +2979,7 @@ export function DashboardGrid() {
     clearLauncherState();
     setLauncherState(defaultState);
     setInteractionLayouts(null);
-    setHiddenDrawerOpen(false);
+    setWidgetLibraryOpen(false);
     setSuggestionsDrawerOpen(false);
     cancelPreview();
   };
@@ -2404,28 +3156,106 @@ export function DashboardGrid() {
     }
   }, [cancelPreview, editMode, previewResult]);
 
+  useEffect(() => {
+    storeCustomWidgets(customWidgets);
+  }, [customWidgets]);
+
+  const addLibraryWidget = useCallback(async () => {
+    if (!selectedCatalogItem) return;
+    const organizationId = librarySelectedOrganizationId || businessState.selectedOrganizationIds[0] || availableOrganizations[0]?.id || "";
+    if (!organizationId) {
+      setLibraryError("Выберите организацию для этого виджета.");
+      return;
+    }
+
+    const organizationName = availableOrganizations.find((item) => item.id === organizationId)?.name ?? "Организация";
+    setLibraryLoading(true);
+    setLibraryError(null);
+    try {
+      const manifestForOrganization = await getDashboardManifest({
+        organizationId,
+        period: businessState.period.preset,
+        dateFrom: businessState.period.preset === "custom" ? businessState.period.dateFrom : null,
+        dateTo: businessState.period.preset === "custom" ? businessState.period.dateTo : null,
+        comparisonMode: "previous_period",
+        language: "ru",
+      });
+      const sourceWidget =
+        manifestForOrganization.widgets.find((widget) => widget.widget_type === selectedCatalogItem.widget_type)
+        ?? allWidgets.find((widget) => widget.widget_type === selectedCatalogItem.widget_type)
+        ?? null;
+
+      const widgetId = createId(`custom-${selectedCatalogItem.widget_type}`);
+      const templateWidget = sourceWidget
+        ? {
+            ...sourceWidget,
+            widget_id: widgetId,
+            source_type: "USER_PINNED" as const,
+            organization_ids: [organizationId],
+            hidden: false,
+            pinned: true,
+            movable_by_ai: true,
+            resizable_by_ai: true,
+            removable_by_ai: true,
+            summary: sourceWidget.summary ?? `${selectedCatalogItem.title} для ${organizationName}`,
+            subtitle: sourceWidget.subtitle ?? organizationName,
+          }
+        : createFallbackWidget({
+            widget_id: widgetId,
+            widget_type: selectedCatalogItem.widget_type,
+            title: selectedCatalogItem.title,
+            subtitle: organizationName,
+            semantic_size: "L",
+            priority: (allWidgets.reduce((max, widget) => Math.max(max, widget.priority ?? 0), 0) ?? 0) + 1,
+            summary: `${selectedCatalogItem.title} для ${organizationName}`,
+            payload: buildWidgetPreviewPayload(selectedCatalogItem.widget_type, organizationName),
+          });
+
+      if (!sourceWidget) {
+        templateWidget.organization_ids = [organizationId];
+        templateWidget.data_status = "AVAILABLE";
+        templateWidget.hidden = false;
+        templateWidget.pinned = true;
+      } else {
+        templateWidget.payload = {
+          ...sourceWidget.payload,
+          organization_name: organizationName,
+        };
+      }
+
+      setCustomWidgets((current) => [...current, templateWidget]);
+      updateSemanticState((current) => ({
+        ...current,
+        order: [...current.order, templateWidget.widget_id],
+        sizes: {
+          ...current.sizes,
+          [templateWidget.widget_id]: semanticSizeToLauncherSize(templateWidget.semantic_size),
+        },
+        hidden: Array.from(new Set((current.hidden ?? []).filter((id) => id !== templateWidget.widget_id))),
+        userOverrides: {
+          size: Array.from(new Set([...(current.userOverrides?.size ?? []), templateWidget.widget_id])),
+          order: true,
+          hidden: Array.from(new Set(current.userOverrides?.hidden ?? [])),
+        },
+      }));
+      setWidgetLibraryOpen(false);
+    } catch (loadError) {
+      setLibraryError(loadError instanceof Error ? loadError.message : "Не удалось добавить виджет.");
+    } finally {
+      setLibraryLoading(false);
+    }
+  }, [allWidgets, availableOrganizations, businessState.period.dateFrom, businessState.period.dateTo, businessState.period.preset, businessState.selectedOrganizationIds, librarySelectedOrganizationId, selectedCatalogItem, updateSemanticState]);
+
   return (
     <div ref={widgetsColumnRef} className="w-full min-w-0 space-y-4">
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
           <div className="max-w-4xl">
             <p className="text-[11px] uppercase tracking-[0.32em] text-slate-400">Бизнес-обзор</p>
             <h2 className="mt-2 text-[32px] font-semibold tracking-[-0.06em] text-[#f4f7fb] sm:text-[36px]">
               Мой бизнес
             </h2>
-            <p className="mt-3 max-w-3xl text-sm leading-7 text-slate-400">
-              Виджеты подстраиваются под текущий бизнес-контекст и сохраняют пользовательскую раскладку.
-            </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant={statusVariant(resolvedDataQuality.overall_status)}>
-              {statusLabel(resolvedDataQuality.overall_status)}
-            </Badge>
-            <FilterChip active={visibleWidgets.length > 0}>{visibleWidgets.length} виджетов</FilterChip>
-            <AiSuggestionsButton
-              count={launcherSuggestions.length}
-              open={suggestionsDrawerOpen}
-              onClick={openSuggestionsDrawer}
-            />
             <Button
               variant={editMode ? "secondary" : "ghost"}
               size="sm"
@@ -2433,7 +3263,7 @@ export function DashboardGrid() {
                 setEditMode((value) => {
                   const nextValue = !value;
                   if (!nextValue) {
-                    setHiddenDrawerOpen(false);
+                    setWidgetLibraryOpen(false);
                     setInteractionLayouts(null);
                   }
                   return nextValue;
@@ -2442,14 +3272,33 @@ export function DashboardGrid() {
             >
               {editMode ? "Готово" : "Режим редактирования"}
             </Button>
-            {editMode && hiddenCount > 0 ? (
-              <Button variant="secondary" size="sm" onClick={() => setHiddenDrawerOpen(true)}>
-                Добавить виджеты
-              </Button>
+            {editMode ? (
+              <>
+                <FilterChip active={visibleWidgets.length > 0}>{visibleWidgets.length} виджетов</FilterChip>
+                <AiSuggestionsButton
+                  count={launcherSuggestions.length}
+                  open={suggestionsDrawerOpen}
+                  onClick={openSuggestionsDrawer}
+                />
+                {hiddenCount > 0 ? (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      setLibraryError(null);
+                      setLibrarySelectedType((current) => current ?? widgetCatalog[0]?.widget_type ?? "kpi");
+                      setLibrarySelectedOrganizationId((current) => current || businessState.selectedOrganizationIds[0] || availableOrganizations[0]?.id || "");
+                      setWidgetLibraryOpen(true);
+                    }}
+                  >
+                    Добавить виджеты
+                  </Button>
+                ) : null}
+                <Button variant="secondary" size="sm" onClick={resetLayouts}>
+                  Сбросить раскладку
+                </Button>
+              </>
             ) : null}
-            <Button variant="secondary" size="sm" onClick={resetLayouts}>
-              Сбросить раскладку
-            </Button>
           </div>
         </div>
 
@@ -2481,10 +3330,10 @@ export function DashboardGrid() {
           margin={[18, 18]}
           containerPadding={[0, 0]}
           draggableHandle=".drag-handle"
-          resizeHandles={["se"]}
+          resizeHandles={[]}
           compactType={null}
           preventCollision={false}
-          isResizable={editMode}
+          isResizable={false}
           isDraggable={editMode}
           onDragStart={() => {
             if (!editMode) return;
@@ -2541,32 +3390,133 @@ export function DashboardGrid() {
         </Responsive>
       {editMode ? (
         <Drawer
-          open={hiddenDrawerOpen && hiddenCount > 0}
-          onClose={() => setHiddenDrawerOpen(false)}
-          title="Скрытые виджеты"
-          description="Верните виджеты в раскладку без потери их настроек."
-          badges={<Badge variant="neutral">{hiddenCount} скрыто</Badge>}
+          open={widgetLibraryOpen}
+          onClose={() => setWidgetLibraryOpen(false)}
+          title="Каталог виджетов"
+          description="Выберите тип виджета, посмотрите превью и укажите организацию для данных."
+          badges={<Badge variant="neutral">{widgetCatalog.length} типов</Badge>}
+          className="max-w-[min(92rem,calc(100vw-2rem))]"
         >
-          <div className="space-y-3">
-            {hiddenWidgets.map((widget) => (
-              <div key={widget.widget_id} className="rounded-[22px] border border-[#3a3d43] bg-[#2E3137] p-4">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="min-w-0">
-                    <p className="text-sm font-semibold tracking-[-0.03em] text-[#f4f7fb]">{widgetTitleFromName(widget.title)}</p>
-                    {widget.subtitle ? <p className="mt-1 text-sm leading-6 text-slate-400">{businessCopy(widget.subtitle)}</p> : null}
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_minmax(360px,0.8fr)]">
+            <div className="space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.28em] text-slate-400">Все типы</p>
+                  <h3 className="mt-2 text-xl font-semibold tracking-[-0.04em] text-[#f4f7fb]">Выберите шаблон</h3>
+                </div>
+                <Badge variant="neutral">{widgetCatalog.length}</Badge>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
+                {widgetCatalog.map((item) => {
+                  const selected = item.widget_type === librarySelectedType;
+                  return (
+                    <button
+                      key={item.widget_type}
+                      type="button"
+                      onClick={() => {
+                        setLibrarySelectedType(item.widget_type);
+                        setLibraryError(null);
+                      }}
+                      className={cn(
+                        "rounded-[24px] border p-4 text-left transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                        selected
+                          ? "border-[#FFF27A]/40 bg-[#FFF27A]/10 shadow-[0_12px_30px_rgba(255,242,122,0.08)]"
+                          : "border-[#3a3d43] bg-[#2E3137] hover:border-[#4a4e56]",
+                      )}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-base font-semibold tracking-[-0.04em] text-[#f4f7fb]">{item.title}</p>
+                          <p className="mt-1 text-xs leading-5 text-slate-400">{item.description}</p>
+                        </div>
+                        <Badge variant={selected ? "accent" : "neutral"}>{item.widget_type}</Badge>
+                      </div>
+                      <div className="mt-4 flex items-center justify-between gap-3">
+                        <span className="text-[11px] uppercase tracking-[0.22em] text-slate-500">Превью</span>
+                        <span className="text-xs text-slate-400">{selected ? "Выбран" : "Нажмите для выбора"}</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {hiddenCount > 0 ? (
+                <div className="rounded-[26px] border border-[#3a3d43] bg-[#26292e] p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[11px] uppercase tracking-[0.28em] text-slate-400">Скрытые в раскладке</p>
+                      <h3 className="mt-2 text-lg font-semibold tracking-[-0.04em] text-[#f4f7fb]">{hiddenCount} виджетов</h3>
+                    </div>
+                    <Badge variant="neutral">{hiddenCount}</Badge>
                   </div>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                    {hiddenWidgets.map((widget) => (
+                      <div key={widget.widget_id} className="rounded-[20px] border border-[#3a3d43] bg-[#2E3137] p-3">
+                        <p className="text-sm font-semibold tracking-[-0.03em] text-[#f4f7fb]">{widgetTitleFromName(widget.title)}</p>
+                        {widget.subtitle ? <p className="mt-1 text-xs leading-5 text-slate-400">{businessCopy(widget.subtitle)}</p> : null}
+                        <Button
+                          size="sm"
+                          variant="soft"
+                          className="mt-3 w-full"
+                          onClick={() => restoreWidget(widget.widget_id)}
+                        >
+                          Показать
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="space-y-4">
+              <div className="rounded-[28px] border border-[#3a3d43] bg-[#26292e] p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] uppercase tracking-[0.28em] text-slate-400">Превью</p>
+                    <h3 className="mt-2 text-xl font-semibold tracking-[-0.04em] text-[#f4f7fb]">{selectedCatalogItem?.title ?? "Виджет"}</h3>
+                  </div>
+                  <Badge variant="neutral">{selectedCatalogItem?.widget_type ?? "—"}</Badge>
+                </div>
+                <div className="mt-4 h-[360px] overflow-hidden rounded-[24px] border border-[#3a3d43] bg-[#2E3137] p-2">
+                  {previewWidget ? renderWidget(previewWidget, "compact") : null}
+                </div>
+              </div>
+
+              <div className="rounded-[28px] border border-[#3a3d43] bg-[#26292e] p-4">
+                <p className="text-[11px] uppercase tracking-[0.28em] text-slate-400">Параметры</p>
+                <div className="mt-3 space-y-3">
+                  <Select
+                    label="Тип виджета"
+                    value={librarySelectedType}
+                    options={widgetCatalog.map((item) => ({ value: item.widget_type, label: item.title }))}
+                    onChange={(value) => setLibrarySelectedType(value as DashboardWidgetType)}
+                    placeholder="Выберите тип"
+                  />
+                  <Select
+                    label="Организация"
+                    value={librarySelectedOrganizationId}
+                    options={availableOrganizations.map((item) => ({ value: item.id, label: item.name }))}
+                    onChange={setLibrarySelectedOrganizationId}
+                    placeholder="Выберите организацию"
+                  />
+                  <p className="text-sm leading-6 text-slate-400">
+                    {selectedCatalogItem?.description ?? "Выберите тип виджета и организацию."}
+                  </p>
+                  {libraryError ? <p className="text-sm text-rose-300">{libraryError}</p> : null}
                   <Button
-                    size="sm"
-                    variant="soft"
+                    className="w-full"
+                    disabled={libraryLoading || !librarySelectedOrganizationId}
                     onClick={() => {
-                      restoreWidget(widget.widget_id);
+                      void addLibraryWidget();
                     }}
                   >
-                    Показать
+                    {libraryLoading ? "Добавляем..." : "Добавить виджет"}
                   </Button>
                 </div>
               </div>
-            ))}
+            </div>
           </div>
         </Drawer>
       ) : null}

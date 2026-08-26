@@ -102,6 +102,9 @@ export function widgetLayoutGroup(widget) {
   if (widget.widget_type === "ai_insight" && widget.widget_id === "executive-brief") {
     return "wide";
   }
+  if (widget.widget_type === "ai_recommendation") {
+    return "detail";
+  }
   if (widget.widget_id === "product-signals") {
     return "list";
   }
@@ -118,6 +121,8 @@ export function widgetGroupRank(widget) {
     case "alert":
       return 2;
     case "wide":
+      return 3;
+    case "detail":
       return 3;
     case "chart":
       return 4;
@@ -146,6 +151,8 @@ export function rowCapacityForGroup(group) {
       return 4;
     case "wide":
       return 2;
+    case "detail":
+      return 1;
     case "compact":
       return 2;
     default:
@@ -170,6 +177,8 @@ function adaptiveDefaultSizeName(widget, cols) {
     case "chart":
       return cols >= 16 ? "12x5" : cols >= 12 ? "8x4" : "6x3";
     case "wide":
+      return cols >= 16 ? "12x5" : cols >= 12 ? "8x4" : "6x3";
+    case "detail":
       return cols >= 16 ? "12x5" : cols >= 12 ? "8x4" : "6x3";
     case "table":
       return cols >= 16 ? "12x5" : "8x4";

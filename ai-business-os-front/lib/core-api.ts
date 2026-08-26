@@ -2345,7 +2345,10 @@ const requestTimeoutMs = 3_500;
 
 export type AiChatMessage = {
   role: "system" | "user" | "assistant";
-  content: string;
+  content: string | Array<
+    | { type: "text"; text: string }
+    | { type: "image_url"; image_url: { url: string } }
+  >;
 };
 
 export async function streamAiChat(

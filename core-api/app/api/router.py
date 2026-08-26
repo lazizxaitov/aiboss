@@ -17,6 +17,7 @@ from app.api.routes.products import router as products_router
 from app.api.routes.sales import router as sales_router
 from app.api.routes.smartup import router as smartup_router
 from app.api.routes.smartup_mirror import router as smartup_mirror_router
+from app.api.routes.telegram_ai import router as telegram_ai_router
 from app.api.routes.visits import router as visits_router
 
 api_router = APIRouter()
@@ -36,3 +37,4 @@ api_router.include_router(inventory_router, tags=["Inventory Workspace"])
 api_router.include_router(visits_router, tags=["Visits Workspace"])
 api_router.include_router(smartup_router, tags=["SmartUp"])
 api_router.include_router(smartup_mirror_router, tags=["SmartUp Mirror"])
+api_router.include_router(telegram_ai_router, tags=["Telegram AI"])

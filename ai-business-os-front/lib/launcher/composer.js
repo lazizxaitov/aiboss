@@ -8,7 +8,8 @@ const VALID_SIZES = new Set(["small", "medium", "large"]);
 const FAMILY_HEIGHTS = Object.freeze({
   kpi: 2,
   alert: 3,
-  wide: 4,
+  wide: 5,
+  detail: 5,
   summary: 4,
   chart: 5,
   list: 5,
@@ -17,11 +18,12 @@ const FAMILY_HEIGHTS = Object.freeze({
 
 const FAMILY_DEFAULT_SIZES = Object.freeze({
   kpi: "small",
-  alert: "small",
-  wide: "medium",
+  alert: "medium",
+  wide: "large",
+  detail: "large",
   summary: "medium",
   chart: "medium",
-  list: "medium",
+  list: "large",
   table: "large",
 });
 
