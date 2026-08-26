@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from app.api.routes.ai_analytics import router as ai_analytics_router
+from app.api.routes.ai_chat import router as ai_chat_router
 from app.api.routes.analytics import router as analytics_router
 from app.api.routes.context import router as context_router
 from app.api.routes.customers import router as customers_router
@@ -23,6 +24,7 @@ api_router.include_router(context_router, tags=["Context"])
 api_router.include_router(health_router, tags=["Health"])
 api_router.include_router(analytics_router, tags=["Analytics"])
 api_router.include_router(ai_analytics_router, tags=["AI Analytics"])
+api_router.include_router(ai_chat_router, tags=["AI Chat"])
 api_router.include_router(dashboard_router, tags=["Dashboard"])
 api_router.include_router(data_router, tags=["Data Explorer"])
 api_router.include_router(notifications_router, tags=["Notifications"])

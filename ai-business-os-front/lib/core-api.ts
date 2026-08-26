@@ -2343,6 +2343,45 @@ export type FinanceWorkspaceFilters = {
 const coreApiBaseUrl = process.env.CORE_API_URL ?? "http://127.0.0.1:8000";
 const requestTimeoutMs = 3_500;
 
+export type AiChatMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+};
+
+export async function streamAiChat(
+  messages: AiChatMessage[],
+  onChunk: (content: string) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(`${coreApiBaseUrl}/api/v1/ai/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages }),
+    signal,
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(`AI Chat responded with ${response.status}`);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+    const events = buffer.split("\n\n");
+    buffer = events.pop() ?? "";
+    for (const event of events) {
+      const eventName = event.match(/^event: (.+)$/m)?.[1];
+      const data = event.match(/^data: (.+)$/m)?.[1];
+      if (!data) continue;
+      const payload = JSON.parse(data) as { content?: string; message?: string };
+      if (eventName === "error") throw new Error(payload.message || "Не удалось получить ответ AI.");
+      if (payload.content) onChunk(payload.content);
+    }
+    if (done) break;
+  }
+}
+
 export async function getDashboardOverview(
   filters: DashboardOverviewFilters = {},
 ): Promise<DashboardOverviewResponse> {

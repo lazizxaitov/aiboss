@@ -61,8 +61,11 @@ import type {
 import {
   type AnalyticsDataStatus,
   type AnalyticsMetricValue,
+  type DashboardManifestDataQuality,
+  type DashboardSemanticSize,
   type DashboardManifestWidget,
 } from "@/lib/core-api";
+import { streamAiChat } from "@/lib/core-api";
 
 type SerializedMetricValue = AnalyticsMetricValue;
 
@@ -242,11 +245,212 @@ function statusVariant(status: AnalyticsDataStatus): "accent" | "soft" | "dark" 
   }
 }
 
+type FallbackWidgetInput = {
+  widget_id: string;
+  widget_type: DashboardManifestWidget["widget_type"];
+  title: string;
+  subtitle?: string | null;
+  semantic_size: DashboardSemanticSize;
+  priority: number;
+  summary?: string | null;
+  payload?: Record<string, unknown>;
+};
+
+function fallbackWidgetFlow(widgetType: DashboardManifestWidget["widget_type"]): DashboardManifestWidget["flow"] {
+  switch (widgetType) {
+    case "ai_recommendation":
+    case "watchlist":
+    case "customer_ranking":
+    case "trend":
+      return "wide";
+    default:
+      return "horizontal";
+  }
+}
+
+function fallbackWidgetAspect(widgetType: DashboardManifestWidget["widget_type"]): DashboardManifestWidget["preferred_aspect"] {
+  switch (widgetType) {
+    case "ai_recommendation":
+    case "watchlist":
+    case "customer_ranking":
+    case "trend":
+      return "tall";
+    default:
+      return "square";
+  }
+}
+
+function fallbackWidgetDensity(widgetType: DashboardManifestWidget["widget_type"]): DashboardManifestWidget["content_density"] {
+  switch (widgetType) {
+    case "ai_recommendation":
+    case "watchlist":
+    case "customer_ranking":
+    case "trend":
+      return "medium";
+    default:
+      return "low";
+  }
+}
+
+function createFallbackWidget({
+  widget_id,
+  widget_type,
+  title,
+  subtitle = null,
+  semantic_size,
+  priority,
+  summary = null,
+  payload = {},
+}: FallbackWidgetInput): DashboardManifestWidget {
+  return {
+    widget_id,
+    widget_type,
+    source_type: "PERMANENT",
+    title,
+    subtitle,
+    metric_keys: [],
+    signal_ids: [],
+    entity_type: null,
+    entity_id: null,
+    organization_ids: [],
+    semantic_size,
+    priority,
+    priority_reason: "Локальный шаблон дашборда",
+    min_size: semantic_size,
+    preferred_size: semantic_size,
+    max_size: semantic_size,
+    supports_horizontal_expand: true,
+    supports_vertical_expand: true,
+    supports_internal_scroll: true,
+    flow: fallbackWidgetFlow(widget_type),
+    preferred_aspect: fallbackWidgetAspect(widget_type),
+    content_density: fallbackWidgetDensity(widget_type),
+    scroll_behavior: "internal",
+    removable_by_ai: false,
+    movable_by_ai: true,
+    resizable_by_ai: false,
+    locked_position: false,
+    locked_size: false,
+    pinned: false,
+    hidden: false,
+    drilldown: null,
+    summary,
+    data_status: "ANALYSIS_PENDING",
+    payload,
+  };
+}
+
+const FALLBACK_DASHBOARD_DATA_QUALITY: DashboardManifestDataQuality = {
+  overall_status: "ANALYSIS_PENDING",
+  surfaced_items: [],
+  notes: [
+    "Данные подгрузятся из базы, как только backend ответит.",
+    "Структура дашборда показывается сразу, без ожидания manifest.",
+  ],
+};
+
+const FALLBACK_DASHBOARD_WIDGETS: DashboardManifestWidget[] = [
+  createFallbackWidget({
+    widget_id: "fallback-revenue",
+    widget_type: "kpi",
+    title: "Выручка",
+    semantic_size: "S",
+    priority: 1,
+    payload: { metric: { value: null, unit: "currency", currency: "UZS", data_status: "ANALYSIS_PENDING" } },
+  }),
+  createFallbackWidget({
+    widget_id: "fallback-orders",
+    widget_type: "kpi",
+    title: "Заказы",
+    semantic_size: "S",
+    priority: 2,
+    payload: { metric: { value: null, unit: "number", data_status: "ANALYSIS_PENDING" } },
+  }),
+  createFallbackWidget({
+    widget_id: "fallback-sold-units",
+    widget_type: "kpi",
+    title: "Продано единиц",
+    semantic_size: "S",
+    priority: 3,
+    payload: { metric: { value: null, unit: "number", data_status: "ANALYSIS_PENDING" } },
+  }),
+  createFallbackWidget({
+    widget_id: "fallback-average-order",
+    widget_type: "kpi",
+    title: "Средний заказ",
+    semantic_size: "S",
+    priority: 4,
+    payload: { metric: { value: null, unit: "currency", currency: "UZS", data_status: "ANALYSIS_PENDING" } },
+  }),
+  createFallbackWidget({
+    widget_id: "fallback-received-money",
+    widget_type: "kpi",
+    title: "Поступления",
+    semantic_size: "S",
+    priority: 5,
+    payload: { metric: { value: null, unit: "currency", currency: "UZS", data_status: "ANALYSIS_PENDING" } },
+  }),
+  createFallbackWidget({
+    widget_id: "fallback-summary",
+    widget_type: "ai_recommendation",
+    title: "Краткая сводка",
+    semantic_size: "L",
+    priority: 6,
+    summary: "Ключевые выводы появятся после загрузки данных.",
+    payload: {
+      headline: "Краткая сводка",
+      business_status: "Сводка обновляется из базы.",
+      top_insights: [],
+      risks: [],
+      opportunities: [],
+      data_warnings: [],
+    },
+  }),
+  createFallbackWidget({
+    widget_id: "fallback-product-signals",
+    widget_type: "watchlist",
+    title: "Товарные сигналы",
+    subtitle: "Собранные товарные предупреждения в одной карточке",
+    semantic_size: "L",
+    priority: 7,
+    summary: "Сигналы товаров будут показаны после обновления данных.",
+    payload: { rows: [] },
+  }),
+  createFallbackWidget({
+    widget_id: "fallback-customer-signal",
+    widget_type: "customer_ranking",
+    title: "Клиентский сигнал",
+    semantic_size: "L",
+    priority: 8,
+    summary: "Список клиентов появится после загрузки данных.",
+    payload: { rows: [] },
+  }),
+  createFallbackWidget({
+    widget_id: "fallback-dynamics",
+    widget_type: "trend",
+    title: "Динамика выручки",
+    semantic_size: "L",
+    priority: 9,
+    summary: "За весь период",
+    payload: { metric: { value: null, unit: "currency", currency: "UZS", data_status: "ANALYSIS_PENDING" }, series: [] },
+  }),
+  createFallbackWidget({
+    widget_id: "fallback-data-quality",
+    widget_type: "data_quality",
+    title: "Качество данных",
+    semantic_size: "M",
+    priority: 10,
+    payload: { items: [], notes: FALLBACK_DASHBOARD_DATA_QUALITY.notes },
+  }),
+];
+
 export function DashboardAssistantPanel() {
   const [expanded, setExpanded] = useState(false);
   const [selectedModel, setSelectedModel] = useState(0);
   const [message, setMessage] = useState("");
   const [chatMessages, setChatMessages] = useState<Array<{ id: string; role: "user" | "assistant"; text: string }>>([]);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
   const messageInputRef = useRef<HTMLInputElement | null>(null);
   const chatSurfaceRef = useRef<HTMLDivElement | null>(null);
   const chatThreadRef = useRef<HTMLDivElement | null>(null);
@@ -332,21 +536,28 @@ export function DashboardAssistantPanel() {
   const chatTitle =
     chatMessages.find((item) => item.role === "user")?.text.trim() || "Новый чат";
 
-  const handleSendMessage = () => {
+  const handleSendMessage = async () => {
     const text = message.trim();
-    if (!text) return;
+    if (!text || isGenerating) return;
 
     setExpanded(true);
-    setChatMessages((current) => [
-      ...current,
-      { id: `user-${Date.now()}-${current.length}`, role: "user", text },
-      {
-        id: `assistant-${Date.now()}-${current.length}`,
-        role: "assistant",
-        text: "Понял. Могу помочь с этим дальше.",
-      },
-    ]);
+    setChatError(null);
+    const userId = `user-${Date.now()}-${chatMessages.length}`;
+    const assistantId = `assistant-${Date.now()}-${chatMessages.length}`;
+    const history = [...chatMessages, { id: userId, role: "user" as const, text }];
+    setChatMessages((current) => [...current, { id: userId, role: "user", text }, { id: assistantId, role: "assistant", text: "" }]);
     setMessage("");
+    setIsGenerating(true);
+    try {
+      await streamAiChat(
+        history.map((item) => ({ role: item.role, content: item.text })),
+        (content) => setChatMessages((current) => current.map((item) => item.id === assistantId ? { ...item, text: item.text + content } : item)),
+      );
+    } catch (error) {
+      setChatError(error instanceof Error ? error.message : "Не удалось получить ответ AI.");
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   const handleBackToStart = () => {
@@ -376,6 +587,11 @@ export function DashboardAssistantPanel() {
             tabIndex={-1}
           />
           <div className="pointer-events-none absolute inset-0 opacity-40 [background-image:repeating-linear-gradient(120deg,rgba(255,255,255,0.03)_0,rgba(255,255,255,0.03)_1px,transparent_1px,transparent_14px)]" />
+          {chatError ? (
+            <p className="relative z-10 rounded-full bg-[#565b63] px-3 py-1.5 text-[12px] text-[#f4f7fb]" role="alert">
+              {chatError}
+            </p>
+          ) : null}
           <div className={cn("relative flex min-h-0 flex-col", smoothTransition, expanded ? "flex-1 gap-4" : "flex-1 justify-center gap-3")}>
             {expanded && hasConversation ? (
               <div className="flex items-center gap-4">
@@ -438,6 +654,7 @@ export function DashboardAssistantPanel() {
                 />
                 <button
                   type="submit"
+                  disabled={isGenerating}
                   className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#FFF27A] text-[#1E1E21] transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] hover:bg-[#fff6a6]"
                   aria-label="Отправить сообщение"
                 >
@@ -503,6 +720,7 @@ export function DashboardAssistantPanel() {
                   />
                   <button
                     type="submit"
+                    disabled={isGenerating}
                     className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[#FFF27A] text-[#1E1E21] transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] hover:bg-[#fff6a6]"
                     aria-label="Отправить сообщение"
                   >
@@ -615,6 +833,7 @@ export function DashboardAssistantPanel() {
                   />
                   <button
                     type="submit"
+                    disabled={isGenerating}
                     className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#FFF27A] text-[#1E1E21] transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] hover:bg-[#fff6a6]"
                     aria-label="Отправить сообщение"
                   >
@@ -1915,12 +2134,18 @@ export function DashboardGrid() {
   const [widgetsColumnRef, containerWidth] = useMeasuredWidth<HTMLDivElement>();
   const launcherStateLoaded = useRef(false);
 
-  const allWidgets = useMemo(
-    () => aggregateProductSignalWidgets(
-      dedupeWidgets(dedupeWidgetSignatures(manifest?.widgets.filter((widget) => !widget.hidden) ?? [])),
-    ),
+  const manifestWidgets = useMemo(
+    () => manifest?.widgets.filter((widget) => !widget.hidden) ?? [],
     [manifest],
   );
+  const allWidgets = useMemo(
+    () => {
+      const baseWidgets = manifestWidgets.length > 0 ? manifestWidgets : FALLBACK_DASHBOARD_WIDGETS;
+      return aggregateProductSignalWidgets(dedupeWidgets(dedupeWidgetSignatures(baseWidgets)));
+    },
+    [manifestWidgets],
+  );
+  const resolvedDataQuality = manifest?.data_quality ?? FALLBACK_DASHBOARD_DATA_QUALITY;
   const defaultState = useMemo(() => createDefaultLauncherState(allWidgets) as LauncherState, [allWidgets]);
   const effectiveState = useMemo(
     () => normalizeLauncherState(launcherState ?? defaultState, allWidgets) as LauncherState,
@@ -2179,34 +2404,6 @@ export function DashboardGrid() {
     }
   }, [cancelPreview, editMode, previewResult]);
 
-  if (loading) {
-    return (
-      <Surface className="p-6">
-        <p className="text-sm text-slate-400">Загружаю данные дашборда…</p>
-      </Surface>
-    );
-  }
-
-  if (error) {
-    return (
-      <Surface className="p-6">
-        <p className="text-sm font-medium text-[#f4f7fb]">Не удалось загрузить дашборд</p>
-        <p className="mt-2 text-sm leading-6 text-slate-400">{error}</p>
-      </Surface>
-    );
-  }
-
-  if (!manifest || allWidgets.length === 0) {
-    return (
-      <Surface className="p-6">
-        <p className="text-sm font-medium text-[#f4f7fb]">Для текущего контекста пока нет виджетов</p>
-        <p className="mt-2 text-sm leading-6 text-slate-400">
-          Попробуйте изменить организацию или период.
-        </p>
-      </Surface>
-    );
-  }
-
   return (
     <div ref={widgetsColumnRef} className="w-full min-w-0 space-y-4">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
@@ -2220,8 +2417,8 @@ export function DashboardGrid() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant={statusVariant(manifest.data_quality.overall_status)}>
-              {statusLabel(manifest.data_quality.overall_status)}
+            <Badge variant={statusVariant(resolvedDataQuality.overall_status)}>
+              {statusLabel(resolvedDataQuality.overall_status)}
             </Badge>
             <FilterChip active={visibleWidgets.length > 0}>{visibleWidgets.length} виджетов</FilterChip>
             <AiSuggestionsButton
@@ -2255,6 +2452,15 @@ export function DashboardGrid() {
             </Button>
           </div>
         </div>
+
+        {(loading || error) && (
+          <Surface className="border border-white/5 bg-white/[0.02] px-4 py-3">
+            <p className="text-xs uppercase tracking-[0.28em] text-slate-400">Статус данных</p>
+            <p className="mt-2 text-sm leading-6 text-slate-300">
+              {loading ? "Обновляю данные из backend, структура дашборда уже показана." : `Последний запрос не ответил: ${error}`}
+            </p>
+          </Surface>
+        )}
 
         {previewResult && activeSuggestion ? (
           <AiPreviewBanner

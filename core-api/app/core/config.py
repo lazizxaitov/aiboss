@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     anthropic_base_url: str = "https://api.anthropic.com/v1"
     ollama_base_url: str = "http://127.0.0.1:11434"
+    hermes_base_url: str = "http://127.0.0.1:8642/v1"
+    hermes_api_key: str = "aiboss-hermes-local"
+    hermes_model: str = "gemma4:26b"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
