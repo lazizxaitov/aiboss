@@ -34,6 +34,7 @@ import {
   type InventoryWorkspaceWarehouseRow,
 } from "@/lib/core-api";
 import { formatMoneyValue } from "@/lib/money";
+import { INVENTORY_VIEWS } from "@/lib/workspace-view-config";
 
 const PAGE_SIZE = 25;
 
@@ -592,31 +593,34 @@ export function InventoryWorkspacePage() {
 
       <Surface className="overflow-visible px-4 py-4 sm:px-5">
         <div className="flex flex-wrap gap-2">
-          {(data?.tabs ?? []).map((tab) => (
+          {INVENTORY_VIEWS.map((view) => {
+            const tab = data?.tabs.find((item) => item.view === view.view);
+            return (
             <button
-              key={tab.view}
+              key={view.view}
               type="button"
               onClick={() => {
                 setQuery((current) => ({
                   ...current,
-                  view: tab.view,
+                  view: view.view,
                   page: 1,
-                  sortBy: tab.view === "current_stock" || tab.view === "warehouses" ? "snapshot_date" : "document_date",
+                  sortBy: view.view === "current_stock" || view.view === "warehouses" ? "snapshot_date" : "document_date",
                 }));
               }}
               className={cn(
                 "inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium transition",
-                query.view === tab.view
+                query.view === view.view
                   ? "border-slate-900 bg-slate-950 text-white"
                   : "border-[#3a3d43] bg-[#2E3137] text-slate-300 hover:border-[#4a4e56] hover:text-[#f4f7fb]",
               )}
             >
-              <span>{tab.label}</span>
-              <Badge variant={query.view === tab.view ? "dark" : capabilityVariant(tab.status)}>
-                {tab.count}
+              <span>{view.label}</span>
+              <Badge variant={query.view === view.view ? "dark" : capabilityVariant(tab?.status ?? "NO_DATA")}>
+                {tab?.count ?? 0}
               </Badge>
             </button>
-          ))}
+            );
+          })}
         </div>
       </Surface>
 

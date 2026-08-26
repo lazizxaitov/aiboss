@@ -12,13 +12,14 @@ import {
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import {
-  getAnalyticsOrganizations,
+  getCachedSmartUpOrganizations,
   getOrganizationContext,
+  getSmartUpOrganizations,
   type AnalyticsComparisonMode,
   type AnalyticsContextState,
-  type AnalyticsOrganizationItem,
   type AnalyticsPeriodPreset,
   type OrganizationContextMode,
+  type SmartUpOrganization,
   updateOrganizationContext,
 } from "@/lib/core-api";
 
@@ -162,7 +163,15 @@ export function BusinessContextProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const [state, setState] = useState<BusinessContextState>(DEFAULT_STATE);
-  const [availableOrganizations, setAvailableOrganizations] = useState<BusinessContextOrganizationOption[]>([]);
+  const [availableOrganizations, setAvailableOrganizations] = useState<BusinessContextOrganizationOption[]>(
+    () =>
+      (getCachedSmartUpOrganizations() ?? [])
+        .map((item) => ({
+          id: item.id,
+          name: item.name,
+        }))
+        .sort((left, right) => left.name.localeCompare(right.name, "ru")),
+  );
   const [loading, setLoading] = useState(true);
   const [hydrated, setHydrated] = useState(false);
   const initialised = useRef(false);
@@ -170,21 +179,35 @@ export function BusinessContextProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let active = true;
-
-    void getAnalyticsOrganizations({ period: "all" })
-      .then((report) => {
-        if (!active) return;
-        const rows = (report.comparison.length ? report.comparison : report.items) as AnalyticsOrganizationItem[];
-        const options = rows
-          .map((item) => ({
-            id: item.organization_id,
-            name: item.organization_name,
+    const cachedOrganizations = getCachedSmartUpOrganizations();
+    if (cachedOrganizations && cachedOrganizations.length > 0) {
+      setAvailableOrganizations(
+        cachedOrganizations
+          .map((item: SmartUpOrganization) => ({
+            id: item.id,
+            name: item.name,
           }))
-          .sort((left, right) => left.name.localeCompare(right.name, "ru"));
-        setAvailableOrganizations(options);
+          .sort((left, right) => left.name.localeCompare(right.name, "ru")),
+      );
+      return () => {
+        active = false;
+      };
+    }
+
+    void getSmartUpOrganizations()
+      .then((items) => {
+        if (!active || items.length === 0) return;
+        setAvailableOrganizations(
+          items
+            .map((item) => ({
+              id: item.id,
+              name: item.name,
+            }))
+            .sort((left, right) => left.name.localeCompare(right.name, "ru")),
+        );
       })
       .catch(() => {
-        if (active) setAvailableOrganizations([]);
+        if (!active) return;
       });
 
     return () => {

@@ -15,7 +15,6 @@ import {
   type BusinessRefreshControllerOptions,
   type WorkspaceRefreshHandler,
 } from "@/lib/business-refresh";
-import { prefetchSmartUpOrganizations } from "@/lib/core-api";
 
 type BusinessRefreshContextValue = {
   snapshot: BusinessFreshnessSnapshot | null;
@@ -48,14 +47,6 @@ export function BusinessRefreshProvider({
   );
 
   useEffect(() => controller.subscribeStatus(setSnapshot), [controller]);
-
-  useEffect(() => {
-    void controller.refreshNow();
-  }, [controller]);
-
-  useEffect(() => {
-    void prefetchSmartUpOrganizations();
-  }, []);
 
   const value = useMemo<BusinessRefreshContextValue>(
     () => ({

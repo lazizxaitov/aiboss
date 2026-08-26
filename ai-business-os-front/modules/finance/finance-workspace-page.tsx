@@ -33,6 +33,7 @@ import {
   type FinanceWorkspaceView,
 } from "@/lib/core-api";
 import { formatMoneyValue, normalizeCurrencyLabel } from "@/lib/money";
+import { FINANCE_VIEWS } from "@/lib/workspace-view-config";
 
 const PAGE_SIZE = 25;
 
@@ -694,9 +695,7 @@ export function FinanceWorkspacePage() {
             <Select
               label="Вкладка"
               value={query.view}
-              options={data?.tabs.map((tab) => ({ value: tab.view, label: tab.label })) ?? [
-                { value: "overview", label: "Обзор" },
-              ]}
+              options={FINANCE_VIEWS.map(({ view, label }) => ({ value: view, label }))}
               onChange={(value) =>
                 setQuery((current) => ({
                   ...current,
@@ -797,21 +796,24 @@ export function FinanceWorkspacePage() {
 
       <Surface className="overflow-visible px-4 py-4 sm:px-5">
         <div className="flex flex-wrap gap-2">
-          {(data?.tabs ?? []).map((tab) => (
+          {FINANCE_VIEWS.map((view) => {
+            const tab = data?.tabs.find((item) => item.view === view.view);
+            return (
             <button
-              key={tab.view}
+              key={view.view}
               type="button"
-              onClick={() => setQuery((current) => ({ ...current, view: tab.view, page: 1 }))}
+              onClick={() => setQuery((current) => ({ ...current, view: view.view, page: 1 }))}
               className={
-                query.view === tab.view
+                query.view === view.view
                   ? "inline-flex items-center gap-2 rounded-full border border-[#FFF27A]/30 bg-[#FFF27A] px-4 py-2 text-sm font-medium text-[#1E1E21]"
                   : "inline-flex items-center gap-2 rounded-full border border-[#3a3d43] bg-[#2E3137] px-4 py-2 text-sm font-medium text-slate-300 transition hover:border-[#4a4e56] hover:text-[#f4f7fb]"
               }
             >
-              <span>{tab.label}</span>
-              <Badge variant={coverageVariant(tab.status)}>{tab.count}</Badge>
+              <span>{view.label}</span>
+              <Badge variant={coverageVariant(tab?.status ?? "NO_DATA")}>{tab?.count ?? 0}</Badge>
             </button>
-          ))}
+            );
+          })}
         </div>
       </Surface>
 

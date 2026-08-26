@@ -30,6 +30,11 @@ import {
   type VisitsWorkspaceVisitRow,
   type VisitsWorkspaceWorkingZoneRow,
 } from "@/lib/core-api";
+import { VISITS_TABS } from "@/lib/workspace-view-config";
+
+const TAB_LABELS: Record<VisitsWorkspaceTab, string> = Object.fromEntries(
+  VISITS_TABS.map(({ tab, label }) => [tab, label]),
+) as Record<VisitsWorkspaceTab, string>;
 
 const PAGE_SIZE = 25;
 
@@ -43,13 +48,6 @@ const SUMMARY_REGISTRY = [
   { key: "average_duration", label: "Средняя длительность" },
   { key: "visit_conversion", label: "Конверсия визита" },
 ] as const;
-
-const TAB_LABELS: Record<VisitsWorkspaceTab, string> = {
-  visits: "Визиты",
-  sales_reps: "Торговые представители",
-  working_zones: "Рабочие зоны",
-  capabilities: "Покрытие данных",
-};
 
 const SORT_OPTIONS: Array<{ value: VisitsWorkspaceSortBy; label: string }> = [
   { value: "date", label: "Дата" },
@@ -501,28 +499,31 @@ export function VisitsWorkspacePage() {
             </div>
 
             <div className="flex flex-wrap gap-2">
-              {(data?.tabs ?? []).map((tab) => (
+              {VISITS_TABS.map((view) => {
+                const tab = data?.tabs.find((item) => item.tab === view.tab);
+                return (
                 <button
-                  key={tab.tab}
+                  key={view.tab}
                   type="button"
                   onClick={() =>
                     updateQuery((current) => ({
                       ...current,
-                      tab: tab.tab,
+                      tab: view.tab,
                       page: 1,
                     }))
                   }
                   className={cn(
                     "inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium transition",
-                    query.tab === tab.tab
+                    query.tab === view.tab
                       ? "border-slate-900 bg-slate-900 text-white"
                       : "border-[#3a3d43] bg-[#2E3137] text-slate-300 hover:border-[#4a4e56] hover:text-[#f4f7fb]",
                   )}
                 >
-                  <span>{TAB_LABELS[tab.tab]}</span>
-                  <span className="text-xs opacity-80">{tab.count}</span>
+                  <span>{view.label}</span>
+                  <span className="text-xs opacity-80">{tab?.count ?? 0}</span>
                 </button>
-              ))}
+                );
+              })}
             </div>
           </div>
         </Surface>

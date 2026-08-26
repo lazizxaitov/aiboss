@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import type { ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -91,9 +92,7 @@ function workspaceStatsFor(
   }
 }
 
-export async function ModuleScreen({ module }: ModuleScreenProps) {
-  const overview = await getDashboardOverview();
-
+export function ModuleScreen({ module }: ModuleScreenProps) {
   return (
     <section className="space-y-6">
       <SectionHeading
@@ -101,25 +100,60 @@ export async function ModuleScreen({ module }: ModuleScreenProps) {
         title={module.title}
         description={module.description}
       />
-
-      {module.kind === "sales" ? (
-        <SalesWorkspace module={module} overview={overview} />
-      ) : module.kind === "finance" ? (
-        <FinanceWorkspace module={module} overview={overview} />
-      ) : module.kind === "marketing" ? (
-        <MarketingWorkspace module={module} overview={overview} />
-      ) : module.kind === "inventory" ? (
-        <InventoryWorkspace module={module} overview={overview} />
-      ) : module.kind === "telegram" ? (
-        <TelegramWorkspace module={module} overview={overview} />
-      ) : module.kind === "alerts" ? (
-        <AlertsWorkspace module={module} overview={overview} />
-      ) : module.kind === "ceo" ? (
-        <CEOWorkspace module={module} overview={overview} />
-      ) : (
-        <RecommendationsWorkspace module={module} overview={overview} />
-      )}
+      <Suspense fallback={<ModuleWorkspaceSkeleton module={module} />}>
+        <ModuleScreenContent module={module} />
+      </Suspense>
     </section>
+  );
+}
+
+async function ModuleScreenContent({ module }: ModuleScreenProps) {
+  const overview = await getDashboardOverview();
+
+  return module.kind === "sales" ? (
+    <SalesWorkspace module={module} overview={overview} />
+  ) : module.kind === "finance" ? (
+    <FinanceWorkspace module={module} overview={overview} />
+  ) : module.kind === "marketing" ? (
+    <MarketingWorkspace module={module} overview={overview} />
+  ) : module.kind === "inventory" ? (
+    <InventoryWorkspace module={module} overview={overview} />
+  ) : module.kind === "telegram" ? (
+    <TelegramWorkspace module={module} overview={overview} />
+  ) : module.kind === "alerts" ? (
+    <AlertsWorkspace module={module} overview={overview} />
+  ) : module.kind === "ceo" ? (
+    <CEOWorkspace module={module} overview={overview} />
+  ) : (
+    <RecommendationsWorkspace module={module} overview={overview} />
+  );
+}
+
+function ModuleWorkspaceSkeleton({ module }: ModuleScreenProps) {
+  const stats = module.stats ?? [];
+
+  return (
+    <div className="space-y-6">
+      <div className="grid gap-3 lg:grid-cols-3">
+        {stats.slice(0, 3).map((item, index) => (
+          <Surface key={`${module.kind}-skeleton-${index}`} className="min-h-[128px] animate-pulse p-6">
+            <div className="h-3 w-24 rounded-full bg-[#3a3d43]" />
+            <div className="mt-6 h-7 w-32 rounded-full bg-[#3a3d43]" />
+            <div className="mt-4 h-4 w-20 rounded-full bg-[#3a3d43]" />
+          </Surface>
+        ))}
+      </div>
+
+      <Surface className="min-h-[260px] animate-pulse p-6">
+        <div className="h-3 w-28 rounded-full bg-[#3a3d43]" />
+        <div className="mt-4 h-8 w-56 rounded-full bg-[#3a3d43]" />
+        <div className="mt-3 h-4 w-full max-w-2xl rounded-full bg-[#3a3d43]" />
+        <div className="mt-8 grid gap-4 lg:grid-cols-2">
+          <div className="h-40 rounded-[20px] bg-[#3a3d43]" />
+          <div className="h-40 rounded-[20px] bg-[#3a3d43]" />
+        </div>
+      </Surface>
+    </div>
   );
 }
 

@@ -27,6 +27,46 @@ type DashboardManifestContextValue = {
 };
 
 const DashboardManifestContext = createContext<DashboardManifestContextValue | null>(null);
+const DASHBOARD_MANIFEST_CACHE_PREFIX = "ai-business-os:dashboard-manifest:v1";
+
+function getDashboardManifestCacheKey(filters: DashboardManifestFilters) {
+  return `${DASHBOARD_MANIFEST_CACHE_PREFIX}:${JSON.stringify({
+    organizationId: filters.organizationId ?? null,
+    organizationIds: filters.organizationIds ?? [],
+    dateFrom: filters.dateFrom ?? null,
+    dateTo: filters.dateTo ?? null,
+    period: filters.period ?? null,
+    comparisonMode: filters.comparisonMode ?? null,
+    language: filters.language ?? null,
+    pinnedWidgetIds: filters.pinnedWidgetIds ?? [],
+    hiddenWidgetIds: filters.hiddenWidgetIds ?? [],
+    lockedPositionWidgetIds: filters.lockedPositionWidgetIds ?? [],
+    lockedSizeWidgetIds: filters.lockedSizeWidgetIds ?? [],
+  })}`;
+}
+
+function readCachedDashboardManifest(filters: DashboardManifestFilters): DashboardManifest | null {
+  if (typeof window === "undefined") return null;
+
+  try {
+    const raw = window.sessionStorage.getItem(getDashboardManifestCacheKey(filters));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed as DashboardManifest;
+  } catch {
+    return null;
+  }
+}
+
+function storeCachedDashboardManifest(filters: DashboardManifestFilters, manifest: DashboardManifest) {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.sessionStorage.setItem(getDashboardManifestCacheKey(filters), JSON.stringify(manifest));
+  } catch {
+    // Ignore cache write failures. The in-memory state still keeps the last manifest visible.
+  }
+}
 
 function buildManifestFilters(
   state: ReturnType<typeof useBusinessContext>["state"],
@@ -49,8 +89,8 @@ function buildManifestFilters(
 export function DashboardManifestProvider({ children }: { children: ReactNode }) {
   const { state, hydrated } = useBusinessContext();
   const { subscribe } = useBusinessRefresh();
-  const [manifest, setManifest] = useState<DashboardManifest | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [manifest, setManifest] = useState<DashboardManifest | null>(() => readCachedDashboardManifest(buildManifestFilters(state)));
+  const [loading, setLoading] = useState(() => readCachedDashboardManifest(buildManifestFilters(state)) === null);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -64,16 +104,27 @@ export function DashboardManifestProvider({ children }: { children: ReactNode })
       if (refresh) {
         setRefreshing(true);
       } else {
-        setLoading(true);
+        const cached = readCachedDashboardManifest(filters);
+        setLoading(cached === null);
       }
       const next = await getDashboardManifest(filters);
       setManifest(next);
+      storeCachedDashboardManifest(filters, next);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Не удалось загрузить manifest.");
-      setManifest(null);
     } finally {
       setLoading(false);
       setRefreshing(false);
+    }
+  }, [filters, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+
+    const cached = readCachedDashboardManifest(filters);
+    if (cached) {
+      setManifest(cached);
+      setLoading(false);
     }
   }, [filters, hydrated]);
 
@@ -92,7 +143,9 @@ export function DashboardManifestProvider({ children }: { children: ReactNode })
     };
   }, [load]);
 
-  useEffect(() => subscribe(() => load(true)), [load, subscribe]);
+  useEffect(() => subscribe(() => {
+    void load(true);
+  }), [load, subscribe]);
 
   const value = useMemo<DashboardManifestContextValue>(() => ({
     manifest,
