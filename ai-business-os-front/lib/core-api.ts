@@ -2611,6 +2611,8 @@ export async function streamAiChat(
   modelId?: string,
   onMeta?: (meta: { provider_id?: string; provider_name?: string; model_id?: string }) => void,
   conversationId?: string,
+  organizationId?: string | null,
+  period?: string | null,
 ): Promise<void> {
   const response = await fetch(`${coreApiBaseUrl}/api/v1/ai/chat`, {
     method: "POST",
@@ -2621,6 +2623,8 @@ export async function streamAiChat(
       task_type: taskType,
       provider: providerId,
       model: modelId,
+      organization_id: organizationId,
+      period,
     }),
     signal,
   });

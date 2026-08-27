@@ -19,6 +19,60 @@ class HermesBusinessTools:
 
     store: CoreDataStore
 
+    def build_business_context(
+        self,
+        question: str,
+        *,
+        organization_id: UUID | None = None,
+        period: str | None = None,
+    ) -> dict:
+        """Build a small authoritative context for the current AI request."""
+
+        query = self._build_query(organization_id=organization_id, period=period)
+        engine = BusinessAnalyticsEngine(self.store)
+        text = question.lower()
+        context: dict[str, object] = {
+            "source": "AI Business OS canonical/analytics services",
+            "authoritative": True,
+            "organization_ids": [str(item) for item in query.organization_ids],
+            "period": self._period_payload(query),
+        }
+
+        wants_inventory = any(word in text for word in ("склад", "остат", "инвентар", "stock", "inventory", "warehouse"))
+        wants_customers = any(word in text for word in ("клиент", "покупател", "customer", "перестали покупать", "ушли"))
+        wants_visits = any(word in text for word in ("визит", "посещен", "торгов", "visit"))
+        wants_products = any(word in text for word in ("товар", "продукт", "категор", "product"))
+        wants_sales = any(word in text for word in ("продаж", "выруч", "заказ", "продано", "kpi", "sales", "revenue", "order"))
+
+        # Summary is the baseline for broad questions and sales requests.
+        if wants_sales or not any((wants_inventory, wants_customers, wants_visits, wants_products)):
+            context["sales_summary"] = self.get_sales_summary(
+                organization_id=organization_id,
+                period=period,
+            )
+            context["business_summary"] = self.get_business_summary(
+                organization_id=organization_id,
+                period=period,
+            )
+        if wants_products or wants_sales:
+            context["products"] = self.get_top_products(
+                organization_id=organization_id,
+                period=period,
+                limit=20,
+            )
+        if wants_inventory:
+            context["inventory"] = engine.build_inventory(query).model_dump(mode="json")
+        if wants_customers:
+            context["customers"] = engine.build_customers(query).model_dump(mode="json")
+        if wants_visits:
+            context["visits"] = engine.build_visits(query).model_dump(mode="json")
+        if wants_sales:
+            context["business_alerts"] = self.get_business_alerts(
+                organization_id=organization_id,
+                period=period,
+            )
+        return context
+
     def get_business_summary(
         self,
         *,

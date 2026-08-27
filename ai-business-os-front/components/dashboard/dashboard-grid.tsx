@@ -989,11 +989,13 @@ const FALLBACK_DASHBOARD_WIDGETS: DashboardManifestWidget[] = [
 ];
 
 export function DashboardAssistantPanel() {
+  const { state: businessState } = useBusinessContext();
   const [expanded, setExpanded] = useState(false);
   const [conversationId, setConversationId] = useState(createConversationId);
   const [selectedModel, setSelectedModel] = useState(0);
   const [availableModels, setAvailableModels] = useState<ModelItem[]>([]);
   const [selectedModelId, setSelectedModelId] = useState<string | undefined>();
+  const [savedModelsByProvider, setSavedModelsByProvider] = useState<Record<string, string>>({});
   const [aiThoughts, setAiThoughts] = useState<Array<{ label: string; title: string; text: string }>>([]);
   const [selectedTileIndex, setSelectedTileIndex] = useState<number | null>(null);
   const [message, setMessage] = useState("");
@@ -1028,23 +1030,38 @@ export function DashboardAssistantPanel() {
     if (!expanded) return;
     void Promise.all([getAiProviders(), getAiRouting()])
       .then(([providers, routing]) => {
-        const nextModels = providers
+        const grouped = new Map<string, ModelItem>();
+        providers
           .filter((provider) => provider.available && provider.status === "available")
-          .map((provider) => ({
-            providerId: provider.provider,
-            name: `${providerLabel(provider.provider)} · ${provider.name}`,
-            models: [{ id: provider.model, name: provider.name, available: provider.available }],
-            icon: providerIconKey(provider.provider),
-          }));
+          .forEach((provider) => {
+            const current = grouped.get(provider.provider);
+            if (current) {
+              if (!current.models.some((model) => model.id === provider.model)) {
+                current.models.push({ id: provider.model, name: provider.name, available: provider.available });
+              }
+              return;
+            }
+            grouped.set(provider.provider, {
+              providerId: provider.provider,
+              name: providerLabel(provider.provider),
+              models: [{ id: provider.model, name: provider.name, available: provider.available }],
+              icon: providerIconKey(provider.provider),
+            });
+          });
+        const nextModels = Array.from(grouped.values());
         setAvailableModels(nextModels);
         const chatAssignment = routing.config.roles.ai_chat;
         const assignedIndex = chatAssignment?.primary_provider_id
           ? nextModels.findIndex((model) => model.providerId === chatAssignment.primary_provider_id && model.models.some((item) => item.id === chatAssignment.primary_model_id))
           : -1;
         const nextIndex = assignedIndex >= 0 ? assignedIndex : 0;
-        const assignedModel = nextModels[nextIndex]?.models[0];
+        const assignedModel = nextModels[nextIndex]?.models.find((item) => item.id === chatAssignment?.primary_model_id)
+          ?? nextModels[nextIndex]?.models[0];
         setSelectedModel(nextIndex);
         setSelectedModelId(assignedModel?.id ?? nextModels[nextIndex]?.models[0]?.id);
+        setSavedModelsByProvider(chatAssignment?.primary_provider_id && assignedModel
+          ? { [chatAssignment.primary_provider_id]: assignedModel.id }
+          : {});
       })
       .catch(() => setAvailableModels([]));
   }, [expanded]);
@@ -1217,6 +1234,8 @@ export function DashboardAssistantPanel() {
           );
         },
         conversationId,
+        businessState.selectedOrganizationIds[0] ?? null,
+        businessState.period.preset,
       );
     } catch (error) {
       setChatError(error instanceof Error ? error.message : "Не удалось получить ответ AI.");
@@ -1538,7 +1557,7 @@ export function DashboardAssistantPanel() {
                 </div>
 
                 <div className="flex items-center justify-between gap-3 pt-2">
-                  <p className="text-[22px] font-medium tracking-[-0.05em] text-[#cfd3dc]">Выбери модель</p>
+                  <p className="text-[22px] font-medium tracking-[-0.05em] text-[#cfd3dc]">Выбери ИИ</p>
                   <button type="button" className="text-sm text-slate-400 transition hover:text-[#f4f7fb]">
                     Все
                   </button>
@@ -1592,7 +1611,9 @@ export function DashboardAssistantPanel() {
                           type="button"
                           onClick={() => {
                             setSelectedModel(index);
-                            setSelectedModelId(model.models[0]?.id);
+                            const savedModel = savedModelsByProvider[model.providerId];
+                            const nextModel = model.models.find((item) => item.id === savedModel) ?? model.models[0];
+                            setSelectedModelId(nextModel?.id);
                           }}
                           className={cn(
                             "flex h-[112px] min-w-[118px] shrink-0 snap-start flex-col items-center justify-between rounded-[24px] border px-2 py-3 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] hover:-translate-y-0.5",
@@ -1620,6 +1641,32 @@ export function DashboardAssistantPanel() {
                     })}
                   </div>
                 </div>
+
+                {activeModel.models.length > 0 ? (
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {activeModel.models.map((model) => {
+                      const selected = model.id === selectedModelId;
+                      return (
+                        <button
+                          key={`${activeModel.providerId}:${model.id}`}
+                          type="button"
+                          onClick={() => {
+                            setSelectedModelId(model.id);
+                            setSavedModelsByProvider((current) => ({ ...current, [activeModel.providerId]: model.id }));
+                          }}
+                          className={cn(
+                            "rounded-full border px-3 py-1.5 text-xs transition",
+                            selected
+                              ? "border-[#FFF27A] bg-[#FFF27A] text-[#1E1E21]"
+                              : "border-[#3a3d43] bg-[#343840] text-slate-300 hover:border-[#5a6270]",
+                          )}
+                        >
+                          {model.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
 
                 <form
                   className="flex h-[58px] items-center gap-3 rounded-[24px] border border-[#3a3d43] bg-[#343840] px-4 pr-2 text-left shadow-[0_18px_30px_rgba(0,0,0,0.16)] transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]"
@@ -3676,6 +3723,12 @@ export function DashboardGrid() {
                     (content) => setAiWidgetBuilderReply((current) => current + content),
                     undefined,
                     "system_action",
+                    undefined,
+                    undefined,
+                    undefined,
+                    undefined,
+                    businessState.selectedOrganizationIds[0] ?? null,
+                    businessState.period.preset,
                   ).catch((error) => setAiWidgetBuilderReply(error instanceof Error ? error.message : "Не удалось получить ответ AI."))
                     .finally(() => setAiWidgetBuilderLoading(false));
                 }}

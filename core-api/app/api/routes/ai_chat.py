@@ -259,7 +259,7 @@ def _system_prompt(context_service: OrganizationContextService) -> str:
         )
     return (
         "You are Hermes for AI Business OS.\n"
-        "Use ONLY the provided business data tools when the user asks about revenue, orders, sales, top products, "
+        "Use ONLY the provided authoritative AI Business OS context and business data tools when the user asks about revenue, orders, sales, top products, "
         "business comparisons, organizations, or current attention.\n"
         "Do not request or reveal SQL, PostgreSQL, raw SmartUp payloads, terminal/file/system access, or secrets.\n"
         "If the user wants to create, update, or delete a dashboard widget, use the widget builder tools.\n"
@@ -267,6 +267,8 @@ def _system_prompt(context_service: OrganizationContextService) -> str:
         "If the user asks for a file or a document, return it as a fenced code block in the form "
         "```file name=\"report.txt\" type=\"text/plain\"\n<content>\n``` so the UI can offer a download.\n"
         "Answer in the user's language and keep the answer grounded in tool results.\n"
+        "Never invent a value, stock level, customer, product, or cause that is absent from the provided context. "
+        "If a required dataset is missing, name the missing dataset explicitly.\n"
         f"Current organization context: {organization_text}.\n"
         f"Current period context: {period_text}."
     )
@@ -552,6 +554,19 @@ async def chat(
             target_channel=resolved_target_channel,
         )
         last_user_text = _message_text(last_user_message.content) if last_user_message is not None else ""
+        try:
+            business_context = tools_service.build_business_context(
+                last_user_text,
+                organization_id=request.organization_id,
+                period=request.period,
+            )
+        except Exception:  # noqa: BLE001 - chat remains available if an optional context report fails
+            business_context = {
+                "source": "AI Business OS canonical/analytics services",
+                "authoritative": True,
+                "unavailable": True,
+                "message": "Не удалось получить запрошенный набор бизнес-данных.",
+            }
         shared_memory.remember(
             conversation.user_id or effective_user_id or "owner",
             last_user_text,
@@ -561,6 +576,7 @@ async def chat(
             {"role": "system", "content": conversation_service.build_system_prompt(conversation)},
             {"role": "system", "content": shared_memory.prompt_context(conversation.user_id or effective_user_id or "owner")},
             {"role": "system", "content": _routing_context(router)},
+            {"role": "system", "content": "AUTHORITATIVE AI BUSINESS OS CONTEXT:\n" + json.dumps(business_context, ensure_ascii=False, default=str)},
             *[{"role": message.role, "content": message.content} for message in conversation.messages],
         ]
         tools = _tool_definitions()
