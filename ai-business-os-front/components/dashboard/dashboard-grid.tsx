@@ -69,7 +69,7 @@ import {
   type DashboardManifestWidget,
   type DashboardWidgetType,
 } from "@/lib/core-api";
-import { getAiProviders, getDashboardAIInsights, getDashboardManifest, streamAiChat, type AiProvider } from "@/lib/core-api";
+import { getAiProviders, getAiRouting, getDashboardAIInsights, getDashboardManifest, streamAiChat, type AiProvider } from "@/lib/core-api";
 
 type SerializedMetricValue = AnalyticsMetricValue;
 
@@ -1026,8 +1026,8 @@ export function DashboardAssistantPanel() {
 
   useEffect(() => {
     if (!expanded) return;
-    void getAiProviders()
-      .then((providers) => {
+    void Promise.all([getAiProviders(), getAiRouting()])
+      .then(([providers, routing]) => {
         const nextModels = providers
           .filter((provider) => provider.status === "available" && provider.models.some((model) => model.available !== false))
           .map((provider) => ({
@@ -1037,7 +1037,16 @@ export function DashboardAssistantPanel() {
             icon: providerIconKey(provider.id),
           }));
         setAvailableModels(nextModels);
-        setSelectedModelId(nextModels[0]?.models[0]?.id);
+        const chatAssignment = routing.config.roles.ai_chat;
+        const assignedIndex = chatAssignment?.primary_provider_id
+          ? nextModels.findIndex((model) => model.providerId === chatAssignment.primary_provider_id)
+          : -1;
+        const nextIndex = assignedIndex >= 0 ? assignedIndex : 0;
+        const assignedModel = nextModels[nextIndex]?.models.find(
+          (model) => model.id === chatAssignment?.primary_model_id,
+        );
+        setSelectedModel(nextIndex);
+        setSelectedModelId(assignedModel?.id ?? nextModels[nextIndex]?.models[0]?.id);
       })
       .catch(() => setAvailableModels([]));
   }, [expanded]);

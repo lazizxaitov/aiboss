@@ -153,6 +153,7 @@ async def telegram_chat(
         task_type = "system_action"
     routing_candidates = router.resolve_candidates(task_type)
     routed_model = str(routing_candidates[0]["model_id"]) if routing_candidates else None
+    routed_provider = str(routing_candidates[0]["provider_id"]) if routing_candidates else None
     selected_candidate_index = 0
 
     conversation = service.resolve_or_create_conversation(
@@ -199,11 +200,13 @@ async def telegram_chat(
             stream=False,
             tool_choice="auto",
             model=routed_model,
+            provider=routed_provider,
         )
         if response.status_code >= 400:
             if selected_candidate_index + 1 < len(routing_candidates):
                 selected_candidate_index += 1
                 routed_model = str(routing_candidates[selected_candidate_index]["model_id"])
+                routed_provider = str(routing_candidates[selected_candidate_index]["provider_id"])
                 continue
             raise HTTPException(status_code=response.status_code, detail=response.text or "Hermes вернул ошибку.")
         payload = response.json()

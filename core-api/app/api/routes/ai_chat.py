@@ -310,6 +310,7 @@ async def _hermes_request(
     stream: bool,
     tool_choice: str | dict[str, object] | None = None,
     model: str | None = None,
+    provider: str | None = None,
 ) -> httpx.Response:
     url = f"{settings.hermes_base_url.rstrip('/')}/chat/completions"
     headers = {"Authorization": f"Bearer {settings.hermes_api_key}"}
@@ -318,6 +319,9 @@ async def _hermes_request(
         "messages": messages,
         "stream": stream,
     }
+    if provider:
+        # Hermes requires provider for direct provider/model requests.
+        body["provider"] = provider
     if tools is not None:
         body["tools"] = tools
     if tool_choice is not None:
@@ -407,6 +411,7 @@ async def _resolve_tool_result(
                 tools=None,
                 stream=False,
                 model=str(runtime["model_id"]),
+                provider=str(runtime["provider_id"]),
             )
             if response.status_code < 400:
                 message = _extract_assistant_message(response.json()) or {}
@@ -569,6 +574,7 @@ async def chat(
                     stream=False,
                     tool_choice="auto",
                     model=str(candidate["model_id"]),
+                    provider=str(candidate["provider_id"]),
                 )
                 if candidate_response.status_code < 400:
                     routing_runtime = candidate
@@ -616,6 +622,7 @@ async def chat(
                     stream=False,
                     tool_choice="auto",
                     model=routed_model,
+                    provider=str(routing_runtime.get("provider_id") or ""),
                 )
 
             url = f"{settings.hermes_base_url.rstrip('/')}/chat/completions"
@@ -625,6 +632,7 @@ async def chat(
                 "messages": messages,
                 "stream": True,
                 "tool_choice": "none",
+                "provider": str(routing_runtime.get("provider_id") or ""),
             }
             async with httpx.AsyncClient(timeout=None) as client:
                 async with client.stream("POST", url, headers=headers, json=body) as response:

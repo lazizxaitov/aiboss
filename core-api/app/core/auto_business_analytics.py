@@ -223,7 +223,12 @@ class AutoBusinessAnalyticsService:
                     response = await client.post(
                         f"{settings.hermes_base_url.rstrip('/')}/chat/completions",
                         headers={"Authorization": f"Bearer {settings.hermes_api_key}"},
-                        json={"model": candidate["model_id"], "messages": [{"role": "user", "content": instruction}], "stream": False},
+                        json={
+                            "provider": candidate["provider_id"],
+                            "model": candidate["model_id"],
+                            "messages": [{"role": "user", "content": instruction}],
+                            "stream": False,
+                        },
                     )
                     response.raise_for_status()
                     message = _extract_assistant_message(response.json()) or {}
