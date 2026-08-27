@@ -1,5 +1,5 @@
 const CACHE_NAME = "ai-bos-shell-v1";
-const SHELL = ["/", "/manifest.webmanifest", "/pwa-icon.svg"];
+const SHELL = ["/", "/manifest.webmanifest", "/main%20icon.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL)));

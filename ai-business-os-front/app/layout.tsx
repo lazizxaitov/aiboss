@@ -16,6 +16,7 @@ export const metadata: Metadata = {
   description: "Единый интерфейс бизнес-данных, аналитики и управления.",
   applicationName: "AI Business OS",
   manifest: "/manifest.webmanifest",
+  icons: { icon: "/main%20icon.png", apple: "/main%20icon.png" },
   appleWebApp: { capable: true, title: "AI BOS", statusBarStyle: "black-translucent" },
 };
 

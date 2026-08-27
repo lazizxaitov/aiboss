@@ -9,7 +9,7 @@
       * { box-sizing: border-box; }
       body { min-height: 100vh; margin: 0; display: grid; place-items: center; background: #1e1e21; color: #f4f7fb; }
       main { width: min(360px, calc(100vw - 48px)); padding: 34px 30px; border: 1px solid #3a3d43; border-radius: 26px; background: #2e3137; text-align: center; box-shadow: 0 22px 70px rgba(0,0,0,.3); }
-      .mark { width: 64px; height: 64px; margin: 0 auto 22px; border-radius: 50%; display: grid; place-items: center; background: #fff27a; color: #1e1e21; font-size: 27px; font-weight: 700; }
+      .mark { width: 64px; height: 64px; margin: 0 auto 22px; border-radius: 50%; display: block; object-fit: cover; }
       h1 { margin: 0; font-size: 21px; letter-spacing: -.04em; }
       p { margin: 12px 0 0; color: #91a0b8; font-size: 14px; }
       .loader { width: 32px; height: 3px; margin: 22px auto 0; overflow: hidden; border-radius: 99px; background: #454952; }
@@ -19,7 +19,7 @@
   </head>
   <body>
     <main>
-      <div class="mark">AI</div>
+      <img class="mark" src="http://127.0.0.1:3000/main%20icon.png" alt="AI Business OS" onerror="this.style.visibility='hidden'" />
       <h1>AI Business OS запускается...</h1>
       <p>Подключаем рабочие сервисы</p>
       <div class="loader" aria-hidden="true"></div>

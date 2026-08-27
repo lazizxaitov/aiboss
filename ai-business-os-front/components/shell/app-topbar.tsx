@@ -70,12 +70,13 @@ export function AppTopbar() {
   return (
     <header className="relative flex items-center justify-between gap-4 rounded-[32px] bg-[#2E3137] px-5 py-4 shadow-[0_18px_50px_rgba(0,0,0,0.22)] lg:sticky lg:top-4 lg:z-40">
       <Link href="/" className="flex items-center gap-3">
-        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#f4f7fb] text-[#1E1E21]">
-          <div className="relative h-6 w-6">
-            <div className="absolute inset-y-0 left-0 w-3 rounded-full bg-[#1E1E21]" />
-            <div className="absolute inset-y-0 right-0 w-3 rounded-full bg-[#7b7f89]" />
-          </div>
-        </div>
+        <img
+          src="/main%20icon.png"
+          alt="AI Business OS"
+          width={48}
+          height={48}
+          className="h-12 w-12 rounded-full object-cover"
+        />
         <div className="text-[20px] font-semibold tracking-[-0.04em] text-[#f4f7fb]">AI БОС</div>
       </Link>
 
