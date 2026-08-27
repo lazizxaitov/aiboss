@@ -14,6 +14,7 @@ from app.core.data_layer.contracts import CoreDataStore
 from app.core.hermes_tools import HermesBusinessTools
 
 logger = getLogger(__name__)
+logger.setLevel("INFO")
 
 MAX_ROUNDS = 12
 MAX_TOOL_CALLS = 12
@@ -105,12 +106,23 @@ class AIBusinessAgentService:
                     + json.dumps(baseline, ensure_ascii=False, default=str),
                 },
             )
+            messages.insert(
+                3,
+                {
+                    "role": "system",
+                    "content": (
+                        "Business tools listed in this request ARE connected and available. "
+                        "Never tell the user that a tool is not connected merely because you have not called it yet."
+                    ),
+                },
+            )
         tools = _tool_definitions()
         result_cache: dict[str, object] = {}
         total_tool_calls = 0
         rounds = 0
         evidence_retry_used = False
         business_request = _looks_business_related(user_text)
+        tool_choice_for_round = "auto"
         logger.info(
             "AI_AGENT_START request_id=%s provider=%s model=%s organization=%s period=%s source=%s",
             request_id,
@@ -140,10 +152,11 @@ class AIBusinessAgentService:
 
         for rounds in range(1, MAX_ROUNDS + 1):
             logger.info(
-                "AI_AGENT_ROUND request_id=%s round=%s tool_calls=%s",
+                "AI_AGENT_ROUND request_id=%s round=%s tool_calls=%s tool_choice=%s",
                 request_id,
                 rounds,
                 total_tool_calls,
+                tool_choice_for_round,
             )
             assistant_message = _extract_assistant_message(response.json())
             if assistant_message is None:
@@ -170,17 +183,20 @@ class AIBusinessAgentService:
                         runtime.get("provider_id"),
                         runtime.get("model_id"),
                     )
+                    tool_choice_for_round = "required"
                     response = await _hermes_request(
                         messages=messages,
                         tools=tools,
                         stream=False,
-                        tool_choice="auto",
+                        tool_choice=tool_choice_for_round,
                         model=str(runtime["model_id"]),
                         provider=str(runtime["provider_id"]),
                     )
                     if response.status_code >= 400:
                         raise ValueError("AI provider вернул ошибку при повторной проверке business tools.")
                     continue
+                if business_request and evidence_retry_used and total_tool_calls == 0:
+                    raise ValueError("AI не выполнил обязательную проверку бизнес-данных.")
                 logger.info(
                     "AI_AGENT_FINAL request_id=%s rounds=%s tool_calls=%s provider=%s model=%s preview=%s",
                     request_id,
@@ -247,13 +263,15 @@ class AIBusinessAgentService:
                 messages.append({
                     "role": "tool",
                     "tool_call_id": str(tool_call.get("id")),
-                    "content": json.dumps(tool_result, ensure_ascii=False, default=str),
+                    "content": "AUTHORITATIVE AI BUSINESS OS TOOL RESULT. Use these returned values as factual business evidence.\n"
+                    + json.dumps(tool_result, ensure_ascii=False, default=str),
                 })
+            tool_choice_for_round = "auto"
             response = await _hermes_request(
                 messages=messages,
                 tools=tools,
                 stream=False,
-                tool_choice="auto",
+                tool_choice=tool_choice_for_round,
                 model=str(runtime["model_id"]),
                 provider=str(runtime["provider_id"]),
             )

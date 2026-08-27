@@ -54,14 +54,14 @@ def _run(text, responses, tool_result=None):
                     memory_prompt="memory",
                     system_prompt="agent",
                 )
-                return result, resolve
+                return result, resolve, request
 
     return asyncio.run(execute())
 
 
 def test_seller_question_uses_manager_aggregation():
     tool_call = {"id": "1", "function": {"name": "aggregate_sales", "arguments": '{"group_by":"manager"}'}}
-    result, resolve = _run(
+    result, resolve, _ = _run(
         "Кто из продавцов сделал больше продаж на этой неделе?",
         [_response({"content": None, "tool_calls": [tool_call]}), _response({"content": "Bekzod"})],
     )
@@ -72,7 +72,7 @@ def test_seller_question_uses_manager_aggregation():
 
 def test_business_text_without_tools_gets_generic_evidence_retry():
     tool_call = {"id": "1", "function": {"name": "aggregate_sales", "arguments": '{"group_by":"manager"}'}}
-    result, resolve = _run(
+    result, resolve, request = _run(
         "Какой менеджер продал на самую большую сумму за эту неделю? Покажи топ-5 менеджеров.",
         [
             _response({"content": "В baseline нет разбивки по менеджерам."}),
@@ -82,11 +82,38 @@ def test_business_text_without_tools_gets_generic_evidence_retry():
     )
     assert result.final_text == "Ответ подтвержден строками менеджеров"
     assert resolve.await_count == 1
+    assert request.await_args_list[0].kwargs["tool_choice"] == "auto"
+    assert request.await_args_list[1].kwargs["tool_choice"] == "required"
+    assert request.await_args_list[2].kwargs["tool_choice"] == "auto"
+
+
+def test_required_evidence_round_without_tool_returns_controlled_error():
+    async def execute():
+        with patch("app.api.routes.ai_chat._hermes_request", new_callable=AsyncMock) as request:
+            request.side_effect = [
+                _response({"content": "В baseline недостаточно данных."}),
+                _response({"content": "Инструменты не подключены."}),
+            ]
+            try:
+                await AIBusinessAgentService(object()).run(
+                    conversation=_conversation("Сколько продаж было на этой неделе?"),
+                    user_text="Сколько продаж было на этой неделе?",
+                    source_channel="web", task_type="ai_chat", router=FakeRouter(),
+                    tools_service=FakeTools(), widget_builder=object(), memory_prompt="memory",
+                    system_prompt="agent",
+                )
+            except ValueError as error:
+                return str(error), request
+        raise AssertionError("expected controlled error")
+
+    message, request = asyncio.run(execute())
+    assert message == "AI не выполнил обязательную проверку бизнес-данных."
+    assert request.await_args_list[1].kwargs["tool_choice"] == "required"
 
 
 def test_product_question_uses_product_aggregation():
     tool_call = {"id": "1", "function": {"name": "aggregate_sales", "arguments": '{"group_by":"product"}'}}
-    result, resolve = _run(
+    result, resolve, _ = _run(
         "Какой товар продавался лучше всего?",
         [_response({"content": None, "tool_calls": [tool_call]}), _response({"content": "Product A"})],
     )
@@ -96,7 +123,7 @@ def test_product_question_uses_product_aggregation():
 
 def test_multi_step_analysis_and_duplicate_tool_call_are_bounded():
     tool_call = {"id": "1", "function": {"name": "compare_periods", "arguments": '{"period":"this_week"}'}}
-    result, resolve = _run(
+    result, resolve, request = _run(
         "Почему продажи упали?",
         [
             _response({"content": None, "tool_calls": [tool_call]}),
@@ -107,12 +134,14 @@ def test_multi_step_analysis_and_duplicate_tool_call_are_bounded():
     assert result.final_text == "Падение подтверждено"
     assert resolve.await_count == 1
     assert result.tool_calls == 1
+    assert request.await_args_list[0].kwargs["tool_choice"] == "auto"
+    assert request.await_args_list[1].kwargs["tool_choice"] == "auto"
 
 
 def test_broad_analysis_can_execute_multiple_distinct_tools():
     first = {"id": "1", "function": {"name": "compare_periods", "arguments": "{}"}}
     second = {"id": "2", "function": {"name": "detect_anomalies", "arguments": "{}"}}
-    result, resolve = _run(
+    result, resolve, _ = _run(
         "Проанализируй бизнес и скажи, на что обратить внимание",
         [
             _response({"content": None, "tool_calls": [first]}),
@@ -126,7 +155,7 @@ def test_broad_analysis_can_execute_multiple_distinct_tools():
 
 def test_missing_data_after_tool_check_is_available_to_final_answer():
     tool_call = {"id": "1", "function": {"name": "query_inventory", "arguments": "{}"}}
-    result, resolve = _run(
+    result, resolve, _ = _run(
         "Проверь склад",
         [_response({"content": None, "tool_calls": [tool_call]}), _response({"content": "Остатки отсутствуют в данных"})],
         tool_result={"available": False, "reason": "inventory отсутствует"},
@@ -136,10 +165,12 @@ def test_missing_data_after_tool_check_is_available_to_final_answer():
 
 
 def test_missing_data_is_passed_to_model_without_invention():
-    result, _ = _run(
+    tool_call = {"id": "1", "function": {"name": "detect_anomalies", "arguments": "{}"}}
+    result, _, _ = _run(
         "Проанализируй бизнес и скажи проблемы",
         [
             _response({"content": "В baseline недостаточно данных"}),
+            _response({"content": None, "tool_calls": [tool_call]}),
             _response({"content": "Данных для вывода недостаточно"}),
         ],
         tool_result={"available": False, "reason": "inventory отсутствует"},
