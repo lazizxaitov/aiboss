@@ -109,6 +109,8 @@ class AIBusinessAgentService:
         result_cache: dict[str, object] = {}
         total_tool_calls = 0
         rounds = 0
+        evidence_retry_used = False
+        business_request = _looks_business_related(user_text)
         logger.info(
             "AI_AGENT_START request_id=%s provider=%s model=%s organization=%s period=%s source=%s",
             request_id,
@@ -149,11 +151,44 @@ class AIBusinessAgentService:
             tool_calls = _parse_tool_calls(assistant_message)
             if not tool_calls:
                 final_text = str(assistant_message.get("content") or "")
+                if business_request and rounds == 1 and not evidence_retry_used:
+                    evidence_retry_used = True
+                    messages.append({"role": "assistant", "content": final_text})
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "The previous response attempted to answer without inspecting AI Business OS tools. "
+                            "This is a factual business-data request. Re-evaluate the user's request, determine "
+                            "which available tool or tools can provide the required evidence, and call them now. "
+                            "Do not answer that data is unavailable until the relevant tools have been checked."
+                        ),
+                    })
+                    logger.info(
+                        "AI_AGENT_NO_TOOL_RETRY request_id=%s round=%s provider=%s model=%s",
+                        request_id,
+                        rounds,
+                        runtime.get("provider_id"),
+                        runtime.get("model_id"),
+                    )
+                    response = await _hermes_request(
+                        messages=messages,
+                        tools=tools,
+                        stream=False,
+                        tool_choice="auto",
+                        model=str(runtime["model_id"]),
+                        provider=str(runtime["provider_id"]),
+                    )
+                    if response.status_code >= 400:
+                        raise ValueError("AI provider вернул ошибку при повторной проверке business tools.")
+                    continue
                 logger.info(
-                    "AI_AGENT_FINAL request_id=%s rounds=%s tool_calls=%s",
+                    "AI_AGENT_FINAL request_id=%s rounds=%s tool_calls=%s provider=%s model=%s preview=%s",
                     request_id,
                     rounds,
                     total_tool_calls,
+                    runtime.get("provider_id"),
+                    runtime.get("model_id"),
+                    _preview(final_text),
                 )
                 return AIBusinessAgentResult(
                     final_text=final_text,
@@ -179,7 +214,7 @@ class AIBusinessAgentService:
                 )
                 if cache_key in result_cache:
                     tool_result = result_cache[cache_key]
-                    logger.info("AI_TOOL_RESULT request_id=%s name=%s cached=true", request_id, tool_name)
+                    logger.info("AI_TOOL_RESULT request_id=%s name=%s rows=%s cached=true", request_id, tool_name, _row_count(tool_result))
                 elif total_tool_calls >= MAX_TOOL_CALLS:
                     tool_result = {
                         "status": "tool_budget_exhausted",
@@ -202,8 +237,7 @@ class AIBusinessAgentService:
                         router,
                     )
                     result_cache[cache_key] = tool_result
-                    row_count = len(tool_result.get("data", [])) if isinstance(tool_result, dict) and isinstance(tool_result.get("data"), list) else 0
-                    logger.info("AI_TOOL_RESULT request_id=%s name=%s rows=%s", request_id, tool_name, row_count)
+                    logger.info("AI_TOOL_RESULT request_id=%s name=%s rows=%s", request_id, tool_name, _row_count(tool_result))
                     if tool_name == "search_entities":
                         conversation_service = AIConversationService(self.store)
                         conversation_service.remember_entities(
@@ -234,6 +268,28 @@ def _sanitized_args(arguments: dict[str, object]) -> dict[str, object]:
         key: "[redacted]" if any(part in key.lower() for part in blocked) else value
         for key, value in arguments.items()
     }
+
+
+def _preview(text: str) -> str:
+    return " ".join(text.split())[:200]
+
+
+def _row_count(result: object) -> int:
+    """Count rows across compact tool result containers without changing them."""
+
+    if isinstance(result, list):
+        return len(result)
+    if not isinstance(result, dict):
+        return 0
+    for key in ("rows", "data", "items", "results", "signals", "action_center"):
+        value = result.get(key)
+        if isinstance(value, list):
+            return len(value)
+        if isinstance(value, dict):
+            nested_count = _row_count(value)
+            if nested_count:
+                return nested_count
+    return 0
 
 
 def _looks_business_related(text: str) -> bool:

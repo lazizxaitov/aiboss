@@ -70,6 +70,20 @@ def test_seller_question_uses_manager_aggregation():
     assert resolve.await_args.args[1]["group_by"] == "manager"
 
 
+def test_business_text_without_tools_gets_generic_evidence_retry():
+    tool_call = {"id": "1", "function": {"name": "aggregate_sales", "arguments": '{"group_by":"manager"}'}}
+    result, resolve = _run(
+        "Какой менеджер продал на самую большую сумму за эту неделю? Покажи топ-5 менеджеров.",
+        [
+            _response({"content": "В baseline нет разбивки по менеджерам."}),
+            _response({"content": None, "tool_calls": [tool_call]}),
+            _response({"content": "Ответ подтвержден строками менеджеров"}),
+        ],
+    )
+    assert result.final_text == "Ответ подтвержден строками менеджеров"
+    assert resolve.await_count == 1
+
+
 def test_product_question_uses_product_aggregation():
     tool_call = {"id": "1", "function": {"name": "aggregate_sales", "arguments": '{"group_by":"product"}'}}
     result, resolve = _run(
@@ -124,7 +138,10 @@ def test_missing_data_after_tool_check_is_available_to_final_answer():
 def test_missing_data_is_passed_to_model_without_invention():
     result, _ = _run(
         "Проанализируй бизнес и скажи проблемы",
-        [_response({"content": "Данных для вывода недостаточно"})],
+        [
+            _response({"content": "В baseline недостаточно данных"}),
+            _response({"content": "Данных для вывода недостаточно"}),
+        ],
         tool_result={"available": False, "reason": "inventory отсутствует"},
     )
     assert result.final_text == "Данных для вывода недостаточно"
