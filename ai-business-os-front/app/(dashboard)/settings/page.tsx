@@ -241,8 +241,9 @@ const updateStageLabels: Record<string, string> = {
   checking: "Проверка",
   downloading: "Загрузка из GitHub",
   backend_dependencies: "Зависимости backend",
-  frontend_dependencies: "Зависимости frontend",
-  frontend_build: "Сборка интерфейса",
+  frontend_dependencies: "Зависимости приложения",
+  app_build: "Сборка приложения",
+  install: "Установка приложения",
   restarting: "Перезапуск сервисов",
   completed: "Завершено",
   rollback: "Откат версии",
@@ -323,7 +324,7 @@ function SystemUpdateCard() {
               {loading ? "Проверяем..." : "Проверить обновления"}
             </Button>
             <Button variant="primary" size="sm" onClick={() => void install()} disabled={loading || running || !systemStatus?.update_available}>
-              {running ? "Обновление выполняется..." : "Установить обновление"}
+              {running ? "Обновление выполняется..." : "Обновить систему"}
             </Button>
           </div>
         </div>

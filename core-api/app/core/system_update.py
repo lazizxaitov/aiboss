@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from datetime import UTC, datetime
 from threading import Lock, Thread
@@ -17,6 +18,8 @@ from app.core.data_layer.entities import AppSetting
 REPOSITORY_ROOT = os.path.expanduser("~/Projects/aiboss")
 BACKEND_DIRECTORY = os.path.join(REPOSITORY_ROOT, "core-api")
 FRONTEND_DIRECTORY = os.path.join(REPOSITORY_ROOT, "ai-business-os-front")
+INSTALLED_APP = "/Applications/AI Business OS.app"
+BUILT_APP = os.path.join(FRONTEND_DIRECTORY, "src-tauri", "target", "release", "bundle", "macos", "AI Business OS.app")
 UPDATE_INDEX_KEY = "system_update:state:v1"
 UPDATE_JOB_KEY_PREFIX = "system_update:job:v1:"
 UPDATE_TIMEOUT_SECONDS = 30 * 60
@@ -24,7 +27,7 @@ UPDATE_TIMEOUT_SECONDS = 30 * 60
 UpdateStatus = Literal["running", "success", "failed", "rollback"]
 UpdateStage = Literal[
     "checking", "downloading", "backend_dependencies", "frontend_dependencies",
-    "frontend_build", "restarting", "completed", "failed", "rollback",
+    "app_build", "install", "restarting", "completed", "failed", "rollback",
 ]
 
 
@@ -84,6 +87,7 @@ class SystemUpdateService:
             return
         rollback_commit: str | None = None
         try:
+            self._assert_clean_worktree()
             rollback_commit = self._git_version("HEAD", short=False)
             job.current_version = self._short(rollback_commit)
             self._update(job, stage="downloading", message="Загрузка последней версии из GitHub")
@@ -95,15 +99,21 @@ class SystemUpdateService:
             self._run_command(["uv", "sync"], BACKEND_DIRECTORY)
             self._update(job, stage="frontend_dependencies", message="Обновление зависимостей frontend")
             self._run_command(["npm", "ci"], FRONTEND_DIRECTORY)
-            self._update(job, stage="frontend_build", message="Сборка frontend")
+            self._update(job, stage="app_build", message="Сборка приложения")
             self._run_command(["npm", "run", "build"], FRONTEND_DIRECTORY)
+            self._run_command(["cargo", "--version"], FRONTEND_DIRECTORY)
+            self._run_command(["npm", "run", "tauri:build"], FRONTEND_DIRECTORY)
+            if not os.path.isdir(BUILT_APP):
+                raise RuntimeError(f"Собранное приложение не найдено: {BUILT_APP}")
+            self._update(job, stage="install", message="Установка новой версии приложения")
+            self._install_app()
             self._update(job, stage="restarting", message="Перезапуск рабочих сервисов")
             job.status = "success"
             job.stage = "completed"
             job.message = "Обновление установлено"
             self._update(job)
             self._save_state({"last_successful_update_at": datetime.now(UTC).isoformat(), "version": job.target_version})
-            self._restart_services()
+            self._restart_services(open_app=True)
         except Exception as exc:  # noqa: BLE001
             job.error = str(exc)
             self._update(job, stage="rollback", message="Ошибка обновления. Выполняется откат")
@@ -118,11 +128,12 @@ class SystemUpdateService:
                 self._run_command(["uv", "sync"], BACKEND_DIRECTORY)
                 self._run_command(["npm", "ci"], FRONTEND_DIRECTORY)
                 self._run_command(["npm", "run", "build"], FRONTEND_DIRECTORY)
+                self._run_command(["npm", "run", "tauri:build"], FRONTEND_DIRECTORY)
                 job.status = "rollback"
                 job.stage = "rollback"
                 job.message = "Обновление отменено, восстановлена предыдущая версия"
                 self._update(job)
-                self._restart_services()
+                self._restart_services(open_app=False)
             except Exception as rollback_error:  # noqa: BLE001
                 job.status = "failed"
                 job.stage = "failed"
@@ -175,13 +186,29 @@ class SystemUpdateService:
             updated_at=now,
         ))
 
+    def _assert_clean_worktree(self) -> None:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=REPOSITORY_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+        tracked_changes = [line for line in result.stdout.splitlines() if line and not line.startswith("??")]
+        if tracked_changes:
+            raise RuntimeError("Обновление остановлено: обнаружены локальные изменения.")
+
     @staticmethod
     def _run_git(args: list[str], cwd: str) -> str:
         return SystemUpdateService._run_command(["git", *args], cwd)
 
     @staticmethod
     def _run_command(args: list[str], cwd: str) -> str:
-        result = subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=UPDATE_TIMEOUT_SECONDS, check=False)
+        environment = os.environ.copy()
+        cargo_bin = os.path.expanduser("~/.cargo/bin")
+        environment["PATH"] = f"{cargo_bin}{os.pathsep}{environment.get('PATH', '')}"
+        result = subprocess.run(args, cwd=cwd, env=environment, capture_output=True, text=True, timeout=UPDATE_TIMEOUT_SECONDS, check=False)
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or "команда завершилась с ошибкой").strip()
             raise RuntimeError(f"{' '.join(args)}: {detail[-1200:]}")
@@ -195,8 +222,25 @@ class SystemUpdateService:
     def _short(commit: str) -> str:
         return commit[:7]
 
+    def _install_app(self) -> None:
+        backup = f"{INSTALLED_APP}.rollback-{uuid4().hex}"
+        installed_exists = os.path.isdir(INSTALLED_APP)
+        if installed_exists:
+            self._run_command(["mv", INSTALLED_APP, backup], REPOSITORY_ROOT)
+        try:
+            self._run_command(["mv", BUILT_APP, INSTALLED_APP], REPOSITORY_ROOT)
+        except Exception:
+            if installed_exists and os.path.isdir(backup) and not os.path.exists(INSTALLED_APP):
+                self._run_command(["mv", backup, INSTALLED_APP], REPOSITORY_ROOT)
+            raise
+        if installed_exists and os.path.isdir(backup):
+            shutil.rmtree(backup)
+
     @staticmethod
-    def _restart_services() -> None:
+    def _restart_services(*, open_app: bool) -> None:
         uid = str(os.getuid())
-        for label in ("com.aiboss.frontend", "com.aiboss.backend"):
-            subprocess.run(["launchctl", "kickstart", "-k", f"gui/{uid}/{label}"], capture_output=True, text=True, timeout=30, check=True)
+        subprocess.run(["launchctl", "kickstart", "-k", f"gui/{uid}/com.aiboss.frontend"], capture_output=True, text=True, timeout=30, check=True)
+        if open_app:
+            subprocess.run(["osascript", "-e", 'tell application "AI Business OS" to quit'], capture_output=True, text=True, timeout=30, check=False)
+            subprocess.run(["open", INSTALLED_APP], capture_output=True, text=True, timeout=30, check=True)
+        subprocess.run(["launchctl", "kickstart", "-k", f"gui/{uid}/com.aiboss.backend"], capture_output=True, text=True, timeout=30, check=True)

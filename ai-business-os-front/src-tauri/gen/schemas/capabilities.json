@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Default desktop capability for AI Business OS","local":true,"windows":["main"],"permissions":["core:default","process:allow-restart","updater:default"]}}
