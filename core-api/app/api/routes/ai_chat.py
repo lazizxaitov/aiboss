@@ -12,23 +12,24 @@ from fastapi import APIRouter, Depends, Header
 from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, BaseModel, Field
 
-from app.core.config import settings
-from app.core.ai_routing import AITaskRouter, TaskType
-from app.core.hermes_model_registry import hermes_model_registry
+from app.api.routes.auth import _session, _token_from_request
+from app.core.ai_business_agent import AIBusinessAgentService
 from app.core.ai_conversation import (
     AIConversationChannel,
     AIConversationService,
     AIConversationTargetChannel,
 )
-from app.api.routes.auth import _session, _token_from_request
+from app.core.ai_routing import AITaskRouter, TaskType
 from app.core.ai_shared_memory import SharedMemoryService
 from app.core.analytics.widget_builder import (
     WidgetBuilderDraft,
     WidgetBuilderService,
     WidgetBuilderUpdatePatch,
 )
+from app.core.config import settings
 from app.core.data_layer.contracts import CoreDataStore
 from app.core.data_layer.factory import get_core_store
+from app.core.hermes_model_registry import hermes_model_registry
 from app.core.hermes_tools import HermesBusinessTools
 from app.core.organization_context import OrganizationContextService
 
@@ -750,7 +751,6 @@ async def chat(
             yield _event({"message": "Для этой задачи нет доступного provider/model."}, "error")
             return
         routing_runtime = candidates[0]
-        routed_model = str(routing_runtime["model_id"])
         conversation = conversation_service.resolve_or_create_conversation(
             source_channel=request.source_channel,
             user_id=effective_user_id,
@@ -781,150 +781,54 @@ async def chat(
         )
         last_user_text = _message_text(last_user_message.content) if last_user_message is not None else ""
         logger.info("AI business request: question_length=%s period=%s organization_id=%s", len(last_user_text), request.period, request.organization_id)
-        try:
-            business_context = tools_service.build_business_context(
-                last_user_text,
-                organization_id=request.organization_id,
-                period=request.period,
-            )
-        except Exception:  # noqa: BLE001 - chat remains available if an optional context report fails
-            business_context = {
-                "source": "AI Business OS canonical/analytics services",
-                "authoritative": True,
-                "unavailable": True,
-                "message": "Не удалось получить запрошенный набор бизнес-данных.",
-            }
         shared_memory.remember(
             conversation.user_id or effective_user_id or "owner",
             last_user_text,
             "dashboard",
         )
-        messages: list[dict[str, object]] = [
-            {"role": "system", "content": conversation_service.build_system_prompt(conversation)},
-            {"role": "system", "content": shared_memory.prompt_context(conversation.user_id or effective_user_id or "owner")},
-            {"role": "system", "content": _routing_context(router)},
-            {"role": "system", "content": "AUTHORITATIVE AI BUSINESS OS CONTEXT:\n" + json.dumps(business_context, ensure_ascii=False, default=str)},
-            *[{"role": message.role, "content": message.content} for message in conversation.messages],
-        ]
-        tools = _tool_definitions()
-        assistant_text = ""
         try:
-            response = None
-            for candidate in candidates:
-                candidate_response = await _hermes_request(
-                    messages=messages,
-                    tools=tools,
-                    stream=False,
-                    tool_choice="auto",
-                    model=str(candidate["model_id"]),
-                    provider=str(candidate["provider_id"]),
-                )
-                if candidate_response.status_code < 400:
-                    routing_runtime = candidate
-                    routed_model = str(candidate["model_id"])
-                    response = candidate_response
-                    break
-            if response is None:
-                yield _event({"message": "Не удалось выполнить задачу ни через основной, ни через резервный provider."}, "error")
-                return
-            for _ in range(6):
-                if response.status_code >= 400:
-                    detail = response.text
-                    yield _event({"message": detail or "Hermes вернул ошибку."}, "error")
-                    return
-                payload = response.json()
-                assistant_message = _extract_assistant_message(payload)
-                if assistant_message is None:
-                    break
-                tool_calls = _parse_tool_calls(assistant_message)
-                if not tool_calls:
-                    break
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": assistant_message.get("content") or "",
-                        "tool_calls": tool_calls,
-                    }
-                )
-                for tool_call in tool_calls:
-                    function = tool_call.get("function")
-                    if not isinstance(function, dict):
-                        continue
-                    tool_name = str(function.get("name") or "")
-                    tool_result = await _resolve_tool_result(
-                        tool_name,
-                        _tool_arguments(tool_call),
-                        tools_service,
-                        widget_builder,
-                        router,
-                    )
-                    if tool_name == "search_entities":
-                        resolved_entities = _resolved_entities_from_search(tool_result, _tool_arguments(tool_call))
-                        logger.info("AI entity resolution: entities=%s", resolved_entities)
-                        conversation = conversation_service.remember_entities(
-                            conversation,
-                            resolved_entities,
-                        )
-                    result_rows = tool_result.get("data") if isinstance(tool_result, dict) else None
-                    if isinstance(result_rows, list):
-                        logger.info("AI business tool: name=%s rows=%s", tool_name, len(result_rows))
-                    else:
-                        logger.info("AI business tool: name=%s", tool_name)
-                    messages.append(_tool_message(str(tool_call.get("id")), tool_result))
-                response = await _hermes_request(
-                    messages=messages,
-                    tools=tools,
-                    stream=False,
-                    tool_choice="auto",
-                    model=routed_model,
-                    provider=str(routing_runtime.get("provider_id") or ""),
-                )
-
-            url = f"{settings.hermes_base_url.rstrip('/')}/chat/completions"
-            headers = {"Authorization": f"Bearer {settings.hermes_api_key}"}
-            body: dict[str, object] = {
-                "model": routed_model or settings.hermes_model,
-                "messages": messages,
-                "stream": True,
-                "tool_choice": "none",
-                "provider": str(routing_runtime.get("provider_id") or ""),
-            }
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream("POST", url, headers=headers, json=body) as response:
-                    if response.status_code >= 400:
-                        detail = (await response.aread()).decode("utf-8", errors="replace")
-                        yield _event({"message": detail or "Hermes вернул ошибку."}, "error")
-                        return
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data:"):
-                            continue
-                        data = line[5:].strip()
-                        if data == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(data)
-                        except json.JSONDecodeError:
-                            continue
-                        content = _extract_stream_content(chunk)
-                        if content:
-                            assistant_text += content
-                            yield _event({"content": content})
+            result = await AIBusinessAgentService(store).run(
+                conversation=conversation,
+                user_text=last_user_text,
+                source_channel=request.source_channel.value,
+                task_type=request.task_type,
+                router=router,
+                tools_service=tools_service,
+                widget_builder=widget_builder,
+                memory_prompt=shared_memory.prompt_context(conversation.user_id or effective_user_id or "owner"),
+                system_prompt=conversation_service.build_system_prompt(conversation),
+                provider_id=request.provider,
+                model_id=request.model,
+            )
+            assistant_text = result.final_text
+            conversation_service.append_message(
+                conversation,
+                role="assistant",
+                content=assistant_text,
+                source_channel=request.source_channel,
+                target_channel=resolved_target_channel,
+                metadata={
+                    "provider_id": result.runtime.get("provider_id"),
+                    "model_id": result.runtime.get("model_id"),
+                    "fallback_used": result.runtime.get("fallback_used", False),
+                    "agent_rounds": result.rounds,
+                    "tool_calls": result.tool_calls,
+                },
+            )
             if assistant_text:
-                conversation_service.append_message(
-                    conversation,
-                    role="assistant",
-                    content=assistant_text,
-                    source_channel=request.source_channel,
-                    target_channel=resolved_target_channel,
-                )
+                # Keep the existing SSE contract; the reusable agent may have
+                # completed several non-streaming tool rounds before this event.
+                yield _event({"content": assistant_text})
             yield _event(
                 {
                     "conversation_id": conversation.conversation_id,
                     "target_channel": resolved_target_channel.value if resolved_target_channel else "",
-                    "provider_id": str(routing_runtime.get("provider_id") or ""),
-                    "provider_name": str(routing_runtime.get("provider_name") or ""),
-                        "model_id": str(routing_runtime.get("model_id") or ""),
-                    "fallback_used": str(bool(routing_runtime.get("fallback_used"))).lower(),
+                    "provider_id": str(result.runtime.get("provider_id") or ""),
+                    "provider_name": str(result.runtime.get("provider_name") or ""),
+                    "model_id": str(result.runtime.get("model_id") or ""),
+                    "fallback_used": str(bool(result.runtime.get("fallback_used"))).lower(),
+                    "agent_rounds": str(result.rounds),
+                    "tool_calls": str(result.tool_calls),
                 },
                 "meta",
             )
@@ -935,8 +839,8 @@ async def chat(
                 },
                 "done",
             )
-        except httpx.HTTPError:
-            yield _event({"message": "Не удалось подключиться к AI."}, "error")
+        except (httpx.HTTPError, ValueError) as error:
+            yield _event({"message": str(error) or "Не удалось подключиться к AI."}, "error")
 
     return StreamingResponse(
         stream(),

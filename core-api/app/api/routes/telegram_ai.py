@@ -2,27 +2,25 @@
 
 from __future__ import annotations
 
-import json
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import AliasChoices, BaseModel, Field
 
-from app.api.routes.ai_chat import _hermes_request, _resolve_tool_result, _resolved_entities_from_search, _tool_definitions
+from app.core.ai_business_agent import AIBusinessAgentService
 from app.core.ai_conversation import (
     AIConversationChannel,
     AIConversationService,
     AIConversationTargetChannel,
 )
-from app.core.data_layer.contracts import CoreDataStore
-from app.core.data_layer.factory import get_core_store
-from app.core.hermes_tools import HermesBusinessTools
 from app.core.ai_routing import AITaskRouter
 from app.core.ai_shared_memory import SharedMemoryService
-from app.core.hermes_model_registry import hermes_model_registry
-from app.core.ai_insight_presentation import AIInsightPresentationService
 from app.core.analytics.widget_builder import WidgetBuilderService
+from app.core.data_layer.contracts import CoreDataStore
+from app.core.data_layer.factory import get_core_store
+from app.core.hermes_model_registry import hermes_model_registry
+from app.core.hermes_tools import HermesBusinessTools
 
 router = APIRouter(prefix="/telegram")
 
@@ -158,30 +156,12 @@ def _telegram_confirmation(text: str) -> str:
     return f"Ответ подготовлен: {trimmed[:120]}{'…' if len(trimmed) > 120 else ''}"
 
 
-def _telegram_runtime_context(router: AITaskRouter, store: CoreDataStore) -> str:
-    assignments = router.get_config().roles
-    latest = AIInsightPresentationService(store).latest()
-    latest_text = "нет готового анализа"
-    if latest and latest.status == "completed":
-        latest_text = f"analysis_id={latest.analysis_id}, generated_at={latest.generated_at.isoformat()}"
-    lines = ["AI BOS RUNTIME CONTEXT:", f"last_successful_business_analysis: {latest_text}"]
-    for task_type in ("business_analytics", "system_action", "communications", "ai_chat"):
-        assignment = assignments.get(task_type)
-        if assignment:
-            lines.append(
-                f"{task_type}: primary={assignment.primary_provider_id or '-'} / {assignment.primary_model_id or '-'}; "
-                f"fallback={assignment.fallback_provider_id or '-'} / {assignment.fallback_model_id or '-'}"
-            )
-    return "\n".join(lines)
-
-
 @router.post("/link", response_model=ConversationHistoryResponse)
 def link_telegram_chat(
     request: TelegramLinkRequest,
     store: Annotated[CoreDataStore, Depends(get_core_store)],
 ) -> ConversationHistoryResponse:
     service = AIConversationService(store)
-    shared_memory = SharedMemoryService(store)
     service.link_telegram_chat(request.telegram_chat_id, request.user_id)
     conversation = service.resolve_or_create_conversation(
         source_channel=AIConversationChannel.TELEGRAM,
@@ -360,55 +340,44 @@ async def telegram_chat(
     shared_memory = SharedMemoryService(store)
     shared_memory.remember(user_id, user_text, "telegram")
     try:
-        business_context = tools_service.build_business_context(user_text, organization_id=conversation.organization_id, period=conversation.period)
-    except Exception:  # noqa: BLE001 - tool calls remain authoritative and can report unavailable data
-        business_context = {"source": "AI Business OS canonical/analytics services", "authoritative": True, "unavailable": True, "message": "Не удалось получить запрошенный набор бизнес-данных."}
-    messages: list[dict[str, object]] = [
-        {"role": "system", "content": service.build_system_prompt(conversation)},
-        {"role": "system", "content": shared_memory.prompt_context(user_id)},
-        {"role": "system", "content": _telegram_runtime_context(router, store)},
-        {"role": "system", "content": "AUTHORITATIVE AI BUSINESS OS CONTEXT:\n" + json.dumps(business_context, ensure_ascii=False, default=str)},
-        *[{"role": message.role, "content": message.content} for message in conversation.messages],
-    ]
-    tools = _tool_definitions()
-    widget_builder = WidgetBuilderService(store)
-    runtime = candidates[0]
-    response = None
-    for candidate in candidates:
-        candidate_response = await _hermes_request(messages=messages, tools=tools, stream=False, tool_choice="auto", model=str(candidate["model_id"]), provider=str(candidate["provider_id"]))
-        if candidate_response.status_code < 400:
-            runtime, response = candidate, candidate_response
-            break
-    if response is None:
-        raise HTTPException(status_code=502, detail="Не удалось выполнить запрос через доступные provider/model.")
-    for _ in range(6):
-        payload = response.json()
-        choices = payload.get("choices")
-        choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else None
-        assistant_message = choice.get("message") if choice else None
-        if not isinstance(assistant_message, dict):
-            break
-        tool_calls = assistant_message.get("tool_calls")
-        if not isinstance(tool_calls, list) or not tool_calls:
-            final_text = str(assistant_message.get("content") or "")
-            conversation = service.append_message(conversation, role="assistant", content=final_text, source_channel=AIConversationChannel.TELEGRAM, target_channel=resolved_target_channel, metadata={"provider_id": runtime.get("provider_id"), "model_id": runtime.get("model_id"), "fallback_used": runtime.get("fallback_used", False)})
-            telegram_message = _telegram_confirmation(final_text) if resolved_target_channel == AIConversationTargetChannel.REPLY_WEB else final_text
-            return TelegramChatResponse(conversation_id=conversation.conversation_id, target_channel=resolved_target_channel, assistant_message=final_text, telegram_message=telegram_message, deliver_to_web=resolved_target_channel in {None, AIConversationTargetChannel.REPLY_WEB, AIConversationTargetChannel.REPLY_BOTH}, provider_id=str(runtime.get("provider_id")), model_id=str(runtime.get("model_id")), fallback_used=bool(runtime.get("fallback_used", False)))
-        messages.append({"role": "assistant", "content": assistant_message.get("content") or "", "tool_calls": tool_calls})
-        for tool_call in tool_calls:
-            if not isinstance(tool_call, dict) or not isinstance(tool_call.get("function"), dict):
-                continue
-            function = tool_call["function"]
-            arguments = function.get("arguments")
-            try:
-                parsed_arguments = arguments if isinstance(arguments, dict) else json.loads(arguments or "{}")
-            except (TypeError, ValueError):
-                parsed_arguments = {}
-            tool_result = await _resolve_tool_result(str(function.get("name") or ""), parsed_arguments, tools_service, widget_builder, router)
-            if str(function.get("name")) == "search_entities":
-                service.remember_entities(conversation, _resolved_entities_from_search(tool_result, parsed_arguments))
-            messages.append({"role": "tool", "tool_call_id": str(tool_call.get("id")), "content": json.dumps(tool_result, ensure_ascii=False, default=str)})
-        response = await _hermes_request(messages=messages, tools=tools, stream=False, tool_choice="auto", model=str(runtime["model_id"]), provider=str(runtime["provider_id"]))
-        if response.status_code >= 400:
-            raise HTTPException(status_code=response.status_code, detail=response.text or "Hermes вернул ошибку.")
-    raise HTTPException(status_code=502, detail="AI не вернул финальный ответ.")
+        result = await AIBusinessAgentService(store).run(
+            conversation=conversation,
+            user_text=user_text,
+            source_channel=AIConversationChannel.TELEGRAM.value,
+            task_type=task_type,
+            router=router,
+            tools_service=tools_service,
+            widget_builder=WidgetBuilderService(store),
+            memory_prompt=shared_memory.prompt_context(user_id),
+            system_prompt=service.build_system_prompt(conversation),
+            provider_id=explicit_provider if task_type == "ai_chat" else None,
+            model_id=explicit_model if task_type == "ai_chat" else None,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    final_text = result.final_text
+    conversation = service.append_message(
+        conversation,
+        role="assistant",
+        content=final_text,
+        source_channel=AIConversationChannel.TELEGRAM,
+        target_channel=resolved_target_channel,
+        metadata={
+            "provider_id": result.runtime.get("provider_id"),
+            "model_id": result.runtime.get("model_id"),
+            "fallback_used": result.runtime.get("fallback_used", False),
+            "agent_rounds": result.rounds,
+            "tool_calls": result.tool_calls,
+        },
+    )
+    telegram_message = _telegram_confirmation(final_text) if resolved_target_channel == AIConversationTargetChannel.REPLY_WEB else final_text
+    return TelegramChatResponse(
+        conversation_id=conversation.conversation_id,
+        target_channel=resolved_target_channel,
+        assistant_message=final_text,
+        telegram_message=telegram_message,
+        deliver_to_web=resolved_target_channel in {None, AIConversationTargetChannel.REPLY_WEB, AIConversationTargetChannel.REPLY_BOTH},
+        provider_id=str(result.runtime.get("provider_id")),
+        model_id=str(result.runtime.get("model_id")),
+        fallback_used=bool(result.runtime.get("fallback_used", False)),
+    )
