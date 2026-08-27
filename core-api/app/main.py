@@ -11,8 +11,6 @@ from fastapi.responses import JSONResponse
 from app.api.router import api_router
 from app.core.config import settings
 from app.core.data_layer.factory import get_core_store
-from app.core.auto_business_analytics import AutoBusinessAnalyticsService
-from app.core.data_layer.migrations import SmartUpCanonicalV2FoundationService
 from app.integrations.smartup.bootstrap import bootstrap_smartup_organizations_from_env
 from app.integrations.smartup.live_sync import SmartUpLiveSyncService
 from app.api.routes.auth import _session
@@ -28,12 +26,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     result = bootstrap_smartup_organizations_from_env(store)
     if result.organizations:
         logger.info("SmartUp organizations bootstrapped: %s", len(result.organizations))
-    canonical_reports = SmartUpCanonicalV2FoundationService(store).backfill_all()
-    logger.info(
-        "Canonical V2 materialized during startup: %s phase reports",
-        len(canonical_reports),
-    )
-    await AutoBusinessAnalyticsService(store).run_if_due(after_sync=bool(canonical_reports))
     live_sync = SmartUpLiveSyncService(store)
     live_sync.start()
     app.state.smartup_live_sync = live_sync
