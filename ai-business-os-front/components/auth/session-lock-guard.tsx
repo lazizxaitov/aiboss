@@ -74,9 +74,9 @@ export function SessionLockGuard({ children }: { children: ReactNode }) {
 
   return (
     <>
-      <div className={locked ? "pointer-events-none select-none blur-[7px] brightness-50" : ""}>{children}</div>
+      <div className={locked ? "pointer-events-none select-none brightness-50" : ""}>{children}</div>
       {locked ? (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#0d0e10]/55 p-4 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#0d0e10]/55 p-4">
           <form onSubmit={unlock} className="pointer-events-auto w-full max-w-[360px] rounded-[28px] border border-[#454952] bg-[#2E3137] p-7 shadow-[0_28px_90px_rgba(0,0,0,0.5)]">
             <p className="text-xs uppercase tracking-[0.3em] text-slate-400">AI БОС</p>
             <h2 className="mt-3 text-2xl font-semibold text-[#f4f7fb]">Система заблокирована</h2>
