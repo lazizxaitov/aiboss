@@ -2474,6 +2474,21 @@ export function getAiRouting(): Promise<AiRoutingResponse> {
   return requestJson<AiRoutingResponse>("/api/v1/ai/routing", {}, 10_000);
 }
 
+export type SessionLockSettings = {
+  timeout_minutes: number;
+};
+
+export function getSessionLockSettings(): Promise<SessionLockSettings> {
+  return requestJson<SessionLockSettings>("/api/v1/auth/lock-settings");
+}
+
+export function saveSessionLockSettings(timeoutMinutes: number): Promise<SessionLockSettings> {
+  return requestJson<SessionLockSettings>("/api/v1/auth/lock-settings", {
+    method: "PUT",
+    body: JSON.stringify({ timeout_minutes: timeoutMinutes }),
+  });
+}
+
 export function saveAiRouting(config: AiRoutingConfig): Promise<AiRoutingResponse> {
   return requestJson<AiRoutingResponse>("/api/v1/ai/routing", {
     method: "PUT",

@@ -10,6 +10,8 @@ import { AiRoutingSettings } from "@/components/settings/ai-routing-settings";
 import { MobileAccessCard } from "@/components/settings/mobile-access-card";
 import {
   getSmartUpLiveSyncStatus,
+  getSessionLockSettings,
+  saveSessionLockSettings,
   getSystemUpdateJob,
   getSystemUpdateStatus,
   installSystemUpdate,
@@ -169,6 +171,7 @@ export default function Page() {
                   <span className="h-3 w-3 rounded-full bg-emerald-500" />
                 </div>
               ))}
+              <AutoLockSetting />
             </div>
           </div>
         </Surface>
@@ -234,6 +237,58 @@ export default function Page() {
 
       <AiRoutingSettings />
     </section>
+  );
+}
+
+function AutoLockSetting() {
+  const [minutes, setMinutes] = useState(5);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    void getSessionLockSettings()
+      .then((settings) => setMinutes(settings.timeout_minutes))
+      .catch(() => undefined);
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    setNotice(null);
+    try {
+      const settings = await saveSessionLockSettings(minutes);
+      setMinutes(settings.timeout_minutes);
+      setNotice("Сохранено");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Не удалось сохранить");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="rounded-2xl border border-[#3a3d43] bg-[#2E3137] px-4 py-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium text-slate-200">Автоблокировка</p>
+          <p className="mt-1 text-sm text-slate-400">Заблокировать сессию после периода бездействия</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min={1}
+            max={1440}
+            value={minutes}
+            onChange={(event) => setMinutes(Math.max(1, Math.min(1440, Number(event.target.value) || 1)))}
+            className="h-10 w-20 rounded-xl border border-[#3a3d43] bg-[#343840] px-3 text-center text-sm text-slate-200 outline-none focus:border-[#FFF27A]"
+          />
+          <span className="text-sm text-slate-400">мин.</span>
+          <Button variant="secondary" size="sm" onClick={save} disabled={saving}>
+            {saving ? "Сохранение..." : "Сохранить"}
+          </Button>
+        </div>
+      </div>
+      {notice ? <p className="mt-2 text-xs text-slate-400">{notice}</p> : null}
+    </div>
   );
 }
 

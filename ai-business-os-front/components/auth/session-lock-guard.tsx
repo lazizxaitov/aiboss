@@ -4,7 +4,7 @@ import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "rea
 import { useRouter } from "next/navigation";
 
 const apiUrl = process.env.NEXT_PUBLIC_CORE_API_URL ?? "http://127.0.0.1:8000";
-const lockAfterMs = 5 * 60 * 1000;
+const defaultLockAfterMs = 5 * 60 * 1000;
 
 function token() {
   return document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("aibos_owner_session="))?.split("=").slice(1).join("=") ?? "";
@@ -17,7 +17,9 @@ function authHeaders() {
 export function SessionLockGuard({ children }: { children: ReactNode }) {
   const router = useRouter();
   const timer = useRef<number | null>(null);
+  const lockAfterMs = useRef(defaultLockAfterMs);
   const [locked, setLocked] = useState(false);
+  const [showUnlockPrompt, setShowUnlockPrompt] = useState(false);
   const [login, setLogin] = useState("Пользователь");
   const [pin, setPin] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -27,14 +29,20 @@ export function SessionLockGuard({ children }: { children: ReactNode }) {
     if (timer.current !== null) window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => {
       void fetch(`${apiUrl}/api/v1/auth/lock`, { method: "POST", headers: authHeaders() }).then(() => setLocked(true)).catch(() => undefined);
-    }, lockAfterMs);
+    }, lockAfterMs.current);
   };
 
   useEffect(() => {
     let active = true;
-    void fetch(`${apiUrl}/api/v1/auth/me`, { headers: authHeaders(), cache: "no-store" })
-      .then((response) => response.json())
-      .then((payload) => {
+    void Promise.all([
+      fetch(`${apiUrl}/api/v1/auth/me`, { headers: authHeaders(), cache: "no-store" }).then((response) => response.json()),
+      fetch(`${apiUrl}/api/v1/auth/lock-settings`, { headers: authHeaders(), cache: "no-store" }).then((response) => response.json()),
+    ])
+      .then(([payload, lockSettings]) => {
+        if (Number.isFinite(lockSettings.timeout_minutes) && lockSettings.timeout_minutes >= 1) {
+          lockAfterMs.current = lockSettings.timeout_minutes * 60 * 1000;
+          if (payload.locked !== true) resetTimer();
+        }
         if (!active) return;
         setLocked(payload.locked === true);
         setLogin(payload.user?.login ?? "Пользователь");
@@ -51,6 +59,23 @@ export function SessionLockGuard({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  useEffect(() => {
+    const preventLockedNavigation = (event: MouseEvent) => {
+      if (!locked) return;
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const link = target.closest("a[href]");
+      if (!(link instanceof HTMLAnchorElement)) return;
+      if (link.target === "_blank" || link.hasAttribute("download")) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setShowUnlockPrompt(true);
+    };
+
+    document.addEventListener("click", preventLockedNavigation, true);
+    return () => document.removeEventListener("click", preventLockedNavigation, true);
+  }, [locked]);
+
   async function unlock(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
@@ -62,6 +87,7 @@ export function SessionLockGuard({ children }: { children: ReactNode }) {
     }
     setPin("");
     setLocked(false);
+    setShowUnlockPrompt(false);
     resetTimer();
   }
 
@@ -74,8 +100,8 @@ export function SessionLockGuard({ children }: { children: ReactNode }) {
 
   return (
     <>
-      <div className={locked ? "pointer-events-none select-none brightness-50" : ""}>{children}</div>
-      {locked ? (
+      <div className={showUnlockPrompt ? "select-none brightness-50 blur-[1px]" : ""}>{children}</div>
+      {showUnlockPrompt ? (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#0d0e10]/55 p-4">
           <form onSubmit={unlock} className="pointer-events-auto w-full max-w-[360px] rounded-[28px] border border-[#454952] bg-[#2E3137] p-7 shadow-[0_28px_90px_rgba(0,0,0,0.5)]">
             <p className="text-xs uppercase tracking-[0.3em] text-slate-400">AI БОС</p>
