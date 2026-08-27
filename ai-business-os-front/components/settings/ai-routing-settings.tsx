@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Drawer } from "@/components/ui/drawer";
 import { Select } from "@/components/ui/select";
 import { Surface } from "@/components/ui/surface";
+import { useOwnerSessionState } from "@/components/auth/session-lock-guard";
 import { getAiRouting, saveAiRouting, type AiRoutingConfig, type AiRoutingResponse } from "@/lib/core-api";
 
 type Provider = {
@@ -53,6 +54,7 @@ const emptyAssignment = (): Assignment => ({
 });
 
 export function AiRoutingSettings() {
+  const session = useOwnerSessionState();
   const [providers, setProviders] = useState<Provider[]>([]);
   const [config, setConfig] = useState<RoutingConfig>({ roles: {} });
   const [loading, setLoading] = useState(true);
@@ -61,14 +63,18 @@ export function AiRoutingSettings() {
   const [selectedRoleId, setSelectedRoleId] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!session.hydrated || !session.authenticated || session.locked) return;
     void getAiRouting()
       .then((payload) => {
         setProviders(payload.providers);
         setConfig(payload.config);
       })
-      .catch((error) => setNotice(error instanceof Error ? error.message : "Не удалось загрузить настройки ИИ."))
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : "";
+        setNotice(message.includes(" 401") ? "Ожидается восстановление авторизации." : message.includes(" 423") ? "Сессия заблокирована. Разблокируйте её, чтобы загрузить настройки ИИ." : message || "Не удалось загрузить настройки ИИ.");
+      })
       .finally(() => setLoading(false));
-  }, []);
+  }, [session.hydrated, session.authenticated, session.locked]);
 
   const updateAssignment = (roleId: string, patch: Partial<Assignment>) => {
     setConfig((current) => ({

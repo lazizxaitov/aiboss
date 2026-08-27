@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Surface } from "@/components/ui/surface";
 import { AiRoutingSettings } from "@/components/settings/ai-routing-settings";
 import { MobileAccessCard } from "@/components/settings/mobile-access-card";
+import { useOwnerSessionState } from "@/components/auth/session-lock-guard";
 import {
   getSmartUpLiveSyncStatus,
   getSessionLockSettings,
@@ -43,6 +44,7 @@ const securityRows = [
 
 export default function Page() {
   const router = useRouter();
+  const session = useOwnerSessionState();
   const [liveSync, setLiveSync] = useState<SmartUpLiveSyncStatus | null>(null);
 
   useEffect(() => {
@@ -50,6 +52,7 @@ export default function Page() {
   }, []);
 
   useEffect(() => {
+    if (!session.hydrated || !session.authenticated || session.locked) return;
     let active = true;
     const refresh = () => {
       void getSmartUpLiveSyncStatus()
@@ -64,7 +67,7 @@ export default function Page() {
       active = false;
       window.clearInterval(interval);
     };
-  }, []);
+  }, [session.hydrated, session.authenticated, session.locked]);
 
   const logout = () => {
     const cookie = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("aibos_owner_session="));
@@ -248,15 +251,17 @@ export default function Page() {
 }
 
 function AutoLockSetting() {
+  const session = useOwnerSessionState();
   const [minutes, setMinutes] = useState(5);
   const [notice, setNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
+    if (!session.hydrated || !session.authenticated || session.locked) return;
     void getSessionLockSettings()
       .then((settings) => setMinutes(settings.timeout_minutes))
       .catch(() => undefined);
-  }, []);
+  }, [session.hydrated, session.authenticated, session.locked]);
 
   const save = async () => {
     setSaving(true);
@@ -313,6 +318,7 @@ const updateStageLabels: Record<string, string> = {
 };
 
 function SystemUpdateCard() {
+  const session = useOwnerSessionState();
   const [systemStatus, setSystemStatus] = useState<SystemUpdateStatus | null>(null);
   const [job, setJob] = useState<SystemUpdateJob | null>(null);
   const [loading, setLoading] = useState(false);
@@ -320,23 +326,26 @@ function SystemUpdateCard() {
   const pollTimerRef = useRef<number | null>(null);
 
   const checkForUpdates = async () => {
+    if (!session.hydrated || !session.authenticated || session.locked) return;
     setLoading(true);
     setNotice(null);
     try {
       setSystemStatus(await getSystemUpdateStatus());
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Не удалось проверить обновления.");
+      const message = error instanceof Error ? error.message : "";
+      setNotice(message.includes(" 401") ? "Ожидается восстановление авторизации." : message.includes(" 423") ? "Сессия заблокирована. Разблокируйте её, чтобы проверить обновления." : message || "Не удалось проверить обновления.");
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
+    if (!session.hydrated || !session.authenticated || session.locked) return;
     void checkForUpdates();
-  }, []);
+  }, [session.hydrated, session.authenticated, session.locked]);
 
   useEffect(() => {
-    if (!job || job.status !== "running") return;
+    if (!job || job.status !== "running" || !session.hydrated || !session.authenticated || session.locked) return;
     let active = true;
     const poll = async () => {
       try {
@@ -355,9 +364,10 @@ function SystemUpdateCard() {
       if (pollTimerRef.current !== null) window.clearTimeout(pollTimerRef.current);
       pollTimerRef.current = null;
     };
-  }, [job]);
+  }, [job, session.hydrated, session.authenticated, session.locked]);
 
   const install = async () => {
+    if (!session.hydrated || !session.authenticated || session.locked) return;
     setLoading(true);
     setNotice(null);
     try {
@@ -378,7 +388,7 @@ function SystemUpdateCard() {
             <p className="text-xs uppercase tracking-[0.32em] text-slate-400">Система</p>
             <h2 className="text-2xl font-semibold tracking-[-0.04em] text-[#f4f7fb]">Обновление системы</h2>
             <p className="text-sm text-slate-400">
-              {job ? `${updateStageLabels[job.stage] ?? job.stage}: ${job.message}` : notice ?? "Проверяйте и устанавливайте обновления из GitHub."}
+              {job ? `${updateStageLabels[job.stage] ?? job.stage}: ${job.message}` : notice ?? (!session.hydrated ? "Проверяем авторизацию..." : session.locked ? "Сессия заблокирована. Разблокируйте её для доступа к обновлениям." : !session.authenticated ? "Требуется авторизация владельца." : "Проверяйте и устанавливайте обновления из GitHub.")}
             </p>
           </div>
           <div className="flex flex-wrap gap-3">

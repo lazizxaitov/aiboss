@@ -1,10 +1,26 @@
 "use client";
 
-import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { createContext, type FormEvent, type ReactNode, useContext, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 const apiUrl = process.env.NEXT_PUBLIC_CORE_API_URL ?? "http://127.0.0.1:8000";
 const defaultLockAfterMs = 5 * 60 * 1000;
+
+export type OwnerSessionState = {
+  hydrated: boolean;
+  authenticated: boolean;
+  locked: boolean;
+};
+
+const OwnerSessionContext = createContext<OwnerSessionState>({
+  hydrated: false,
+  authenticated: false,
+  locked: false,
+});
+
+export function useOwnerSessionState() {
+  return useContext(OwnerSessionContext);
+}
 
 function token() {
   return document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("aibos_owner_session="))?.split("=").slice(1).join("=") ?? "";
@@ -19,6 +35,8 @@ export function SessionLockGuard({ children }: { children: ReactNode }) {
   const timer = useRef<number | null>(null);
   const lockAfterMs = useRef(defaultLockAfterMs);
   const [locked, setLocked] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
   const [showUnlockPrompt, setShowUnlockPrompt] = useState(false);
   const [login, setLogin] = useState("Пользователь");
   const [pin, setPin] = useState("");
@@ -28,26 +46,33 @@ export function SessionLockGuard({ children }: { children: ReactNode }) {
     if (locked) return;
     if (timer.current !== null) window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => {
-      void fetch(`${apiUrl}/api/v1/auth/lock`, { method: "POST", headers: authHeaders() }).then(() => setLocked(true)).catch(() => undefined);
+      void fetch(`${apiUrl}/api/v1/auth/lock`, { method: "POST", headers: authHeaders() }).then((response) => {
+        if (!response.ok) return;
+        setLocked(true);
+      }).catch(() => undefined);
     }, lockAfterMs.current);
   };
 
   useEffect(() => {
     let active = true;
     void Promise.all([
-      fetch(`${apiUrl}/api/v1/auth/me`, { headers: authHeaders(), cache: "no-store" }).then((response) => response.json()),
-      fetch(`${apiUrl}/api/v1/auth/lock-settings`, { headers: authHeaders(), cache: "no-store" }).then((response) => response.json()),
+      fetch(`${apiUrl}/api/v1/auth/me`, { headers: authHeaders(), cache: "no-store" }).then(async (response) => ({ response, payload: await response.json().catch(() => ({})) })),
+      fetch(`${apiUrl}/api/v1/auth/lock-settings`, { headers: authHeaders(), cache: "no-store" }).then(async (response) => ({ response, payload: await response.json().catch(() => ({})) })),
     ])
-      .then(([payload, lockSettings]) => {
-        if (Number.isFinite(lockSettings.timeout_minutes) && lockSettings.timeout_minutes >= 1) {
-          lockAfterMs.current = lockSettings.timeout_minutes * 60 * 1000;
-          if (payload.locked !== true) resetTimer();
+      .then(([sessionResult, lockSettingsResult]) => {
+        const sessionIsValid = sessionResult.response.ok && sessionResult.payload?.locked !== undefined;
+        setAuthenticated(sessionIsValid);
+        setHydrated(true);
+        if (Number.isFinite(lockSettingsResult.payload.timeout_minutes) && lockSettingsResult.payload.timeout_minutes >= 1) {
+          lockAfterMs.current = lockSettingsResult.payload.timeout_minutes * 60 * 1000;
+          if (sessionResult.payload.locked !== true) resetTimer();
         }
+        if (!sessionIsValid) return;
         if (!active) return;
-        setLocked(payload.locked === true);
-        setLogin(payload.user?.login ?? "Пользователь");
+        setLocked(sessionResult.payload.locked === true);
+        setLogin(sessionResult.payload.user?.login ?? "Пользователь");
       })
-      .catch(() => undefined);
+      .catch(() => setHydrated(true));
 
     const events = ["pointerdown", "keydown", "touchstart", "scroll"];
     events.forEach((event) => window.addEventListener(event, resetTimer, { passive: true }));
@@ -87,6 +112,7 @@ export function SessionLockGuard({ children }: { children: ReactNode }) {
     }
     setPin("");
     setLocked(false);
+    setAuthenticated(true);
     setShowUnlockPrompt(false);
     resetTimer();
   }
@@ -99,7 +125,8 @@ export function SessionLockGuard({ children }: { children: ReactNode }) {
   }
 
   return (
-    <>
+    <OwnerSessionContext.Provider value={{ hydrated, authenticated, locked }}>
+      <>
       <div className={showUnlockPrompt ? "select-none brightness-50 blur-[1px]" : ""}>{children}</div>
       {showUnlockPrompt ? (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#0d0e10]/55 p-4">
@@ -114,6 +141,7 @@ export function SessionLockGuard({ children }: { children: ReactNode }) {
           </form>
         </div>
       ) : null}
-    </>
+      </>
+    </OwnerSessionContext.Provider>
   );
 }
