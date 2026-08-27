@@ -7,9 +7,9 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
-from app.api.routes.ai_chat import _hermes_request, _resolve_tool_result, _tool_definitions
+from app.api.routes.ai_chat import _hermes_request, _resolve_tool_result, _resolved_entities_from_search, _tool_definitions
 from app.core.ai_conversation import (
     AIConversationChannel,
     AIConversationService,
@@ -40,6 +40,13 @@ class TelegramChatRequest(BaseModel):
     period: str | None = None
     message: str = Field(min_length=1)
     target_channel: AIConversationTargetChannel | None = None
+    provider_id: str | None = Field(default=None, validation_alias=AliasChoices("provider_id", "provider"))
+    model_id: str | None = Field(default=None, validation_alias=AliasChoices("model_id", "model"))
+
+
+class TelegramOption(BaseModel):
+    label: str
+    command: str
 
 
 class TelegramChatResponse(BaseModel):
@@ -48,6 +55,10 @@ class TelegramChatResponse(BaseModel):
     assistant_message: str
     telegram_message: str
     deliver_to_web: bool = False
+    provider_id: str | None = None
+    model_id: str | None = None
+    fallback_used: bool = False
+    options: list[TelegramOption] = Field(default_factory=list)
 
 
 class ConversationHistoryResponse(BaseModel):
@@ -61,6 +72,83 @@ class ConversationHistoryResponse(BaseModel):
 
 def _message_text(text: str) -> str:
     return text.strip()
+
+
+def _provider_label(provider) -> str:
+    provider_id = str(provider.id).lower()
+    if provider_id == "custom":
+        return "Local / Custom"
+    if provider_id == "openai-codex":
+        return "OpenAI Codex"
+    if provider_id in {"anthropic", "claude"}:
+        return "Anthropic / Claude"
+    return provider.name
+
+
+def _command_parts(text: str) -> tuple[str, str]:
+    parts = text.strip().split(maxsplit=1)
+    return parts[0].lower(), parts[1].strip() if len(parts) > 1 else ""
+
+
+def _provider_options(providers) -> list[TelegramOption]:
+    options: list[TelegramOption] = []
+    seen: set[str] = set()
+    for provider in providers:
+        provider_id = str(provider.id)
+        if provider_id.lower() == "hermes" or provider_id in seen:
+            continue
+        if provider.status != "available" or not any(model.available for model in provider.models):
+            continue
+        seen.add(provider_id)
+        options.append(TelegramOption(label=_provider_label(provider), command=f"/ai {provider_id}"))
+    return options
+
+
+def _model_options(provider) -> list[TelegramOption]:
+    return [
+        TelegramOption(label=model.name, command=f"/model {model.id}")
+        for model in provider.models
+        if model.available
+    ]
+
+
+def _find_provider(providers, value: str):
+    normalized = value.strip().lower()
+    for provider in providers:
+        if str(provider.id).lower() == normalized or str(provider.name).lower() == normalized:
+            return provider
+    return None
+
+
+def _find_model(provider, value: str):
+    normalized = value.strip().lower()
+    for model in provider.models:
+        if model.available and (model.id.lower() == normalized or model.name.lower() == normalized):
+            return model
+    return None
+
+
+def _command_result(
+    *,
+    conversation,
+    service: AIConversationService,
+    text: str,
+    options: list[TelegramOption] | None = None,
+    provider_id: str | None = None,
+    model_id: str | None = None,
+    fallback_used: bool = False,
+) -> TelegramChatResponse:
+    return TelegramChatResponse(
+        conversation_id=conversation.conversation_id,
+        target_channel=None,
+        assistant_message=text,
+        telegram_message=text,
+        deliver_to_web=False,
+        provider_id=provider_id,
+        model_id=model_id,
+        fallback_used=fallback_used,
+        options=options or [],
+    )
 
 
 def _telegram_confirmation(text: str) -> str:
@@ -143,22 +231,12 @@ async def telegram_chat(
 ) -> TelegramChatResponse:
     service = AIConversationService(store)
     tools_service = HermesBusinessTools(store)
-    await hermes_model_registry.get_providers()
     router = AITaskRouter(store)
-    task_type = "ai_chat"
-    lowered_text = request.message.lower()
-    if "свеж" in lowered_text and "анализ" in lowered_text:
-        task_type = "business_analytics"
-    elif any(word in lowered_text for word in ("добавь виджет", "удали виджет", "измени виджет", "создай виджет")):
-        task_type = "system_action"
-    routing_candidates = router.resolve_candidates(task_type)
-    routed_model = str(routing_candidates[0]["model_id"]) if routing_candidates else None
-    routed_provider = str(routing_candidates[0]["provider_id"]) if routing_candidates else None
-    selected_candidate_index = 0
-
+    providers = await hermes_model_registry.get_providers(refresh=True)
+    user_id = request.user_id or service.resolve_identity(telegram_chat_id=request.telegram_chat_id)
     conversation = service.resolve_or_create_conversation(
         source_channel=AIConversationChannel.TELEGRAM,
-        user_id=request.user_id,
+        user_id=user_id,
         telegram_chat_id=request.telegram_chat_id,
         organization_id=request.organization_id,
         period=request.period,
@@ -171,108 +249,166 @@ async def telegram_chat(
             telegram_chat_id=request.telegram_chat_id,
             organization_id=request.organization_id,
             period=request.period,
-            user_id=request.user_id,
+            user_id=user_id,
         )
 
     user_text = _message_text(request.message)
-    resolved_target_channel = request.target_channel or service.infer_target_channel(user_text)
-    conversation = service.append_message(
-        conversation,
-        role="user",
-        content=user_text,
-        source_channel=AIConversationChannel.TELEGRAM,
-        target_channel=resolved_target_channel,
-    )
-    shared_memory.remember(conversation.user_id or request.user_id, user_text, "telegram")
+    command, argument = _command_parts(user_text)
+    if command in {"/ai", "/model", "/current", "/organization", "/period"}:
+        if command == "/ai":
+            if not argument:
+                return _command_result(
+                    conversation=conversation,
+                    service=service,
+                    text="Выберите тип ИИ:",
+                    options=_provider_options(providers),
+                )
+            provider = _find_provider(providers, argument)
+            if provider is None or provider.id.lower() == "hermes" or provider.status != "available":
+                return _command_result(conversation=conversation, service=service, text="Такой провайдер недоступен.", options=_provider_options(providers))
+            model = next((item for item in provider.models if item.available), None)
+            if model is None:
+                return _command_result(conversation=conversation, service=service, text="У этого провайдера нет доступных моделей.")
+            service.set_telegram_target(request.telegram_chat_id, provider_id=provider.id, model_id=model.id)
+            return _command_result(
+                conversation=conversation,
+                service=service,
+                text=f"Выбран провайдер: {_provider_label(provider)}. Модель: {model.name}",
+                options=_model_options(provider),
+                provider_id=provider.id,
+                model_id=model.id,
+            )
+        if command == "/model":
+            selected = service.get_telegram_target(request.telegram_chat_id)
+            provider = _find_provider(providers, selected.get("provider_id", "")) if selected else None
+            if provider is None:
+                candidates = router.resolve_candidates("ai_chat")
+                provider_id = str(candidates[0]["provider_id"]) if candidates else ""
+                provider = _find_provider(providers, provider_id)
+            if provider is None:
+                return _command_result(conversation=conversation, service=service, text="Нет доступного провайдера для выбора модели.")
+            if not argument:
+                return _command_result(conversation=conversation, service=service, text=f"Модели {_provider_label(provider)}:", options=_model_options(provider), provider_id=provider.id)
+            model = _find_model(provider, argument)
+            if model is None:
+                return _command_result(conversation=conversation, service=service, text="Такая модель недоступна.", options=_model_options(provider), provider_id=provider.id)
+            service.set_telegram_target(request.telegram_chat_id, provider_id=provider.id, model_id=model.id)
+            return _command_result(conversation=conversation, service=service, text=f"Выбрана модель: {model.name}", provider_id=provider.id, model_id=model.id)
+        if command == "/current":
+            selected = service.get_telegram_target(request.telegram_chat_id)
+            candidates = router.resolve_candidates("ai_chat")
+            selected_target = (
+                router.resolve_candidates(
+                    "ai_chat",
+                    provider_id=selected.get("provider_id") if selected else None,
+                    model_id=selected.get("model_id") if selected else None,
+                )
+                if selected
+                else []
+            )
+            runtime = (selected_target[0] if selected_target else (candidates[0] if candidates else {}))
+            provider = _find_provider(providers, str(runtime.get("provider_id") or ""))
+            provider_name = _provider_label(provider) if provider else "не выбран"
+            model_name = str(runtime.get("model_id") or "не выбрана")
+            return _command_result(
+                conversation=conversation,
+                service=service,
+                text=(f"Провайдер: {provider_name}\nМодель: {model_name}\n"
+                      f"Организация: {conversation.organization_id or 'все'}\nПериод: {conversation.period or 'текущий контекст'}"),
+                provider_id=str(runtime.get("provider_id") or "") or None,
+                model_id=str(runtime.get("model_id") or "") or None,
+                fallback_used=bool(runtime.get("fallback_used", False)),
+            )
+        if command == "/organization":
+            organization_result = tools_service.get_organizations()
+            organizations = organization_result.get("items", [])
+            if not argument:
+                options = [TelegramOption(label=str(item.get("name") or item.get("organization_id")), command=f"/organization {item.get('organization_id')}") for item in organizations]
+                return _command_result(conversation=conversation, service=service, text="Выберите организацию:", options=options)
+            selected = next((item for item in organizations if str(item.get("organization_id")) == argument or str(item.get("name", "")).lower() == argument.lower()), None)
+            if selected is None:
+                return _command_result(conversation=conversation, service=service, text="Организация не найдена.")
+            conversation = service.update_context(conversation, organization_id=UUID(str(selected["organization_id"])), source_channel=AIConversationChannel.TELEGRAM, telegram_chat_id=request.telegram_chat_id, user_id=user_id)
+            return _command_result(conversation=conversation, service=service, text=f"Организация выбрана: {selected.get('name')}")
+        period_values = {"сегодня": "today", "today": "today", "вчера": "yesterday", "yesterday": "yesterday", "эта неделя": "this_week", "this_week": "this_week", "прошлая неделя": "last_week", "last_week": "last_week", "этот месяц": "this_month", "this_month": "this_month", "прошлый месяц": "last_month", "last_month": "last_month"}
+        if not argument:
+            return _command_result(conversation=conversation, service=service, text="Выберите период:", options=[TelegramOption(label=label, command=f"/period {value}") for label, value in (("Сегодня", "today"), ("Вчера", "yesterday"), ("Эта неделя", "this_week"), ("Прошлая неделя", "last_week"), ("Этот месяц", "this_month"), ("Прошлый месяц", "last_month"))])
+        period = period_values.get(argument.lower())
+        if period is None:
+            return _command_result(conversation=conversation, service=service, text="Неизвестный период. Используйте /period для списка.")
+        conversation = service.update_context(conversation, period=period, source_channel=AIConversationChannel.TELEGRAM, telegram_chat_id=request.telegram_chat_id, user_id=user_id)
+        return _command_result(conversation=conversation, service=service, text=f"Период выбран: {period}")
 
-    messages = [
+    target = service.get_telegram_target(request.telegram_chat_id)
+    explicit_provider = request.provider_id or (target or {}).get("provider_id")
+    explicit_model = request.model_id or (target or {}).get("model_id")
+    lowered_text = user_text.lower()
+    task_type = "ai_chat"
+    if "свеж" in lowered_text and "анализ" in lowered_text:
+        task_type = "business_analytics"
+    elif any(word in lowered_text for word in ("добавь виджет", "удали виджет", "измени виджет", "создай виджет")):
+        task_type = "system_action"
+    candidates = router.resolve_candidates(
+        task_type,
+        provider_id=explicit_provider if task_type == "ai_chat" else None,
+        model_id=explicit_model if task_type == "ai_chat" else None,
+    )
+    if not candidates:
+        raise HTTPException(status_code=409, detail="Выбранный provider/model сейчас недоступен.")
+    resolved_target_channel = request.target_channel or service.infer_target_channel(user_text)
+    conversation = service.append_message(conversation, role="user", content=user_text, source_channel=AIConversationChannel.TELEGRAM, target_channel=resolved_target_channel)
+    shared_memory = SharedMemoryService(store)
+    shared_memory.remember(user_id, user_text, "telegram")
+    try:
+        business_context = tools_service.build_business_context(user_text, organization_id=conversation.organization_id, period=conversation.period)
+    except Exception:  # noqa: BLE001 - tool calls remain authoritative and can report unavailable data
+        business_context = {"source": "AI Business OS canonical/analytics services", "authoritative": True, "unavailable": True, "message": "Не удалось получить запрошенный набор бизнес-данных."}
+    messages: list[dict[str, object]] = [
         {"role": "system", "content": service.build_system_prompt(conversation)},
-        {"role": "system", "content": shared_memory.prompt_context(conversation.user_id or request.user_id)},
+        {"role": "system", "content": shared_memory.prompt_context(user_id)},
         {"role": "system", "content": _telegram_runtime_context(router, store)},
+        {"role": "system", "content": "AUTHORITATIVE AI BUSINESS OS CONTEXT:\n" + json.dumps(business_context, ensure_ascii=False, default=str)},
         *[{"role": message.role, "content": message.content} for message in conversation.messages],
     ]
     tools = _tool_definitions()
-
-    for attempt in range(3):
-        response = await _hermes_request(
-            messages=messages,
-            tools=tools,
-            stream=False,
-            tool_choice="auto",
-            model=routed_model,
-            provider=routed_provider,
-        )
-        if response.status_code >= 400:
-            if selected_candidate_index + 1 < len(routing_candidates):
-                selected_candidate_index += 1
-                routed_model = str(routing_candidates[selected_candidate_index]["model_id"])
-                routed_provider = str(routing_candidates[selected_candidate_index]["provider_id"])
-                continue
-            raise HTTPException(status_code=response.status_code, detail=response.text or "Hermes вернул ошибку.")
+    widget_builder = WidgetBuilderService(store)
+    runtime = candidates[0]
+    response = None
+    for candidate in candidates:
+        candidate_response = await _hermes_request(messages=messages, tools=tools, stream=False, tool_choice="auto", model=str(candidate["model_id"]), provider=str(candidate["provider_id"]))
+        if candidate_response.status_code < 400:
+            runtime, response = candidate, candidate_response
+            break
+    if response is None:
+        raise HTTPException(status_code=502, detail="Не удалось выполнить запрос через доступные provider/model.")
+    for _ in range(6):
         payload = response.json()
         choices = payload.get("choices")
-        if not isinstance(choices, list) or not choices:
-            break
-        choice = choices[0]
-        if not isinstance(choice, dict):
-            break
-        assistant_message = choice.get("message")
+        choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else None
+        assistant_message = choice.get("message") if choice else None
         if not isinstance(assistant_message, dict):
             break
         tool_calls = assistant_message.get("tool_calls")
         if not isinstance(tool_calls, list) or not tool_calls:
             final_text = str(assistant_message.get("content") or "")
-            conversation = service.append_message(
-                conversation,
-                role="assistant",
-                content=final_text,
-                source_channel=AIConversationChannel.TELEGRAM,
-                target_channel=resolved_target_channel,
-            )
-            telegram_message = (
-                _telegram_confirmation(final_text)
-                if resolved_target_channel == AIConversationTargetChannel.REPLY_WEB
-                else final_text
-            )
-            return TelegramChatResponse(
-                conversation_id=conversation.conversation_id,
-                target_channel=resolved_target_channel,
-                assistant_message=final_text,
-                telegram_message=telegram_message,
-                deliver_to_web=resolved_target_channel in {None, AIConversationTargetChannel.REPLY_WEB, AIConversationTargetChannel.REPLY_BOTH},
-            )
-
-        messages.append(
-            {
-                "role": "assistant",
-                "content": assistant_message.get("content") or "",
-                "tool_calls": tool_calls,
-            },
-        )
+            conversation = service.append_message(conversation, role="assistant", content=final_text, source_channel=AIConversationChannel.TELEGRAM, target_channel=resolved_target_channel, metadata={"provider_id": runtime.get("provider_id"), "model_id": runtime.get("model_id"), "fallback_used": runtime.get("fallback_used", False)})
+            telegram_message = _telegram_confirmation(final_text) if resolved_target_channel == AIConversationTargetChannel.REPLY_WEB else final_text
+            return TelegramChatResponse(conversation_id=conversation.conversation_id, target_channel=resolved_target_channel, assistant_message=final_text, telegram_message=telegram_message, deliver_to_web=resolved_target_channel in {None, AIConversationTargetChannel.REPLY_WEB, AIConversationTargetChannel.REPLY_BOTH}, provider_id=str(runtime.get("provider_id")), model_id=str(runtime.get("model_id")), fallback_used=bool(runtime.get("fallback_used", False)))
+        messages.append({"role": "assistant", "content": assistant_message.get("content") or "", "tool_calls": tool_calls})
         for tool_call in tool_calls:
-            if not isinstance(tool_call, dict):
+            if not isinstance(tool_call, dict) or not isinstance(tool_call.get("function"), dict):
                 continue
-            function = tool_call.get("function")
-            if not isinstance(function, dict):
-                continue
-            tool_name = str(function.get("name") or "")
+            function = tool_call["function"]
             arguments = function.get("arguments")
-            if isinstance(arguments, dict):
-                parsed_arguments = arguments
-            elif isinstance(arguments, str) and arguments.strip():
-                try:
-                    parsed_arguments = json.loads(arguments)
-                except Exception:  # noqa: BLE001
-                    parsed_arguments = {}
-            else:
+            try:
+                parsed_arguments = arguments if isinstance(arguments, dict) else json.loads(arguments or "{}")
+            except (TypeError, ValueError):
                 parsed_arguments = {}
-            tool_result = await _resolve_tool_result(tool_name, parsed_arguments, tools_service, WidgetBuilderService(store), router)
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": str(tool_call.get("id")),
-                    "content": json.dumps(tool_result, ensure_ascii=False, default=str),
-                },
-            )
-
-    raise HTTPException(status_code=502, detail="AI did not return a final answer.")
+            tool_result = await _resolve_tool_result(str(function.get("name") or ""), parsed_arguments, tools_service, widget_builder, router)
+            if str(function.get("name")) == "search_entities":
+                service.remember_entities(conversation, _resolved_entities_from_search(tool_result, parsed_arguments))
+            messages.append({"role": "tool", "tool_call_id": str(tool_call.get("id")), "content": json.dumps(tool_result, ensure_ascii=False, default=str)})
+        response = await _hermes_request(messages=messages, tools=tools, stream=False, tool_choice="auto", model=str(runtime["model_id"]), provider=str(runtime["provider_id"]))
+        if response.status_code >= 400:
+            raise HTTPException(status_code=response.status_code, detail=response.text or "Hermes вернул ошибку.")
+    raise HTTPException(status_code=502, detail="AI не вернул финальный ответ.")

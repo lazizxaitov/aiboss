@@ -67,6 +67,7 @@ class AIConversationIndex(BaseModel):
 
     active_by_identity: dict[str, str] = Field(default_factory=dict)
     telegram_chat_to_identity: dict[str, str] = Field(default_factory=dict)
+    telegram_chat_targets: dict[str, dict[str, str]] = Field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -124,6 +125,24 @@ class AIConversationService:
     def link_telegram_chat(self, telegram_chat_id: str, identity: str) -> AIConversationIndex:
         index = self.get_index()
         index.telegram_chat_to_identity[str(telegram_chat_id)] = identity
+        return self.save_index(index)
+
+    def get_telegram_target(self, telegram_chat_id: str) -> dict[str, str] | None:
+        target = self.get_index().telegram_chat_targets.get(str(telegram_chat_id))
+        return dict(target) if isinstance(target, dict) else None
+
+    def set_telegram_target(
+        self,
+        telegram_chat_id: str,
+        *,
+        provider_id: str,
+        model_id: str,
+    ) -> AIConversationIndex:
+        index = self.get_index()
+        index.telegram_chat_targets[str(telegram_chat_id)] = {
+            "provider_id": provider_id,
+            "model_id": model_id,
+        }
         return self.save_index(index)
 
     def resolve_identity(
