@@ -15,16 +15,13 @@ AI_ROUTING_SETTING_KEY = "ai_routing:settings:v1"
 TaskType = Literal["business_analytics", "system_action", "communications", "ai_chat"]
 
 
-class AIModelOption(BaseModel):
-    id: str
-    name: str
-
-
 class AIProvider(BaseModel):
     id: str
+    provider: str
+    model: str
     name: str
     status: Literal["available", "unavailable", "not_configured"]
-    available_models: list[AIModelOption] = Field(default_factory=list)
+    available: bool = True
     capabilities: list[str] = Field(default_factory=list)
 
 
@@ -47,16 +44,29 @@ class AIRoutingResponse(BaseModel):
 
 
 def _providers() -> list[AIProvider]:
-    return [
-        AIProvider(
-            id=provider.id,
-            name=provider.name,
-            status=provider.status,
-            available_models=[AIModelOption(id=model.id, name=model.name) for model in provider.models],
-            capabilities=provider.capabilities,
-        )
-        for provider in hermes_model_registry.cached_providers()
-    ]
+    return _targets(hermes_model_registry.cached_providers())
+
+
+def _targets(providers: list[HermesProvider]) -> list[AIProvider]:
+    targets: list[AIProvider] = []
+    seen: set[tuple[str, str]] = set()
+    for provider in providers:
+        for model in provider.models:
+            key = (provider.id, model.id)
+            if key in seen:
+                continue
+            seen.add(key)
+            available = provider.status == "available" and model.available
+            targets.append(AIProvider(
+                id=f"{provider.id}:{model.id}",
+                provider=provider.id,
+                model=model.id,
+                name=model.name,
+                status="available" if available else "unavailable",
+                available=available,
+                capabilities=provider.capabilities,
+            ))
+    return targets
 
 
 class AITaskRouter:
@@ -67,10 +77,14 @@ class AITaskRouter:
         setting = self.store.get_app_setting(AI_ROUTING_SETTING_KEY)
         if setting is None:
             return self.default_config()
-        return AIRoutingConfig.model_validate(setting.setting_value)
+        config = AIRoutingConfig.model_validate(setting.setting_value)
+        migrated = self._migrate_legacy_config(config)
+        if migrated != config:
+            self._persist_config(migrated)
+        return migrated
 
     def save_config(self, config: AIRoutingConfig) -> AIRoutingConfig:
-        providers = {provider.id: provider for provider in _providers()}
+        targets = {(target.provider, target.model): target for target in _providers()}
         for role, assignment in config.roles.items():
             for provider_id, model_id in (
                 (assignment.primary_provider_id, assignment.primary_model_id),
@@ -78,9 +92,13 @@ class AITaskRouter:
             ):
                 if provider_id is None and model_id is None:
                     continue
-                provider = providers.get(provider_id or "")
-                if provider is None or provider.status != "available" or not model_id or model_id not in {model.id for model in provider.available_models}:
+                target = targets.get((provider_id or "", model_id or ""))
+                if target is None or not target.available:
                     raise ValueError(f"Недоступный provider/model для роли {role}.")
+        self._persist_config(config)
+        return config
+
+    def _persist_config(self, config: AIRoutingConfig) -> None:
         now = datetime.now(UTC)
         self.store.upsert_app_setting(AppSetting(
             setting_key=AI_ROUTING_SETTING_KEY,
@@ -89,22 +107,33 @@ class AITaskRouter:
             created_at=now,
             updated_at=now,
         ))
-        return config
+
+    def _migrate_legacy_config(self, config: AIRoutingConfig) -> AIRoutingConfig:
+        targets = [target for target in _providers() if target.available]
+        custom = next((target for target in targets if target.provider == "custom"), None)
+        replacement = custom or (targets[0] if targets else None)
+        if replacement is None:
+            return config
+        roles: dict[TaskType, AIRoleAssignment] = {}
+        changed = False
+        for role, assignment in config.roles.items():
+            updates: dict[str, str | None] = {}
+            if assignment.primary_provider_id == "hermes" and assignment.primary_model_id == "default":
+                updates.update(primary_provider_id=replacement.provider, primary_model_id=replacement.model)
+            if assignment.fallback_provider_id == "hermes" and assignment.fallback_model_id == "default":
+                updates.update(fallback_provider_id=replacement.provider, fallback_model_id=replacement.model)
+            roles[role] = assignment.model_copy(update=updates) if updates else assignment
+            changed = changed or bool(updates)
+        return config.model_copy(update={"roles": roles}) if changed else config
 
     @staticmethod
     def default_config() -> AIRoutingConfig:
-        providers = hermes_model_registry.cached_providers()
-        if not providers or not providers[0].models:
+        targets = [target for target in _providers() if target.available]
+        if not targets:
             return AIRoutingConfig()
-        default = AIRoleAssignment(
-            primary_provider_id=providers[0].id,
-            primary_model_id=providers[0].models[0].id,
-        )
         return AIRoutingConfig(roles={
-            "business_analytics": default,
-            "system_action": default,
-            "communications": default,
-            "ai_chat": default,
+            role: AIRoleAssignment(primary_provider_id=targets[0].provider, primary_model_id=targets[0].model)
+            for role in ("business_analytics", "system_action", "communications", "ai_chat")
         })
 
     def resolve(self, task_type: TaskType) -> AIRoleAssignment:
@@ -117,7 +146,7 @@ class AITaskRouter:
         provider_id: str | None = None,
         model_id: str | None = None,
     ) -> list[dict[str, object]]:
-        providers = {provider.id: provider for provider in _providers()}
+        targets = {(target.provider, target.model): target for target in _providers()}
         if provider_id or model_id:
             assignment = [(provider_id, model_id, False)]
         else:
@@ -128,24 +157,13 @@ class AITaskRouter:
             ]
         candidates: list[dict[str, object]] = []
         for selected_provider_id, selected_model_id, fallback_used in assignment:
-            provider = providers.get(selected_provider_id or "")
-            if provider is None and selected_provider_id == "custom" and selected_model_id:
-                provider = next(
-                    (
-                        item
-                        for item in providers.values()
-                        if item.id == f"custom:{selected_model_id}"
-                    ),
-                    None,
-                )
-            if not provider or provider.status != "available" or not selected_model_id:
-                continue
-            if selected_model_id not in {model.id for model in provider.available_models}:
+            target = targets.get((selected_provider_id or "", selected_model_id or ""))
+            if target is None or not target.available:
                 continue
             candidates.append({
                 "task_type": task_type,
-                "provider_id": provider.id,
-                "provider_name": provider.name,
+                "provider_id": target.provider,
+                "provider_name": target.name,
                 "model_id": selected_model_id,
                 "fallback_used": fallback_used,
             })
@@ -168,13 +186,4 @@ def get_routing_response(store: CoreDataStore) -> AIRoutingResponse:
 
 
 def providers_from_registry(providers: list[HermesProvider]) -> list[AIProvider]:
-    return [
-        AIProvider(
-            id=provider.id,
-            name=provider.name,
-            status=provider.status,
-            available_models=[AIModelOption(id=model.id, name=model.name) for model in provider.models],
-            capabilities=provider.capabilities,
-        )
-        for provider in providers
-    ]
+    return _targets(providers)

@@ -11,9 +11,11 @@ import { getAiRouting, saveAiRouting, type AiRoutingConfig, type AiRoutingRespon
 
 type Provider = {
   id: string;
+  provider: string;
+  model: string;
   name: string;
   status: "available" | "unavailable" | "not_configured";
-  available_models: { id: string; name: string }[];
+  available: boolean;
 };
 
 type Assignment = AiRoutingConfig["roles"][string];
@@ -77,8 +79,14 @@ export function AiRoutingSettings() {
   };
 
   const statusLabel = (provider: Provider) => provider.status === "available" ? "Доступен" : provider.status === "unavailable" ? "Недоступен" : "Не настроен";
-  const providerOptions = providers.map((provider) => ({ value: provider.id, label: `${provider.name} · ${statusLabel(provider)}` }));
-  const modelsFor = (providerId: string | null) => providers.find((provider) => provider.id === providerId)?.available_models ?? [];
+  const providerLabel = (providerId: string) => {
+    if (providerId === "openai-codex") return "OpenAI Codex";
+    if (providerId === "custom") return "Local / Custom";
+    return providerId;
+  };
+  const providerOptions = Array.from(new Map(providers.filter((provider) => provider.available).map((provider) => [provider.provider, provider])).values())
+    .map((provider) => ({ value: provider.provider, label: providerLabel(provider.provider) }));
+  const modelsFor = (providerId: string | null) => providers.filter((provider) => provider.provider === providerId && provider.available);
   const selectedRole = roles.find((role) => role.id === selectedRoleId) ?? null;
   const selectedAssignment = selectedRole ? config.roles[selectedRole.id] ?? emptyAssignment() : emptyAssignment();
 
@@ -116,7 +124,7 @@ export function AiRoutingSettings() {
                 <p className="text-sm font-medium text-slate-200">{provider.name}</p>
                 <Badge variant="neutral"><span className={`mr-1.5 inline-block h-2 w-2 rounded-full ${provider.status === "available" ? "bg-emerald-400" : "bg-slate-500"}`} />{statusLabel(provider)}</Badge>
               </div>
-              <p className="mt-2 text-xs text-slate-400">{provider.available_models.length ? `${provider.available_models.length} моделей` : "Модели не настроены"}</p>
+              <p className="mt-2 text-xs text-slate-400">{provider.available ? provider.model : "Модель недоступна"}</p>
             </div>
           ))}
         </div>
@@ -136,8 +144,8 @@ export function AiRoutingSettings() {
                 <h3 className="text-lg font-semibold text-[#f4f7fb]">{role.title}</h3>
                 <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-400">{role.description}</p>
                 <div className="mt-4 flex items-center justify-between gap-3 rounded-2xl border border-[#3a3d43] bg-[#2E3137] px-4 py-3">
-                  <span className="text-sm text-slate-300">{providers.find((provider) => provider.id === assignment.primary_provider_id)?.name ?? "Агент не выбран"}</span>
-                  <span className="text-xs text-slate-400">{assignment.primary_model_id ?? "Настроить"}</span>
+                  <span className="text-sm text-slate-300">{assignment.primary_provider_id && assignment.primary_provider_id !== "hermes" ? providerLabel(assignment.primary_provider_id) : "Агент не выбран"}</span>
+                  <span className="text-xs text-slate-400">{assignment.primary_model_id && assignment.primary_model_id !== "default" ? assignment.primary_model_id : "Настроить"}</span>
                 </div>
                 {role.id === "business_analytics" ? (
                   <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-300">
@@ -182,13 +190,16 @@ export function AiRoutingSettings() {
             label="Тип ИИ"
             value={selectedAssignment.primary_provider_id ?? ""}
             options={providerOptions}
-            onChange={(value) => selectedRole && updateAssignment(selectedRole.id, { primary_provider_id: value, primary_model_id: null })}
+            onChange={(value) => {
+              if (!selectedRole) return;
+              updateAssignment(selectedRole.id, { primary_provider_id: value, primary_model_id: modelsFor(value)[0]?.model ?? null });
+            }}
             placeholder="Выберите агента"
           />
           <Select
             label="Модель"
             value={selectedAssignment.primary_model_id ?? ""}
-            options={modelsFor(selectedAssignment.primary_provider_id).map((model) => ({ value: model.id, label: model.name }))}
+            options={modelsFor(selectedAssignment.primary_provider_id).map((target) => ({ value: target.model, label: target.name }))}
             onChange={(value) => selectedRole && updateAssignment(selectedRole.id, { primary_model_id: value })}
             placeholder="Выберите модель"
           />

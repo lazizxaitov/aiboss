@@ -200,7 +200,7 @@ type ChatTile = {
 type ModelItem = {
   providerId: string;
   name: string;
-  models: AiProvider["models"];
+  models: Array<{ id: string; name: string; available?: boolean }>;
   icon: "ollama" | "chatgpt" | "claude" | "grok" | "deepseek" | "generic";
 };
 
@@ -1029,15 +1029,13 @@ export function DashboardAssistantPanel() {
     void Promise.all([getAiProviders(), getAiRouting()])
       .then(([providers, routing]) => {
         const nextModels = providers
-          .filter((provider) => provider.status === "available" && provider.models.some((model) => model.available !== false))
-          .flatMap((provider) => provider.models
-            .filter((model) => model.available !== false)
-            .map((model) => ({
-              providerId: provider.id,
-              name: model.name,
-              models: [model],
-              icon: providerIconKey(provider.id),
-            })));
+          .filter((provider) => provider.available && provider.status === "available")
+          .map((provider) => ({
+            providerId: provider.provider,
+            name: `${providerLabel(provider.provider)} · ${provider.name}`,
+            models: [{ id: provider.model, name: provider.name, available: provider.available }],
+            icon: providerIconKey(provider.provider),
+          }));
         setAvailableModels(nextModels);
         const chatAssignment = routing.config.roles.ai_chat;
         const assignedIndex = chatAssignment?.primary_provider_id
@@ -1207,7 +1205,7 @@ export function DashboardAssistantPanel() {
         selectedModelId,
         (meta) => {
           if (meta.provider_id) {
-            const index = availableModels.findIndex((model) => model.providerId === meta.provider_id);
+            const index = availableModels.findIndex((model) => model.providerId === meta.provider_id && model.models.some((item) => item.id === meta.model_id));
             if (index >= 0) setSelectedModel(index);
           }
           setChatMessages((current) =>
@@ -1590,7 +1588,7 @@ export function DashboardAssistantPanel() {
 
                       return (
                         <button
-                          key={model.name}
+                          key={`${model.providerId}:${model.models[0]?.id ?? model.name}`}
                           type="button"
                           onClick={() => {
                             setSelectedModel(index);
@@ -1757,6 +1755,12 @@ function providerIconKey(providerId: string): ModelItem["icon"] {
   if (normalized.includes("grok")) return "grok";
   if (normalized.includes("deepseek")) return "deepseek";
   return "generic";
+}
+
+function providerLabel(providerId: string): string {
+  if (providerId === "openai-codex") return "OpenAI Codex";
+  if (providerId === "custom") return "Local / Custom";
+  return providerId;
 }
 
 function ChatTileIcon({ kind }: { kind: ChatTile["icon"] }) {

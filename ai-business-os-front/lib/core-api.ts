@@ -2450,9 +2450,11 @@ export type AiProviderModel = {
 
 export type AiProvider = {
   id: string;
+  provider: string;
+  model: string;
   name: string;
-  status: string;
-  models: AiProviderModel[];
+  status: "available" | "unavailable" | "not_configured";
+  available: boolean;
   capabilities?: string[];
 };
 
@@ -2476,9 +2478,11 @@ export type AiRoutingConfig = {
 export type AiRoutingResponse = {
   providers: Array<{
     id: string;
+    provider: string;
+    model: string;
     name: string;
     status: "available" | "unavailable" | "not_configured";
-    available_models: Array<{ id: string; name: string }>;
+    available: boolean;
   }>;
   config: AiRoutingConfig;
 };
@@ -2550,8 +2554,8 @@ export async function streamAiChat(
       messages,
       conversation_id: conversationId,
       task_type: taskType,
-      provider_id: providerId,
-      model_id: modelId,
+      provider: providerId,
+      model: modelId,
     }),
     signal,
   });

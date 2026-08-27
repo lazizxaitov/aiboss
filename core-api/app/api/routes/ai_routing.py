@@ -21,15 +21,16 @@ async def get_ai_routing(store: Annotated[CoreDataStore, Depends(get_core_store)
 @providers_router.get("/providers", response_model=list)
 async def get_ai_providers() -> list:
     providers = await hermes_model_registry.get_providers(refresh=True)
-    return [provider.model_dump(mode="json") for provider in providers]
+    return [target.model_dump(mode="json") for target in providers_from_registry(providers)]
 
 
 @router.put("", response_model=AIRoutingResponse)
-def update_ai_routing(
+async def update_ai_routing(
     config: AIRoutingConfig,
     store: Annotated[CoreDataStore, Depends(get_core_store)],
 ) -> AIRoutingResponse:
     try:
+        await hermes_model_registry.get_providers(refresh=True)
         AITaskRouter(store).save_config(config)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error

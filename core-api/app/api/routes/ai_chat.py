@@ -9,7 +9,7 @@ from uuid import UUID
 import httpx
 from fastapi import APIRouter, Depends, Header
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from app.core.config import settings
 from app.core.ai_routing import AITaskRouter, TaskType
@@ -49,8 +49,8 @@ class ChatRequest(BaseModel):
     source_channel: AIConversationChannel = AIConversationChannel.WEB
     target_channel: AIConversationTargetChannel | None = None
     task_type: TaskType = "ai_chat"
-    provider_id: str | None = None
-    model_id: str | None = None
+    provider: str | None = Field(default=None, validation_alias=AliasChoices("provider", "provider_id"))
+    model: str | None = Field(default=None, validation_alias=AliasChoices("model", "model_id"))
 
 
 def _event(payload: dict[str, str], event: str | None = None) -> str:
@@ -515,8 +515,8 @@ async def chat(
         router = AITaskRouter(store)
         candidates = router.resolve_candidates(
             request.task_type,
-            provider_id=request.provider_id,
-            model_id=request.model_id,
+            provider_id=request.provider,
+            model_id=request.model,
         )
         if not candidates:
             yield _event({"message": "Для этой задачи нет доступного provider/model."}, "error")
