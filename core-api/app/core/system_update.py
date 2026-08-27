@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from datetime import UTC, datetime
 from threading import Lock, Thread
 from typing import Any, Literal
@@ -19,6 +20,7 @@ REPOSITORY_ROOT = os.path.expanduser("~/Projects/aiboss")
 BACKEND_DIRECTORY = os.path.join(REPOSITORY_ROOT, "core-api")
 FRONTEND_DIRECTORY = os.path.join(REPOSITORY_ROOT, "ai-business-os-front")
 INSTALLED_APP = "/Applications/AI Business OS.app"
+APP_BACKUP = "/Applications/.AI Business OS.backup.app"
 BUILT_APP = os.path.join(FRONTEND_DIRECTORY, "src-tauri", "target", "release", "bundle", "macos", "AI Business OS.app")
 UPDATE_INDEX_KEY = "system_update:state:v1"
 UPDATE_JOB_KEY_PREFIX = "system_update:job:v1:"
@@ -86,6 +88,7 @@ class SystemUpdateService:
         if job is None:
             return
         rollback_commit: str | None = None
+        app_backup: str | None = None
         try:
             self._assert_clean_worktree()
             rollback_commit = self._git_version("HEAD", short=False)
@@ -106,7 +109,7 @@ class SystemUpdateService:
             if not os.path.isdir(BUILT_APP):
                 raise RuntimeError(f"Собранное приложение не найдено: {BUILT_APP}")
             self._update(job, stage="install", message="Установка новой версии приложения")
-            self._install_app()
+            app_backup = self._install_app()
             self._update(job, stage="restarting", message="Перезапуск рабочих сервисов")
             job.status = "success"
             job.stage = "completed"
@@ -114,8 +117,15 @@ class SystemUpdateService:
             self._update(job)
             self._save_state({"last_successful_update_at": datetime.now(UTC).isoformat(), "version": job.target_version})
             self._restart_services(open_app=True)
+            if app_backup:
+                self._remove_app_backup(app_backup)
         except Exception as exc:  # noqa: BLE001
             job.error = str(exc)
+            if app_backup:
+                try:
+                    self._restore_app_backup(app_backup)
+                except Exception as restore_error:  # noqa: BLE001
+                    job.error = f"{job.error}; восстановление приложения: {restore_error}"
             self._update(job, stage="rollback", message="Ошибка обновления. Выполняется откат")
             if rollback_commit is None:
                 job.status = "failed"
@@ -222,19 +232,61 @@ class SystemUpdateService:
     def _short(commit: str) -> str:
         return commit[:7]
 
-    def _install_app(self) -> None:
-        backup = f"{INSTALLED_APP}.rollback-{uuid4().hex}"
+    def _install_app(self) -> str | None:
+        self._stop_running_app()
+        if not os.path.isdir(BUILT_APP):
+            raise RuntimeError(f"Собранное приложение не найдено: {BUILT_APP}")
+
         installed_exists = os.path.isdir(INSTALLED_APP)
+        if os.path.exists(APP_BACKUP):
+            shutil.rmtree(APP_BACKUP)
         if installed_exists:
-            self._run_command(["mv", INSTALLED_APP, backup], REPOSITORY_ROOT)
+            shutil.move(INSTALLED_APP, APP_BACKUP)
         try:
-            self._run_command(["mv", BUILT_APP, INSTALLED_APP], REPOSITORY_ROOT)
+            shutil.copytree(BUILT_APP, INSTALLED_APP)
         except Exception:
-            if installed_exists and os.path.isdir(backup) and not os.path.exists(INSTALLED_APP):
-                self._run_command(["mv", backup, INSTALLED_APP], REPOSITORY_ROOT)
-            raise
-        if installed_exists and os.path.isdir(backup):
+            if os.path.exists(INSTALLED_APP):
+                shutil.rmtree(INSTALLED_APP)
+            if installed_exists and os.path.isdir(APP_BACKUP):
+                shutil.move(APP_BACKUP, INSTALLED_APP)
+            raise RuntimeError("Не удалось установить новую версию приложения") from None
+        return APP_BACKUP if installed_exists else None
+
+    @staticmethod
+    def _stop_running_app() -> None:
+        subprocess.run(
+            ["osascript", "-e", 'tell application "AI Business OS" to quit'],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            process = subprocess.run(
+                ["pgrep", "-x", "AI Business OS"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if process.returncode != 0:
+                return
+            time.sleep(0.5)
+        raise RuntimeError("Не удалось завершить запущенное AI Business OS.app")
+
+    @staticmethod
+    def _remove_app_backup(backup: str) -> None:
+        if os.path.isdir(backup):
             shutil.rmtree(backup)
+
+    @staticmethod
+    def _restore_app_backup(backup: str) -> None:
+        SystemUpdateService._stop_running_app()
+        if os.path.isdir(INSTALLED_APP):
+            shutil.rmtree(INSTALLED_APP)
+        if os.path.isdir(backup):
+            shutil.move(backup, INSTALLED_APP)
 
     @staticmethod
     def _restart_services(*, open_app: bool) -> None:
@@ -243,4 +295,12 @@ class SystemUpdateService:
         if open_app:
             subprocess.run(["osascript", "-e", 'tell application "AI Business OS" to quit'], capture_output=True, text=True, timeout=30, check=False)
             subprocess.run(["open", INSTALLED_APP], capture_output=True, text=True, timeout=30, check=True)
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                process = subprocess.run(["pgrep", "-x", "AI Business OS"], capture_output=True, text=True, timeout=5, check=False)
+                if process.returncode == 0:
+                    break
+                time.sleep(0.5)
+            else:
+                raise RuntimeError("Новая версия AI Business OS.app не запустилась")
         subprocess.run(["launchctl", "kickstart", "-k", f"gui/{uid}/com.aiboss.backend"], capture_output=True, text=True, timeout=30, check=True)
