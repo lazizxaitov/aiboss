@@ -4,26 +4,28 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from logging import getLogger
 from threading import Lock
 from typing import Any, Literal
 from uuid import uuid4
 
-import httpx
 from pydantic import BaseModel, Field
 
-from app.api.routes.ai_chat import _extract_assistant_message
+from app.core.ai_business_agent import AIBusinessAgentService
+from app.core.ai_conversation import AIConversationChannel, AIConversationMessage, AIConversationState
 from app.core.ai_routing import AITaskRouter
-from app.core.config import settings
 from app.core.data_layer.contracts import CoreDataStore
 from app.core.data_layer.entities import AppSetting
 from app.core.hermes_tools import HermesBusinessTools
 from app.core.hermes_model_registry import hermes_model_registry
-from app.core.analytics.engine import BusinessAnalyticsEngine
+from app.core.analytics.widget_builder import WidgetBuilderService
+from app.core.organization_context import OrganizationContextService
 
 AUTO_ANALYTICS_INDEX_KEY = "ai_business_analytics:index:v1"
 AUTO_ANALYTICS_KEY_PREFIX = "ai_business_analytics:run:v1:"
 AUTO_ANALYTICS_STATUS_KEY = "ai_business_analytics:status:v1"
 _AUTO_ANALYTICS_RUN_LOCK = Lock()
+logger = getLogger(__name__)
 
 
 class AutoAnalyticsInsight(BaseModel):
@@ -231,91 +233,89 @@ class AutoBusinessAnalyticsService:
             model_id=str(runtime.get("model_id")) if runtime.get("model_id") else None,
         ))
         tools = HermesBusinessTools(self.store)
-        query = tools._build_query(organization_id=None, period=None)
-        analytics = BusinessAnalyticsEngine(self.store)
-        summary = tools.get_business_summary()
-        sales = tools.get_sales_summary()
-        products = tools.get_top_products()
-        alerts = tools.get_business_alerts()
-        organizations = analytics.build_organizations(query).model_dump(mode="json")
-        sales_reps = analytics.build_sales_reps(query).model_dump(mode="json")
-        customers = analytics.build_customers(query).model_dump(mode="json")
-        visits = analytics.build_visits(query).model_dump(mode="json")
+        context = OrganizationContextService(self.store).get_context()
         run = AutoAnalyticsRun(
-            organization_scope=[str(item) for item in summary.get("organization_ids", [])],
-            period=str(summary.get("period", {}).get("preset") or ""),
+            organization_scope=[str(item) for item in context.organization_context.organization_ids],
+            period=context.period_context.preset.value,
             provider_id=runtime.get("provider_id") if runtime else None,
             model_id=runtime.get("model_id") if runtime else None,
             status="running",
         )
         self._save(run)
+        logger.info(
+            "BUSINESS_ANALYSIS_START analysis_id=%s provider=%s model=%s organization=%s period=%s trigger=scheduled_or_sync",
+            run.analysis_id,
+            run.provider_id,
+            run.model_id,
+            run.organization_scope,
+            run.period,
+        )
         if not runtime.get("model_id"):
             run.status = "failed"
             run.error = "Нет доступного агента для роли business_analytics."
             self._save_status(AutoAnalyticsStatus(status="retry_wait", last_started_at=started_at, last_error=run.error, next_retry_at=datetime.now(UTC) + timedelta(minutes=5)))
             return self._save(run)
         instruction = (
-            "Проведи автоматический анализ текущих бизнес-данных AI Business OS. "
-            "Сравни текущий и предыдущий период. Найди не только изменения KPI, но и вклад организаций, "
-            "продавцов, товаров, категорий и клиентов в абсолютных значениях и процентах, когда это возможно. "
-            "Отдельно проанализируй sellers/employees, products, customers, organizations, categories, visits, "
-            "returns и аномалии. Не называй корреляцию доказанной причиной: используй формулировку 'вклад' "
-            "или 'наиболее заметное изменение', если причинность не подтверждена. "
-            "Каждый insight и recommendation должен содержать priority, reason, affected_entity, affected_metric "
-            "и evidence с current, previous и change_pct, если они доступны. Не повторяй один факт в разных блоках. "
-            "Рекомендации должны быть конкретными и ссылаться на evidence. "
-            "Используй только реальные данные. Верни STRICT JSON по схеме summary,status,kpis,insights,"
-            "recommendations,anomalies,top_opportunities,risks,dashboard_plan. "
-            "dashboard_plan.widgets may use only existing Widget Registry types and must explain reason and insight.\nDATA:\n"
-            + json.dumps(
-                {
-                    "summary": summary,
-                    "sales": sales,
-                    "products": products,
-                    "organizations": organizations,
-                    "sales_reps": sales_reps,
-                    "customers": customers,
-                    "visits": visits,
-                    "alerts": alerts,
-                },
-                ensure_ascii=False,
-                default=str,
-            )
+            "Проведи самостоятельный автоматический анализ AI Business OS через доступные read-only business tools. "
+            "Начни с compact query по sales и сравнения периодов, затем сам выбери дополнительные queries, "
+            "если они нужны для проверки причин, продавцов, товаров, клиентов, организаций, возвратов, визитов, "
+            "склада или финансов. Не используй один заранее заданный сценарий и не повторяй ненужные запросы. "
+            "Используй текущую организацию и период контекста, а при необходимости указывай их в query. "
+            "Никаких RAW/SQL и выдуманных чисел. После получения достаточного evidence верни финальный ответ строго JSON "
+            "по схеме summary,status,kpis,insights,recommendations,anomalies,top_opportunities,risks,dashboard_plan. "
+            "Каждый важный вывод обязан содержать evidence, priority, reason, affected_entity и affected_metric. "
+            "Не выдавай корреляцию за доказанную причину. dashboard_plan.widgets использует только существующие Widget Registry types."
         )
         last_error: Exception | None = None
-        for candidate in candidates:
-            try:
-                async with httpx.AsyncClient(timeout=None) as client:
-                    response = await client.post(
-                        f"{settings.hermes_base_url.rstrip('/')}/chat/completions",
-                        headers={"Authorization": f"Bearer {settings.hermes_api_key}"},
-                        json={
-                            "provider": (
-                                "custom"
-                                if str(candidate["provider_id"]).startswith("custom:")
-                                else candidate["provider_id"]
-                            ),
-                            "model": candidate["model_id"],
-                            "messages": [{"role": "user", "content": instruction}],
-                            "stream": False,
-                        },
-                    )
-                    response.raise_for_status()
-                    message = _extract_assistant_message(response.json()) or {}
-                    raw = message.get("content") or "{}"
-                    text = str(raw).strip().strip("`")
-                    result = AutoAnalyticsResult.model_validate(json.loads(text))
-                    result.provider_id = str(candidate["provider_id"])
-                    result.model_id = str(candidate["model_id"])
-                    result.fallback_used = bool(candidate.get("fallback_used"))
-                    run.provider_id = str(candidate["provider_id"])
-                    run.model_id = str(candidate["model_id"])
-                    run.status = "completed"
-                    run.summary = result.summary
-                    run.structured_result = result
-                    break
-            except (httpx.HTTPError, ValueError, TypeError, json.JSONDecodeError) as error:
-                last_error = error
+        try:
+            conversation = AIConversationState(
+                user_id="auto-business-analytics",
+                organization_id=(context.organization_context.organization_ids[0]
+                                 if len(context.organization_context.organization_ids) == 1 else None),
+                period=context.period_context.preset.value,
+                messages=[AIConversationMessage(
+                    role="user", content=instruction, source_channel=AIConversationChannel.WEB,
+                )],
+            )
+            agent_result = await AIBusinessAgentService(self.store).run(
+                conversation=conversation,
+                user_text=instruction,
+                source_channel="system",
+                task_type="business_analytics",
+                router=router,
+                tools_service=tools,
+                widget_builder=WidgetBuilderService(self.store),
+                memory_prompt="",
+                system_prompt=(
+                    "You are the business analytics agent for AI Business OS. "
+                    "Investigate facts through approved read-only tools; do not rely on precomputed narrative."
+                ),
+                provider_id=None,
+                model_id=None,
+                build_baseline=False,
+            )
+            raw = agent_result.final_text.strip()
+            if raw.startswith("```"):
+                raw = "\n".join(raw.splitlines()[1:-1]).strip()
+            result = AutoAnalyticsResult.model_validate(json.loads(raw))
+            result.provider_id = str(agent_result.runtime.get("provider_id"))
+            result.model_id = str(agent_result.runtime.get("model_id"))
+            result.fallback_used = bool(agent_result.runtime.get("fallback_used"))
+            run.provider_id = result.provider_id
+            run.model_id = result.model_id
+            run.status = "completed"
+            run.summary = result.summary
+            run.structured_result = result
+            logger.info(
+                "BUSINESS_ANALYSIS_FINAL analysis_id=%s findings=%s provider=%s model=%s rounds=%s",
+                run.analysis_id,
+                len(result.insights) + len(result.recommendations),
+                run.provider_id,
+                run.model_id,
+                agent_result.rounds,
+            )
+        except (ValueError, TypeError, json.JSONDecodeError) as error:
+            last_error = error
         if run.status != "completed":
             run.status = "failed"
             run.error = f"Не удалось завершить автоанализ: {last_error or 'нет доступного provider/model'}"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from logging import getLogger
 from typing import Annotated, Literal
 from uuid import UUID
@@ -29,6 +30,7 @@ from app.core.analytics.widget_builder import (
 from app.core.config import settings
 from app.core.data_layer.contracts import CoreDataStore
 from app.core.data_layer.factory import get_core_store
+from app.core.business_data_query import BusinessDataQueryService
 from app.core.hermes_model_registry import hermes_model_registry
 from app.core.hermes_tools import HermesBusinessTools
 from app.core.organization_context import OrganizationContextService
@@ -169,6 +171,30 @@ def _tool_definitions() -> list[dict[str, object]]:
                         "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 100},
                     },
                     "required": ["group_by"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "query_business_data",
+                "description": "Generic read-only query over approved Canonical V2 business datasets. Choose the dataset, dimensions, metrics and filters needed for the question.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "dataset": {"type": "string", "enum": ["sales", "inventory", "products", "customers", "returns", "visits", "finance"]},
+                        "organization_id": {"type": ["string", "null"]},
+                        "period": {"type": ["string", "null"]},
+                        "date_from": {"type": ["string", "null"], "description": "ISO date, optional."},
+                        "date_to": {"type": ["string", "null"], "description": "ISO date, optional."},
+                        "dimensions": {"type": "array", "items": {"type": "string"}, "maxItems": 1},
+                        "metrics": {"type": "array", "items": {"type": "string"}},
+                        "filters": {"type": ["object", "null"]},
+                        "sort": {"type": "array", "items": {"type": "object"}},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
+                    },
+                    "required": ["dataset"],
                     "additionalProperties": False,
                 },
             },
@@ -608,6 +634,27 @@ async def _resolve_tool_result(
         return tools.get_organizations()
     if tool_name == "get_business_alerts":
         return tools.get_business_alerts(organization_id=organization_id, period=period)
+    if tool_name == "query_business_data":
+        def parse_date(value: object) -> date | None:
+            if not value:
+                return None
+            try:
+                return date.fromisoformat(str(value))
+            except ValueError:
+                return None
+
+        return BusinessDataQueryService(tools).query(
+            dataset=str(arguments.get("dataset") or ""),
+            organization_id=organization_id,
+            period=period,
+            date_from=parse_date(arguments.get("date_from")),
+            date_to=parse_date(arguments.get("date_to")),
+            dimensions=arguments.get("dimensions") if isinstance(arguments.get("dimensions"), list) else None,
+            metrics=arguments.get("metrics") if isinstance(arguments.get("metrics"), list) else None,
+            filters=arguments.get("filters") if isinstance(arguments.get("filters"), dict) else None,
+            sort=arguments.get("sort") if isinstance(arguments.get("sort"), list) else None,
+            limit=int(arguments.get("limit", 50)),
+        )
     if tool_name == "aggregate_sales":
         raw_metrics = arguments.get("metrics")
         metrics = raw_metrics if isinstance(raw_metrics, list) and all(isinstance(item, str) for item in raw_metrics) else None

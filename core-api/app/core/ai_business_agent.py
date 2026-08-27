@@ -164,6 +164,7 @@ class AIBusinessAgentService:
         system_prompt: str,
         provider_id: str | None = None,
         model_id: str | None = None,
+        build_baseline: bool = True,
     ) -> AIBusinessAgentResult:
         """Resolve a target, execute tools, and stop at the first final answer."""
 
@@ -190,7 +191,7 @@ class AIBusinessAgentService:
             raise ValueError("Для этой задачи нет доступного provider/model.")
         runtime = candidates[0]
         baseline = None
-        if _looks_business_related(user_text):
+        if build_baseline and _looks_business_related(user_text):
             try:
                 baseline = tools_service.build_business_context(
                     user_text,
