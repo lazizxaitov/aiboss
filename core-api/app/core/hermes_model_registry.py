@@ -42,10 +42,16 @@ class HermesModelRegistry:
 
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
+                headers = {"Authorization": f"Bearer {settings.hermes_api_key}"}
                 response = await client.get(
-                    f"{settings.hermes_base_url.rstrip('/')}/models",
-                    headers={"Authorization": f"Bearer {settings.hermes_api_key}"},
+                    f"{settings.hermes_base_url.rstrip('/').removesuffix('/v1')}/api/model/options?refresh=1",
+                    headers=headers,
                 )
+                if response.status_code == 404:
+                    response = await client.get(
+                        f"{settings.hermes_base_url.rstrip('/')}/models",
+                        headers=headers,
+                    )
                 response.raise_for_status()
                 providers = self._normalize(response.json())
         except (httpx.HTTPError, ValueError, TypeError):
@@ -82,9 +88,12 @@ class HermesModelRegistry:
             for model_row in model_rows:
                 if isinstance(model_row, str):
                     model_row = {"id": model_row}
-                if not isinstance(model_row, dict) or not model_row.get("id"):
+                if not isinstance(model_row, dict):
                     continue
-                model_id = str(model_row["id"])
+                model_id_value = model_row.get("id") or model_row.get("model_id") or model_row.get("model")
+                if not model_id_value or not isinstance(model_id_value, (str, int, float)):
+                    continue
+                model_id = str(model_id_value)
                 provider_id, provider_name, auth_type = HermesModelRegistry._provider_details(
                     model_row,
                     provider_hint,
@@ -112,7 +121,9 @@ class HermesModelRegistry:
 
     @staticmethod
     def _status(provider: dict[str, Any], model: dict[str, Any]) -> str:
-        if provider.get("available") is False or model.get("available") is False:
+        if provider.get("available") is False or provider.get("authenticated") is False:
+            return "unavailable"
+        if model.get("available") is False or model.get("authenticated") is False:
             return "unavailable"
         status = str(model.get("status") or provider.get("status") or "available").lower()
         if status in {"available", "ready", "connected", "ok", "configured", "logged_in", "authenticated"}:
@@ -135,7 +146,7 @@ class HermesModelRegistry:
         if raw_id in {"codex", "openai_codex", "openai-codex"}:
             return "openai-codex", "OpenAI Codex", "oauth"
         if raw_id in {"custom", "custom_endpoint", "custom-endpoint"}:
-            return "custom", "Custom endpoint", "custom_endpoint"
+            return f"custom:{model_id}", "Custom endpoint", "custom_endpoint"
         name = str(model.get("provider_name") or model.get("display_name") or provider_hint or raw_id)
         return raw_id, name, str(model.get("auth_type")) if model.get("auth_type") else None
 

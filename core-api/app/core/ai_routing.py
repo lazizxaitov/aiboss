@@ -129,6 +129,15 @@ class AITaskRouter:
         candidates: list[dict[str, object]] = []
         for selected_provider_id, selected_model_id, fallback_used in assignment:
             provider = providers.get(selected_provider_id or "")
+            if provider is None and selected_provider_id == "custom" and selected_model_id:
+                provider = next(
+                    (
+                        item
+                        for item in providers.values()
+                        if item.id == f"custom:{selected_model_id}"
+                    ),
+                    None,
+                )
             if not provider or provider.status != "available" or not selected_model_id:
                 continue
             if selected_model_id not in {model.id for model in provider.available_models}:

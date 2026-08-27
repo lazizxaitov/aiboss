@@ -224,7 +224,11 @@ class AutoBusinessAnalyticsService:
                         f"{settings.hermes_base_url.rstrip('/')}/chat/completions",
                         headers={"Authorization": f"Bearer {settings.hermes_api_key}"},
                         json={
-                            "provider": candidate["provider_id"],
+                            "provider": (
+                                "custom"
+                                if str(candidate["provider_id"]).startswith("custom:")
+                                else candidate["provider_id"]
+                            ),
                             "model": candidate["model_id"],
                             "messages": [{"role": "user", "content": instruction}],
                             "stream": False,

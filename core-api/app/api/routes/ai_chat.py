@@ -321,7 +321,7 @@ async def _hermes_request(
     }
     if provider:
         # Hermes requires provider for direct provider/model requests.
-        body["provider"] = provider
+        body["provider"] = "custom" if provider.startswith("custom:") else provider
     if tools is not None:
         body["tools"] = tools
     if tool_choice is not None:
