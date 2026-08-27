@@ -143,6 +143,140 @@ def _tool_definitions() -> list[dict[str, object]]:
         {
             "type": "function",
             "function": {
+                "name": "aggregate_sales",
+                "description": (
+                    "Aggregate real canonical sales by one supported business dimension. "
+                    "Use this for questions such as which seller, product, branch, organization, "
+                    "or customer sold the most. Never select a provider or use raw data."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "organization_id": {"type": ["string", "null"]},
+                        "period": {"type": ["string", "null"]},
+                        "group_by": {
+                            "type": "string",
+                            "enum": ["manager", "seller", "employee", "organization", "filial", "product", "category", "client", "customer", "date", "day", "week", "month"],
+                        },
+                        "metrics": {
+                            "type": "array",
+                            "items": {"type": "string", "enum": ["revenue", "sales", "sales_amount", "orders", "order_count", "quantity", "sold_units", "average_check", "average_order", "returns"]},
+                        },
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 100},
+                    },
+                    "required": ["group_by"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "query_inventory",
+                "description": "Read-only inventory query using canonical analytics. Returns stock, low-stock, zero-stock, overstock and stockout signals when available.",
+                "parameters": {
+                    "type": "object", "properties": {
+                        "organization_id": {"type": ["string", "null"]}, "period": {"type": ["string", "null"]},
+                        "filters": {"type": ["object", "null"]}, "limit": {"type": "integer", "default": 50}, "sort": {"type": "string"},
+                    }, "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "query_products",
+                "description": "Read-only product analytics query for sales, velocity, stock, returns and fast/slow movers.",
+                "parameters": {
+                    "type": "object", "properties": {
+                        "organization_id": {"type": ["string", "null"]}, "period": {"type": ["string", "null"]},
+                        "filters": {"type": ["object", "null"]}, "group_by": {"type": ["string", "null"]},
+                        "limit": {"type": "integer", "default": 50}, "sort": {"type": "string"},
+                    }, "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "query_customers",
+                "description": "Read-only customer analytics query for revenue, orders, last purchase, frequency, inactive and at-risk customers.",
+                "parameters": {
+                    "type": "object", "properties": {
+                        "organization_id": {"type": ["string", "null"]}, "period": {"type": ["string", "null"]},
+                        "filters": {"type": ["object", "null"]}, "limit": {"type": "integer", "default": 50}, "sort": {"type": "string"},
+                    }, "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "query_returns",
+                "description": "Read-only returns aggregation by product, customer, manager, filial or organization.",
+                "parameters": {"type": "object", "properties": {
+                    "organization_id": {"type": ["string", "null"]}, "period": {"type": ["string", "null"]},
+                    "group_by": {"type": "string", "default": "product"}, "limit": {"type": "integer", "default": 50},
+                }, "additionalProperties": False},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "query_visits",
+                "description": "Read-only visit analytics by manager, customer, organization or available status metrics.",
+                "parameters": {"type": "object", "properties": {
+                    "organization_id": {"type": ["string", "null"]}, "period": {"type": ["string", "null"]},
+                    "group_by": {"type": ["string", "null"]}, "limit": {"type": "integer", "default": 50},
+                }, "additionalProperties": False},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "query_finance",
+                "description": "Read-only finance analytics. Returns only canonical payment, cash, bank and cash-flow metrics that exist.",
+                "parameters": {"type": "object", "properties": {
+                    "organization_id": {"type": ["string", "null"]}, "period": {"type": ["string", "null"]},
+                    "group_by": {"type": ["string", "null"]}, "limit": {"type": "integer", "default": 50},
+                }, "additionalProperties": False},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "search_entities",
+                "description": "Read-only search across canonical products, customers, managers, warehouses, organizations and filials.",
+                "parameters": {"type": "object", "properties": {
+                    "entity_type": {"type": "string", "enum": ["product", "customer", "manager", "seller", "employee", "warehouse", "filial", "organization"]},
+                    "search": {"type": "string"}, "organization_id": {"type": ["string", "null"]}, "limit": {"type": "integer", "default": 20},
+                }, "required": ["entity_type", "search"], "additionalProperties": False},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "compare_periods",
+                "description": "Compare compact canonical sales aggregations for two periods.",
+                "parameters": {"type": "object", "properties": {
+                    "organization_id": {"type": ["string", "null"]}, "period": {"type": ["string", "null"]},
+                    "comparison_period": {"type": ["string", "null"]}, "group_by": {"type": ["string", "null"]}, "limit": {"type": "integer", "default": 20},
+                }, "additionalProperties": False},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "detect_anomalies",
+                "description": "Compute deterministic anomaly and risk signals from existing canonical analytics; the model only explains the returned evidence.",
+                "parameters": {"type": "object", "properties": {
+                    "organization_id": {"type": ["string", "null"]}, "period": {"type": ["string", "null"]}, "limit": {"type": "integer", "default": 30},
+                }, "additionalProperties": False},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "delegate_ai_task",
                 "description": "Delegate a task to the agent selected by the backend role router. Never choose a provider or model manually.",
                 "parameters": {
@@ -446,6 +580,70 @@ async def _resolve_tool_result(
         return tools.get_organizations()
     if tool_name == "get_business_alerts":
         return tools.get_business_alerts(organization_id=organization_id, period=period)
+    if tool_name == "aggregate_sales":
+        raw_metrics = arguments.get("metrics")
+        metrics = raw_metrics if isinstance(raw_metrics, list) and all(isinstance(item, str) for item in raw_metrics) else None
+        try:
+            limit = int(arguments.get("limit", 100))
+        except (TypeError, ValueError):
+            limit = 100
+        return tools.aggregate_sales(
+            organization_id=organization_id,
+            period=period,
+            group_by=str(arguments.get("group_by") or ""),
+            metrics=metrics,
+            limit=limit,
+        )
+    if tool_name == "query_inventory":
+        return tools.query_inventory(
+            organization_id=organization_id, period=period,
+            filters=arguments.get("filters") if isinstance(arguments.get("filters"), dict) else None,
+            limit=int(arguments.get("limit", 50)), sort=str(arguments.get("sort") or "current_stock"),
+        )
+    if tool_name == "query_products":
+        return tools.query_products(
+            organization_id=organization_id, period=period,
+            filters=arguments.get("filters") if isinstance(arguments.get("filters"), dict) else None,
+            group_by=str(arguments.get("group_by")) if arguments.get("group_by") else None,
+            limit=int(arguments.get("limit", 50)), sort=str(arguments.get("sort") or "revenue"),
+        )
+    if tool_name == "query_customers":
+        return tools.query_customers(
+            organization_id=organization_id, period=period,
+            filters=arguments.get("filters") if isinstance(arguments.get("filters"), dict) else None,
+            limit=int(arguments.get("limit", 50)), sort=str(arguments.get("sort") or "revenue"),
+        )
+    if tool_name == "query_returns":
+        return tools.query_returns(
+            organization_id=organization_id, period=period,
+            group_by=str(arguments.get("group_by") or "product"), limit=int(arguments.get("limit", 50)),
+        )
+    if tool_name == "query_visits":
+        return tools.query_visits(
+            organization_id=organization_id, period=period,
+            group_by=str(arguments.get("group_by")) if arguments.get("group_by") else None,
+            limit=int(arguments.get("limit", 50)),
+        )
+    if tool_name == "query_finance":
+        return tools.query_finance(
+            organization_id=organization_id, period=period,
+            group_by=str(arguments.get("group_by")) if arguments.get("group_by") else None,
+            limit=int(arguments.get("limit", 50)),
+        )
+    if tool_name == "search_entities":
+        return tools.search_entities(
+            entity_type=str(arguments.get("entity_type") or ""), search=str(arguments.get("search") or ""),
+            organization_id=organization_id, limit=int(arguments.get("limit", 20)),
+        )
+    if tool_name == "compare_periods":
+        return tools.compare_periods(
+            organization_id=organization_id, period=period,
+            comparison_period=_normalize_period_value(arguments.get("comparison_period")),
+            group_by=str(arguments.get("group_by")) if arguments.get("group_by") else None,
+            limit=int(arguments.get("limit", 20)),
+        )
+    if tool_name == "detect_anomalies":
+        return tools.detect_anomalies(organization_id=organization_id, period=period, limit=int(arguments.get("limit", 30)))
     if tool_name == "create_dashboard_widget":
         draft_payload = arguments.get("draft")
         if not isinstance(draft_payload, dict):
