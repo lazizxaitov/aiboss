@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Surface } from "@/components/ui/surface";
 import { cn } from "@/lib/cn";
+import { useUnsavedChangesGuard } from "@/lib/use-unsaved-changes";
 import {
   getCachedSmartUpOrganizations,
   getSmartUpMigrationCompleteness,
@@ -85,6 +86,9 @@ export function SmartUpIntegrationPage() {
   const [liveSync, setLiveSync] = useState<SmartUpLiveSyncStatus | null>(null);
   const [loadingOrganizations, setLoadingOrganizations] = useState<boolean>(() => cachedOrganizations === null);
   const [organizationsError, setOrganizationsError] = useState<string | null>(null);
+  const [formDirty, setFormDirty] = useState(false);
+
+  useUnsavedChangesGuard(formDirty);
 
   useEffect(() => {
     let active = true;
@@ -223,6 +227,7 @@ export function SmartUpIntegrationPage() {
           : redactMessage(response.message),
         response,
       });
+      if (response.connected) setFormDirty(false);
       await refreshStatus();
     } catch (error) {
       const rawMessage = error instanceof Error ? error.message : "";
@@ -353,7 +358,7 @@ export function SmartUpIntegrationPage() {
                 <span className="text-sm font-medium text-slate-200">Организация</span>
               <select
                 value={selectedOrganizationId}
-                onChange={(event) => setSelectedOrganizationId(event.target.value)}
+                onChange={(event) => { setSelectedOrganizationId(event.target.value); setFormDirty(true); }}
                 className="h-11 w-full rounded-2xl border border-[#3a3d43] bg-[#2E3137] px-4 text-sm text-[#f4f7fb] outline-none transition focus:border-yellow-300 focus:ring-4 focus:ring-yellow-100"
               >
                 {loadingOrganizations ? (
@@ -372,9 +377,10 @@ export function SmartUpIntegrationPage() {
                 <span className="text-sm font-medium text-slate-200">Адрес сервера</span>
                 <Input
                   value={form.baseUrl}
-                  onChange={(event) =>
-                    setForm((current) => ({ ...current, baseUrl: event.target.value }))
-                  }
+                  onChange={(event) => {
+                    setForm((current) => ({ ...current, baseUrl: event.target.value }));
+                    setFormDirty(true);
+                  }}
                   placeholder="https://smartup.online"
                 />
               </label>
@@ -382,9 +388,10 @@ export function SmartUpIntegrationPage() {
                 <span className="text-sm font-medium text-slate-200">Логин</span>
                 <Input
                   value={form.username}
-                  onChange={(event) =>
-                    setForm((current) => ({ ...current, username: event.target.value }))
-                  }
+                  onChange={(event) => {
+                    setForm((current) => ({ ...current, username: event.target.value }));
+                    setFormDirty(true);
+                  }}
                   placeholder="имя пользователя"
                 />
               </label>
@@ -393,9 +400,10 @@ export function SmartUpIntegrationPage() {
                 <Input
                   type="password"
                   value={form.password}
-                  onChange={(event) =>
-                    setForm((current) => ({ ...current, password: event.target.value }))
-                  }
+                  onChange={(event) => {
+                    setForm((current) => ({ ...current, password: event.target.value }));
+                    setFormDirty(true);
+                  }}
                   placeholder="пароль"
                 />
               </label>
@@ -408,7 +416,7 @@ export function SmartUpIntegrationPage() {
               <Button variant="secondary" onClick={() => void runConnectionTest()} disabled={!selectedOrganization || loadingOrganizations}>
                 Проверить подключение
               </Button>
-              <Button variant="ghost" onClick={() => setForm({ baseUrl: DEFAULT_BASE_URL, username: "", password: "", timeoutSeconds: "30" })}>
+              <Button variant="ghost" onClick={() => { setForm({ baseUrl: DEFAULT_BASE_URL, username: "", password: "", timeoutSeconds: "30" }); setFormDirty(false); }}>
                 Очистить форму
               </Button>
             </div>

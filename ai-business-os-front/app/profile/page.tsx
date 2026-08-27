@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Surface } from "@/components/ui/surface";
 import { DashboardShell } from "@/components/shell/dashboard-shell";
+import { useUnsavedChangesGuard } from "@/lib/use-unsaved-changes";
 
 const coreApiUrl = process.env.NEXT_PUBLIC_CORE_API_URL ?? "http://127.0.0.1:8000";
 
@@ -22,6 +23,10 @@ export default function ProfilePage() {
   const [unlockPinError, setUnlockPinError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [profileDirty, setProfileDirty] = useState(false);
+  const [credentialsDirty, setCredentialsDirty] = useState(false);
+
+  useUnsavedChangesGuard(profileDirty || credentialsDirty);
 
   useEffect(() => {
     const token = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("aibos_owner_session="))?.split("=").slice(1).join("=");
@@ -47,6 +52,7 @@ export default function ProfilePage() {
   const saveAbout = () => {
     localStorage.setItem("aibos_profile_name", name);
     localStorage.setItem("aibos_profile_about", about);
+    setProfileDirty(false);
     const token = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("aibos_owner_session="))?.split("=").slice(1).join("=");
     if (token) {
       void fetch(`${coreApiUrl}/api/v1/auth/profile`, {
@@ -87,6 +93,7 @@ export default function ProfilePage() {
       if (!response.ok) throw new Error(payload.detail ?? "Не удалось изменить пароль.");
       setCurrentPassword("");
       setNewPassword("");
+      setCredentialsDirty(false);
       setNotice("Пароль изменён");
     } catch (error) {
       setPasswordError(error instanceof Error ? error.message : "Не удалось изменить пароль.");
@@ -106,6 +113,7 @@ export default function ProfilePage() {
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.detail ?? "Не удалось сохранить PIN.");
       setUnlockPin("");
+      setCredentialsDirty(false);
       setNotice("PIN разблокировки сохранён");
     } catch (error) {
       setUnlockPinError(error instanceof Error ? error.message : "Не удалось сохранить PIN.");
@@ -141,8 +149,8 @@ export default function ProfilePage() {
           <div className="rounded-[28px] bg-[#2E3137] p-5 sm:p-6">
               <h2 className="text-xl font-semibold text-[#f4f7fb]">О себе для ИИ</h2>
               <p className="mt-2 text-sm leading-6 text-slate-400">Напишите, кто вы, чем занимаетесь, какие у вас цели и как с вами лучше общаться.</p>
-            <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Имя" className="mt-4" />
-            <textarea value={about} onChange={(event) => setAbout(event.target.value)} placeholder="Например: Я владелец бизнеса..." className="mt-3 min-h-32 w-full resize-y rounded-2xl border border-[#3a3d43] bg-[#343840] px-4 py-3 text-sm leading-6 text-[#f4f7fb] outline-none placeholder:text-slate-400 focus:border-[#6a6f79]" />
+            <Input value={name} onChange={(event) => { setName(event.target.value); setProfileDirty(true); }} placeholder="Имя" className="mt-4" />
+            <textarea value={about} onChange={(event) => { setAbout(event.target.value); setProfileDirty(true); }} placeholder="Например: Я владелец бизнеса..." className="mt-3 min-h-32 w-full resize-y rounded-2xl border border-[#3a3d43] bg-[#343840] px-4 py-3 text-sm leading-6 text-[#f4f7fb] outline-none placeholder:text-slate-400 focus:border-[#6a6f79]" />
             <div className="mt-3 flex items-center gap-3">
               <Button variant="primary" onClick={saveAbout}>Сохранить</Button>
               {notice ? <span className="text-sm text-slate-300">{notice}</span> : null}
@@ -159,8 +167,8 @@ export default function ProfilePage() {
             <label className="space-y-2"><span className="text-sm text-slate-300">Пароль</span><Input value="••••••••" readOnly /></label>
           </div>
           <form className="mt-4 grid gap-3" onSubmit={changePassword}>
-            <Input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} placeholder="Текущий пароль" required />
-            <Input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder="Новый пароль (от 8 символов)" minLength={8} required />
+            <Input type="password" value={currentPassword} onChange={(event) => { setCurrentPassword(event.target.value); setCredentialsDirty(true); }} placeholder="Текущий пароль" required />
+            <Input type="password" value={newPassword} onChange={(event) => { setNewPassword(event.target.value); setCredentialsDirty(true); }} placeholder="Новый пароль (от 8 символов)" minLength={8} required />
             <div className="flex flex-wrap items-center gap-3"><Button type="submit" variant="secondary">Изменить пароль</Button>{passwordError ? <span className="text-sm text-rose-300">{passwordError}</span> : null}</div>
           </form>
           <form className="mt-6 grid gap-3 border-t border-[#3a3d43] pt-5" onSubmit={saveUnlockPin}>
@@ -168,7 +176,7 @@ export default function ProfilePage() {
               <h3 className="text-base font-semibold text-[#f4f7fb]">PIN разблокировки</h3>
               <p className="mt-1 text-sm text-slate-400">Отдельный PIN из 4 цифр для снятия блокировки сессии.</p>
             </div>
-            <Input type="password" inputMode="numeric" maxLength={4} pattern="[0-9]{4}" value={unlockPin} onChange={(event) => setUnlockPin(event.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="Новый PIN из 4 цифр" required />
+            <Input type="password" inputMode="numeric" maxLength={4} pattern="[0-9]{4}" value={unlockPin} onChange={(event) => { setUnlockPin(event.target.value.replace(/\D/g, "").slice(0, 4)); setCredentialsDirty(true); }} placeholder="Новый PIN из 4 цифр" required />
             <div className="flex flex-wrap items-center gap-3"><Button type="submit" variant="secondary">Сохранить PIN</Button>{unlockPinError ? <span className="text-sm text-rose-300">{unlockPinError}</span> : null}</div>
           </form>
         </div>

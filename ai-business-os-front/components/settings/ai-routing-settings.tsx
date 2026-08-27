@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,7 @@ import { Select } from "@/components/ui/select";
 import { Surface } from "@/components/ui/surface";
 import { useOwnerSessionState } from "@/components/auth/session-lock-guard";
 import { getAiRouting, saveAiRouting, type AiRoutingConfig } from "@/lib/core-api";
+import { useUnsavedChangesGuard } from "@/lib/use-unsaved-changes";
 
 type Provider = {
   id: string;
@@ -59,6 +60,11 @@ export function AiRoutingSettings() {
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [selectedRoleId, setSelectedRoleId] = useState<string | null>(null);
+  const [providersOpen, setProvidersOpen] = useState(false);
+  const routingLoadedRef = useRef(false);
+  const routingDirtyRef = useRef(false);
+
+  useUnsavedChangesGuard(routingDirtyRef.current);
 
   useEffect(() => {
     if (!session.hydrated || !session.authenticated || session.locked) return;
@@ -66,6 +72,8 @@ export function AiRoutingSettings() {
       .then((payload) => {
         setProviders(Array.isArray(payload.providers) ? payload.providers : []);
         setConfig(payload.config);
+        routingLoadedRef.current = true;
+        routingDirtyRef.current = false;
         if (payload.malformed) setNotice("Не удалось загрузить настройки ИИ");
       })
       .catch((error) => {
@@ -75,7 +83,22 @@ export function AiRoutingSettings() {
       .finally(() => setLoading(false));
   }, [session.hydrated, session.authenticated, session.locked]);
 
+  useEffect(() => {
+    if (!routingLoadedRef.current || !routingDirtyRef.current) return;
+    const timer = window.setTimeout(() => {
+      void saveAiRouting(config)
+        .then((payload) => {
+          routingDirtyRef.current = false;
+          setProviders(Array.isArray(payload.providers) ? payload.providers : []);
+          setConfig(payload.config);
+        })
+        .catch(() => setNotice("Не удалось сохранить настройки ИИ."));
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [config]);
+
   const updateAssignment = (roleId: string, patch: Partial<Assignment>) => {
+    routingDirtyRef.current = true;
     setConfig((current) => ({
       ...current,
       roles: { ...current.roles, [roleId]: { ...emptyAssignment(), ...current.roles[roleId], ...patch } },
@@ -100,6 +123,7 @@ export function AiRoutingSettings() {
     setNotice(null);
     try {
       const payload = await saveAiRouting(config);
+      routingDirtyRef.current = false;
       setProviders(Array.isArray(payload.providers) ? payload.providers : []);
       setConfig(payload.config);
       setNotice("Настройки сохранены");
@@ -122,16 +146,14 @@ export function AiRoutingSettings() {
           <Button variant="primary" onClick={() => void save()} disabled={loading || saving}>{saving ? "Сохраняем..." : "Сохранить"}</Button>
         </div>
 
-        <div className="mt-6 grid gap-4 lg:grid-cols-3">
-          {providers.map((provider) => (
-            <div key={provider.id} className="rounded-2xl border border-[#3a3d43] bg-[#343840] px-4 py-4">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-sm font-medium text-slate-200">{provider.name}</p>
-                <Badge variant="neutral"><span className={`mr-1.5 inline-block h-2 w-2 rounded-full ${provider.status === "available" ? "bg-emerald-400" : "bg-slate-500"}`} />{statusLabel(provider)}</Badge>
-              </div>
-              <p className="mt-2 text-xs text-slate-400">{provider.available ? provider.model : "Модель недоступна"}</p>
-            </div>
-          ))}
+        <div className="mt-6 flex items-center justify-between gap-4 rounded-2xl border border-[#3a3d43] bg-[#343840] px-4 py-3">
+          <div>
+            <p className="text-sm font-medium text-slate-200">Доступные ИИ</p>
+            <p className="mt-1 text-xs text-slate-400">Провайдеры и модели из текущего registry.</p>
+          </div>
+          <Button variant="secondary" size="sm" onClick={() => setProvidersOpen(true)}>
+            Открыть список{providers.length ? ` · ${providers.length}` : ""}
+          </Button>
         </div>
 
         <div className="mt-6 grid gap-4 md:grid-cols-2">
@@ -156,7 +178,10 @@ export function AiRoutingSettings() {
                   <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-300">
                     <button
                       type="button"
-                      onClick={() => setConfig((current) => ({ ...current, business_analytics_auto_enabled: !current.business_analytics_auto_enabled }))}
+                      onClick={() => {
+                        routingDirtyRef.current = true;
+                        setConfig((current) => ({ ...current, business_analytics_auto_enabled: !current.business_analytics_auto_enabled }));
+                      }}
                       className={`rounded-full border px-3 py-1.5 ${config.business_analytics_auto_enabled ? "border-[#FFF27A] bg-[#FFF27A] text-[#1E1E21]" : "border-[#4a4e56] bg-[#2E3137]"}`}
                     >
                       Автоаналитика: {config.business_analytics_auto_enabled ? "включена" : "выключена"}
@@ -167,7 +192,10 @@ export function AiRoutingSettings() {
                         <button
                           key={trigger}
                           type="button"
-                          onClick={() => setConfig((current) => ({ ...current, business_analytics_triggers: active ? (current.business_analytics_triggers ?? []).filter((item) => item !== trigger) : [...(current.business_analytics_triggers ?? []), trigger] }))}
+                          onClick={() => {
+                            routingDirtyRef.current = true;
+                            setConfig((current) => ({ ...current, business_analytics_triggers: active ? (current.business_analytics_triggers ?? []).filter((item) => item !== trigger) : [...(current.business_analytics_triggers ?? []), trigger] }));
+                          }}
                           className={`rounded-full border px-3 py-1.5 ${active ? "border-[#FFF27A] text-[#FFF27A]" : "border-[#4a4e56] text-slate-400"}`}
                         >
                           {trigger === "after_sync" ? "После синхронизации" : trigger === "daily" ? "Ежедневно" : "Еженедельно"}
@@ -210,6 +238,30 @@ export function AiRoutingSettings() {
           />
           <Button className="w-full" onClick={() => setSelectedRoleId(null)}>Готово</Button>
         </div>
+      </Drawer>
+      <Drawer
+        open={providersOpen}
+        onClose={() => setProvidersOpen(false)}
+        title="Доступные ИИ"
+        description="Провайдеры и модели, доступные для выбора в AI Business OS."
+        badges={<Badge variant="neutral">{providers.length}</Badge>}
+        className="!max-w-[min(48rem,calc(100vw-2rem))]"
+      >
+        {providers.length > 0 ? (
+          <div className="grid gap-3 sm:grid-cols-2">
+            {providers.map((provider) => (
+              <div key={provider.id} className="rounded-2xl border border-[#3a3d43] bg-[#343840] px-4 py-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="min-w-0 truncate text-sm font-medium text-slate-200">{provider.name}</p>
+                  <Badge variant="neutral"><span className={`mr-1.5 inline-block h-2 w-2 rounded-full ${provider.status === "available" ? "bg-emerald-400" : "bg-slate-500"}`} />{statusLabel(provider)}</Badge>
+                </div>
+                <p className="mt-2 truncate text-xs text-slate-400">{provider.available ? provider.model : "Модель недоступна"}</p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="rounded-2xl border border-[#3a3d43] bg-[#343840] p-4 text-sm text-slate-400">Доступные модели не найдены.</p>
+        )}
       </Drawer>
     </Surface>
   );

@@ -1034,33 +1034,42 @@ export function DashboardAssistantPanel() {
         providers
           .filter((provider) => provider.available && provider.status === "available")
           .forEach((provider) => {
-            const current = grouped.get(provider.provider);
+            const providerId = canonicalProviderId(provider.provider, provider.id);
+            const modelId = canonicalModelId(provider.model, providerId);
+            if (!providerId || !modelId) return;
+            const current = grouped.get(providerId);
             if (current) {
-              if (!current.models.some((model) => model.id === provider.model)) {
-                current.models.push({ id: provider.model, name: provider.name, available: provider.available });
+              if (!current.models.some((model) => model.id === modelId)) {
+                current.models.push({ id: modelId, name: cleanModelLabel(provider.name, modelId), available: provider.available });
               }
               return;
             }
-            grouped.set(provider.provider, {
-              providerId: provider.provider,
-              name: providerLabel(provider.provider),
-              models: [{ id: provider.model, name: provider.name, available: provider.available }],
-              icon: providerIconKey(provider.provider),
+            grouped.set(providerId, {
+              providerId,
+              name: providerLabel(providerId),
+              models: [{ id: modelId, name: cleanModelLabel(provider.name, modelId), available: provider.available }],
+              icon: providerIconKey(providerId),
             });
           });
         const nextModels = Array.from(grouped.values());
         setAvailableModels(nextModels);
         const chatAssignment = routing.config.roles.ai_chat;
-        const assignedIndex = chatAssignment?.primary_provider_id
-          ? nextModels.findIndex((model) => model.providerId === chatAssignment.primary_provider_id && model.models.some((item) => item.id === chatAssignment.primary_model_id))
+        const assignedProviderId = chatAssignment?.primary_provider_id
+          ? canonicalProviderId(chatAssignment.primary_provider_id)
+          : null;
+        const assignedModelId = chatAssignment?.primary_model_id && assignedProviderId
+          ? canonicalModelId(chatAssignment.primary_model_id, assignedProviderId)
+          : null;
+        const assignedIndex = assignedProviderId
+          ? nextModels.findIndex((model) => model.providerId === assignedProviderId && model.models.some((item) => item.id === assignedModelId))
           : -1;
         const nextIndex = assignedIndex >= 0 ? assignedIndex : 0;
-        const assignedModel = nextModels[nextIndex]?.models.find((item) => item.id === chatAssignment?.primary_model_id)
+        const assignedModel = nextModels[nextIndex]?.models.find((item) => item.id === assignedModelId)
           ?? nextModels[nextIndex]?.models[0];
         setSelectedModel(nextIndex);
         setSelectedModelId(assignedModel?.id ?? nextModels[nextIndex]?.models[0]?.id);
-        setSavedModelsByProvider(chatAssignment?.primary_provider_id && assignedModel
-          ? { [chatAssignment.primary_provider_id]: assignedModel.id }
+        setSavedModelsByProvider(assignedProviderId && assignedModel
+          ? { [assignedProviderId]: assignedModel.id }
           : {});
       })
       .catch(() => setAvailableModels([]));
@@ -1807,7 +1816,33 @@ function providerIconKey(providerId: string): ModelItem["icon"] {
 function providerLabel(providerId: string): string {
   if (providerId === "openai-codex") return "OpenAI Codex";
   if (providerId === "custom") return "Local / Custom";
-  return providerId;
+  if (providerId === "moa") return "MOA";
+  return providerId
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function canonicalProviderId(providerId: string, targetId?: string): string {
+  const provider = providerId.trim().toLowerCase();
+  const target = (targetId ?? "").trim().toLowerCase();
+  if (provider === "custom" || provider.startsWith("custom:") || target.startsWith("custom:")) return "custom";
+  if (provider === "openai-codex" || provider.startsWith("openai-codex:") || target.startsWith("openai-codex:")) return "openai-codex";
+  return provider;
+}
+
+function canonicalModelId(modelId: string, providerId: string): string {
+  const value = modelId.trim();
+  const prefix = `${providerId}:`;
+  return value.toLowerCase().startsWith(prefix) ? value.slice(prefix.length) : value;
+}
+
+function cleanModelLabel(name: string, modelId: string): string {
+  const label = name.trim();
+  return label && !label.toLowerCase().startsWith("custom:") && !label.toLowerCase().startsWith("openai-codex:")
+    ? label
+    : modelId;
 }
 
 function ChatTileIcon({ kind }: { kind: ChatTile["icon"] }) {
