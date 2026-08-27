@@ -19,6 +19,7 @@ from app.core.data_layer.contracts import CoreDataStore
 from app.core.data_layer.factory import get_core_store
 from app.core.hermes_tools import HermesBusinessTools
 from app.core.ai_routing import AITaskRouter
+from app.core.ai_shared_memory import SharedMemoryService
 from app.core.hermes_model_registry import hermes_model_registry
 from app.core.ai_insight_presentation import AIInsightPresentationService
 from app.core.analytics.widget_builder import WidgetBuilderService
@@ -92,6 +93,7 @@ def link_telegram_chat(
     store: Annotated[CoreDataStore, Depends(get_core_store)],
 ) -> ConversationHistoryResponse:
     service = AIConversationService(store)
+    shared_memory = SharedMemoryService(store)
     service.link_telegram_chat(request.telegram_chat_id, request.user_id)
     conversation = service.resolve_or_create_conversation(
         source_channel=AIConversationChannel.TELEGRAM,
@@ -180,9 +182,11 @@ async def telegram_chat(
         source_channel=AIConversationChannel.TELEGRAM,
         target_channel=resolved_target_channel,
     )
+    shared_memory.remember(conversation.user_id or request.user_id, user_text, "telegram")
 
     messages = [
         {"role": "system", "content": service.build_system_prompt(conversation)},
+        {"role": "system", "content": shared_memory.prompt_context(conversation.user_id or request.user_id)},
         {"role": "system", "content": _telegram_runtime_context(router, store)},
         *[{"role": message.role, "content": message.content} for message in conversation.messages],
     ]

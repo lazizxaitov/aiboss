@@ -836,6 +836,36 @@ export async function getSmartUpLiveSyncStatus(): Promise<SmartUpLiveSyncStatus>
   return requestJson<SmartUpLiveSyncStatus>("/api/v1/smartup/live-sync/status");
 }
 
+export type SystemUpdateStatus = {
+  current_version: string | null;
+  latest_version: string | null;
+  update_available: boolean;
+  status: "ready";
+  last_successful_update_at: string | null;
+};
+
+export type SystemUpdateJob = {
+  job_id: string;
+  status: "running" | "success" | "failed" | "rollback";
+  stage: string;
+  message: string;
+  current_version: string | null;
+  target_version: string | null;
+  error: string | null;
+};
+
+export async function getSystemUpdateStatus(): Promise<SystemUpdateStatus> {
+  return requestJson<SystemUpdateStatus>("/api/v1/system/update/status", {}, 35_000);
+}
+
+export async function installSystemUpdate(): Promise<SystemUpdateJob> {
+  return requestJson<SystemUpdateJob>("/api/v1/system/update/install", { method: "POST" }, 10_000);
+}
+
+export async function getSystemUpdateJob(jobId: string): Promise<SystemUpdateJob> {
+  return requestJson<SystemUpdateJob>(`/api/v1/system/update/jobs/${jobId}`, {}, 10_000);
+}
+
 export type SmartUpPage = "sales" | "visits" | "products" | "customers" | "inventory" | "finance";
 
 export async function startSmartUpPageSync(page: SmartUpPage): Promise<SmartUpMigrationJobResponse> {
@@ -2483,11 +2513,18 @@ export async function streamAiChat(
   providerId?: string,
   modelId?: string,
   onMeta?: (meta: { provider_id?: string; provider_name?: string; model_id?: string }) => void,
+  conversationId?: string,
 ): Promise<void> {
   const response = await fetch(`${coreApiBaseUrl}/api/v1/ai/chat`, {
     method: "POST",
     headers: authenticatedHeaders(),
-    body: JSON.stringify({ messages, task_type: taskType, provider_id: providerId, model_id: modelId }),
+    body: JSON.stringify({
+      messages,
+      conversation_id: conversationId,
+      task_type: taskType,
+      provider_id: providerId,
+      model_id: modelId,
+    }),
     signal,
   });
   if (!response.ok || !response.body) {

@@ -751,6 +751,10 @@ function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function createConversationId() {
+  return globalThis.crypto?.randomUUID?.() ?? createId("conversation");
+}
+
 function formatBytes(size: number) {
   if (!Number.isFinite(size) || size <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB"];
@@ -986,6 +990,7 @@ const FALLBACK_DASHBOARD_WIDGETS: DashboardManifestWidget[] = [
 
 export function DashboardAssistantPanel() {
   const [expanded, setExpanded] = useState(false);
+  const [conversationId, setConversationId] = useState(createConversationId);
   const [selectedModel, setSelectedModel] = useState(0);
   const [availableModels, setAvailableModels] = useState<ModelItem[]>([]);
   const [selectedModelId, setSelectedModelId] = useState<string | undefined>();
@@ -1204,6 +1209,7 @@ export function DashboardAssistantPanel() {
             ),
           );
         },
+        conversationId,
       );
     } catch (error) {
       setChatError(error instanceof Error ? error.message : "Не удалось получить ответ AI.");
@@ -1224,6 +1230,7 @@ export function DashboardAssistantPanel() {
 
   const handleBackToStart = () => {
     setChatMessages([]);
+    setConversationId(createConversationId());
     setMessage("");
     setPendingAttachments([]);
     setExpanded(true);

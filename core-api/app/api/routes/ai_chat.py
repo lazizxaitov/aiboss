@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -19,6 +19,8 @@ from app.core.ai_conversation import (
     AIConversationService,
     AIConversationTargetChannel,
 )
+from app.api.routes.auth import _session, _token_from_request
+from app.core.ai_shared_memory import SharedMemoryService
 from app.core.analytics.widget_builder import (
     WidgetBuilderDraft,
     WidgetBuilderService,
@@ -493,11 +495,15 @@ def _message_text(content: str | list[dict[str, object]]) -> str:
 async def chat(
     request: ChatRequest,
     store: Annotated[CoreDataStore, Depends(get_core_store)],
+    authorization: str | None = Header(default=None),
 ) -> StreamingResponse:
     """Proxy Hermes' OpenAI-compatible stream without exposing its credentials."""
 
     async def stream():
         conversation_service = AIConversationService(store)
+        session = _session(_token_from_request(None, authorization))
+        effective_user_id = request.user_id or (session.login if session is not None else None)
+        shared_memory = SharedMemoryService(store)
         tools_service = HermesBusinessTools(store)
         widget_builder = WidgetBuilderService(store)
         await hermes_model_registry.get_providers()
@@ -514,7 +520,7 @@ async def chat(
         routed_model = str(routing_runtime["model_id"])
         conversation = conversation_service.resolve_or_create_conversation(
             source_channel=request.source_channel,
-            user_id=request.user_id,
+            user_id=effective_user_id,
             telegram_chat_id=request.telegram_chat_id,
             organization_id=request.organization_id,
             period=request.period,
@@ -527,7 +533,7 @@ async def chat(
                 telegram_chat_id=request.telegram_chat_id,
                 organization_id=request.organization_id,
                 period=request.period,
-                user_id=request.user_id,
+                user_id=effective_user_id,
             )
         incoming_messages = [_message_dump(message) for message in request.messages]
         last_user_message = next((message for message in reversed(request.messages) if message.role == "user"), None)
@@ -540,8 +546,15 @@ async def chat(
             source_channel=request.source_channel,
             target_channel=resolved_target_channel,
         )
+        last_user_text = _message_text(last_user_message.content) if last_user_message is not None else ""
+        shared_memory.remember(
+            conversation.user_id or effective_user_id or "owner",
+            last_user_text,
+            "dashboard",
+        )
         messages: list[dict[str, object]] = [
             {"role": "system", "content": conversation_service.build_system_prompt(conversation)},
+            {"role": "system", "content": shared_memory.prompt_context(conversation.user_id or effective_user_id or "owner")},
             {"role": "system", "content": _routing_context(router)},
             *[{"role": message.role, "content": message.content} for message in conversation.messages],
         ]

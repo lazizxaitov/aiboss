@@ -2,13 +2,21 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Surface } from "@/components/ui/surface";
 import { AiRoutingSettings } from "@/components/settings/ai-routing-settings";
 import { MobileAccessCard } from "@/components/settings/mobile-access-card";
-import { getSmartUpLiveSyncStatus, type SmartUpLiveSyncStatus } from "@/lib/core-api";
+import {
+  getSmartUpLiveSyncStatus,
+  getSystemUpdateJob,
+  getSystemUpdateStatus,
+  installSystemUpdate,
+  type SmartUpLiveSyncStatus,
+  type SystemUpdateJob,
+  type SystemUpdateStatus,
+} from "@/lib/core-api";
 
 export const dynamic = "force-dynamic";
 
@@ -88,6 +96,8 @@ export default function Page() {
       </Surface>
 
       <MobileAccessCard />
+
+      <SystemUpdateCard />
 
 
       <div className="grid gap-6">
@@ -224,6 +234,119 @@ export default function Page() {
 
       <AiRoutingSettings />
     </section>
+  );
+}
+
+const updateStageLabels: Record<string, string> = {
+  checking: "Проверка",
+  downloading: "Загрузка из GitHub",
+  backend_dependencies: "Зависимости backend",
+  frontend_dependencies: "Зависимости frontend",
+  frontend_build: "Сборка интерфейса",
+  restarting: "Перезапуск сервисов",
+  completed: "Завершено",
+  rollback: "Откат версии",
+  failed: "Ошибка",
+};
+
+function SystemUpdateCard() {
+  const [systemStatus, setSystemStatus] = useState<SystemUpdateStatus | null>(null);
+  const [job, setJob] = useState<SystemUpdateJob | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const pollTimerRef = useRef<number | null>(null);
+
+  const checkForUpdates = async () => {
+    setLoading(true);
+    setNotice(null);
+    try {
+      setSystemStatus(await getSystemUpdateStatus());
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Не удалось проверить обновления.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void checkForUpdates();
+  }, []);
+
+  useEffect(() => {
+    if (!job || job.status !== "running") return;
+    let active = true;
+    const poll = async () => {
+      try {
+        const next = await getSystemUpdateJob(job.job_id);
+        if (!active) return;
+        setJob(next);
+        if (next.status === "running") pollTimerRef.current = window.setTimeout(poll, 4000);
+        else if (next.status === "success") setNotice("Обновление установлено");
+      } catch {
+        if (active) pollTimerRef.current = window.setTimeout(poll, 5000);
+      }
+    };
+    pollTimerRef.current = window.setTimeout(poll, 1500);
+    return () => {
+      active = false;
+      if (pollTimerRef.current !== null) window.clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    };
+  }, [job]);
+
+  const install = async () => {
+    setLoading(true);
+    setNotice(null);
+    try {
+      setJob(await installSystemUpdate());
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Не удалось запустить обновление.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const running = job?.status === "running";
+  return (
+    <Surface>
+      <div className="rounded-[28px] bg-[#2E3137] p-6 sm:p-7">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="space-y-2">
+            <p className="text-xs uppercase tracking-[0.32em] text-slate-400">Система</p>
+            <h2 className="text-2xl font-semibold tracking-[-0.04em] text-[#f4f7fb]">Обновление системы</h2>
+            <p className="text-sm text-slate-400">
+              {job ? `${updateStageLabels[job.stage] ?? job.stage}: ${job.message}` : notice ?? "Проверяйте и устанавливайте обновления из GitHub."}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <Button variant="secondary" size="sm" onClick={() => void checkForUpdates()} disabled={loading || running}>
+              {loading ? "Проверяем..." : "Проверить обновления"}
+            </Button>
+            <Button variant="primary" size="sm" onClick={() => void install()} disabled={loading || running || !systemStatus?.update_available}>
+              {running ? "Обновление выполняется..." : "Установить обновление"}
+            </Button>
+          </div>
+        </div>
+        <div className="mt-5 grid gap-3 sm:grid-cols-3">
+          <UpdateValue title="Текущая версия" value={systemStatus?.current_version ?? "—"} />
+          <UpdateValue title="Последняя версия" value={systemStatus?.latest_version ?? "—"} />
+          <UpdateValue title="Статус" value={systemStatus ? (systemStatus.update_available ? "Доступно обновление" : "Версия актуальна") : "Проверяется"} />
+        </div>
+        {systemStatus?.last_successful_update_at ? (
+          <p className="mt-4 text-xs text-slate-400">Последнее успешное обновление: {formatDateTime(systemStatus.last_successful_update_at)}</p>
+        ) : null}
+        {job?.status === "failed" ? <p className="mt-3 text-sm text-rose-200">{job.error ?? job.message}</p> : null}
+      </div>
+    </Surface>
+  );
+}
+
+function UpdateValue({ title, value }: { title: string; value: string }) {
+  return (
+    <div className="rounded-2xl border border-[#3a3d43] bg-[#343840] px-4 py-3">
+      <p className="text-xs uppercase tracking-[0.2em] text-slate-400">{title}</p>
+      <p className="mt-1 truncate text-sm font-medium text-slate-200">{value}</p>
+    </div>
   );
 }
 

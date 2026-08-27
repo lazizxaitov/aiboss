@@ -174,31 +174,35 @@ class AIConversationService:
             period=period,
         )
         index = self.get_index()
-        conversation_id = index.active_by_identity.get(identity)
-        if conversation_id:
-            conversation = self.get_conversation(conversation_id)
-            if conversation is not None:
-                return self._update_context(
-                    conversation,
-                    source_channel=source_channel,
-                    telegram_chat_id=telegram_chat_id,
-                    organization_id=organization_id,
-                    period=period,
-                    user_id=user_id,
-                )
+        channel_identity = f"{source_channel.value}:{identity}"
+        # An explicit new ID is authoritative. Never fall back to the identity's
+        # active conversation, otherwise a new web chat can inherit old history.
+        if conversation_id is None:
+            conversation_id = index.active_by_identity.get(channel_identity)
+            if conversation_id:
+                conversation = self.get_conversation(conversation_id)
+                if conversation is not None:
+                    return self._update_context(
+                        conversation,
+                        source_channel=source_channel,
+                        telegram_chat_id=telegram_chat_id,
+                        organization_id=organization_id,
+                        period=period,
+                        user_id=user_id,
+                    )
 
         context = OrganizationContextService(self.store).get_context()
         resolved_organization_id = organization_id or self._context_organization_id(context)
         resolved_period = period or self._context_period_value(context)
         conversation = AIConversationState(
-            conversation_id=str(uuid4()),
+            conversation_id=conversation_id or str(uuid4()),
             user_id=user_id or identity,
             organization_id=resolved_organization_id,
             period=resolved_period,
             source_channel=source_channel,
             telegram_chat_id=telegram_chat_id,
         )
-        index.active_by_identity[identity] = conversation.conversation_id
+        index.active_by_identity[channel_identity] = conversation.conversation_id
         if telegram_chat_id:
             index.telegram_chat_to_identity[str(telegram_chat_id)] = identity
         self.save_index(index)
@@ -292,7 +296,9 @@ class AIConversationService:
                 f"{context.period_context.date_to.isoformat()})"
             )
         return (
-            "You are Hermes for AI Business OS.\n"
+            "Ты AI-ассистент AI Business OS.\n"
+            "Работай только с текущим диалогом пользователя и доступными данными AI Business OS.\n"
+            "Не продолжай темы из других чатов или каналов. Не упоминай Telegram, файлы или другие сессии, если пользователь сам не спрашивает о них.\n"
             "Use ONLY the provided business data tools when the user asks about revenue, orders, sales, top products, "
             "business comparisons, organizations, current attention, or dashboard actions.\n"
             "Do not request or reveal SQL, PostgreSQL, raw SmartUp payloads, terminal/file/system access, or secrets.\n"
