@@ -1034,8 +1034,9 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
   }, [conversationId, chatMessages]);
 
   useEffect(() => {
-    void getDashboardAIInsights()
-      .then((payload) => {
+    const refreshInsights = () => {
+      void getDashboardAIInsights()
+        .then((payload) => {
         const items = payload.items.length === 0 && payload.status === "AI_UNAVAILABLE"
           ? [{ label: "Статус", title: "ИИ-аналитика временно недоступна", text: "Базовые показатели и данные бизнеса продолжают работать." }]
           : payload.items.map((item) => ({
@@ -1044,8 +1045,12 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
           text: [item.description, item.affected_entity, item.affected_metric].filter(Boolean).join(" · "),
         }));
         setAiThoughts(items);
-      })
-      .catch(() => setAiThoughts([]));
+        })
+        .catch(() => setAiThoughts([]));
+    };
+    refreshInsights();
+    const interval = window.setInterval(refreshInsights, 30_000);
+    return () => window.clearInterval(interval);
   }, []);
 
   useEffect(() => {

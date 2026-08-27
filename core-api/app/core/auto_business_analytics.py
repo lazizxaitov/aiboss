@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from threading import Lock
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -21,6 +22,8 @@ from app.core.analytics.engine import BusinessAnalyticsEngine
 
 AUTO_ANALYTICS_INDEX_KEY = "ai_business_analytics:index:v1"
 AUTO_ANALYTICS_KEY_PREFIX = "ai_business_analytics:run:v1:"
+AUTO_ANALYTICS_STATUS_KEY = "ai_business_analytics:status:v1"
+_AUTO_ANALYTICS_RUN_LOCK = Lock()
 
 
 class AutoAnalyticsInsight(BaseModel):
@@ -102,6 +105,16 @@ class AutoAnalyticsRun(BaseModel):
     error: str | None = None
 
 
+class AutoAnalyticsStatus(BaseModel):
+    status: Literal["idle", "analyzing", "completed", "retry_wait", "error", "disabled"] = "idle"
+    last_started_at: datetime | None = None
+    last_completed_at: datetime | None = None
+    last_error: str | None = None
+    provider_id: str | None = None
+    model_id: str | None = None
+    next_retry_at: datetime | None = None
+
+
 class AutoBusinessAnalyticsService:
     def __init__(self, store: CoreDataStore) -> None:
         self.store = store
@@ -138,6 +151,37 @@ class AutoBusinessAnalyticsService:
                 return run
         return None
 
+    def status(self) -> AutoAnalyticsStatus:
+        setting = self.store.get_app_setting(AUTO_ANALYTICS_STATUS_KEY)
+        if setting is not None:
+            try:
+                return AutoAnalyticsStatus.model_validate(setting.setting_value)
+            except Exception:  # noqa: BLE001
+                pass
+        config = AITaskRouter(self.store).get_config()
+        if not config.business_analytics_auto_enabled:
+            return AutoAnalyticsStatus(status="disabled")
+        latest = self.latest_successful()
+        if latest is not None:
+            return AutoAnalyticsStatus(
+                status="completed",
+                last_completed_at=latest.generated_at,
+                provider_id=latest.provider_id,
+                model_id=latest.model_id,
+            )
+        return AutoAnalyticsStatus(status="idle")
+
+    def _save_status(self, status: AutoAnalyticsStatus) -> AutoAnalyticsStatus:
+        now = datetime.now(UTC)
+        self.store.upsert_app_setting(AppSetting(
+            setting_key=AUTO_ANALYTICS_STATUS_KEY,
+            setting_value=status.model_dump(mode="json"),
+            metadata={"scope": "global", "kind": "auto_business_analytics_status"},
+            created_at=now,
+            updated_at=now,
+        ))
+        return status
+
     def _save(self, run: AutoAnalyticsRun) -> AutoAnalyticsRun:
         now = datetime.now(UTC)
         self.store.upsert_app_setting(AppSetting(
@@ -160,10 +204,32 @@ class AutoBusinessAnalyticsService:
         return run
 
     async def run(self) -> AutoAnalyticsRun:
-        await hermes_model_registry.get_providers()
+        if not _AUTO_ANALYTICS_RUN_LOCK.acquire(blocking=False):
+            return self.latest() or AutoAnalyticsRun(status="failed", error="Автоанализ уже выполняется.")
+        try:
+            return await self._run_locked()
+        except Exception as error:  # noqa: BLE001 - sync must remain healthy when AI preparation fails
+            self._save_status(AutoAnalyticsStatus(
+                status="error",
+                last_error=f"Не удалось подготовить автоанализ: {error}",
+                next_retry_at=datetime.now(UTC) + timedelta(minutes=5),
+            ))
+            raise
+        finally:
+            _AUTO_ANALYTICS_RUN_LOCK.release()
+
+    async def _run_locked(self) -> AutoAnalyticsRun:
+        await hermes_model_registry.get_providers(refresh=True)
         router = AITaskRouter(self.store)
         candidates = router.resolve_candidates("business_analytics")
         runtime = candidates[0] if candidates else {}
+        started_at = datetime.now(UTC)
+        self._save_status(AutoAnalyticsStatus(
+            status="analyzing",
+            last_started_at=started_at,
+            provider_id=str(runtime.get("provider_id")) if runtime.get("provider_id") else None,
+            model_id=str(runtime.get("model_id")) if runtime.get("model_id") else None,
+        ))
         tools = HermesBusinessTools(self.store)
         query = tools._build_query(organization_id=None, period=None)
         analytics = BusinessAnalyticsEngine(self.store)
@@ -186,8 +252,8 @@ class AutoBusinessAnalyticsService:
         if not runtime.get("model_id"):
             run.status = "failed"
             run.error = "Нет доступного агента для роли business_analytics."
+            self._save_status(AutoAnalyticsStatus(status="retry_wait", last_started_at=started_at, last_error=run.error, next_retry_at=datetime.now(UTC) + timedelta(minutes=5)))
             return self._save(run)
-
         instruction = (
             "Проведи автоматический анализ текущих бизнес-данных AI Business OS. "
             "Сравни текущий и предыдущий период. Найди не только изменения KPI, но и вклад организаций, "
@@ -253,6 +319,22 @@ class AutoBusinessAnalyticsService:
         if run.status != "completed":
             run.status = "failed"
             run.error = f"Не удалось завершить автоанализ: {last_error or 'нет доступного provider/model'}"
+            self._save_status(AutoAnalyticsStatus(
+                status="retry_wait" if candidates else "error",
+                last_started_at=started_at,
+                last_error=run.error,
+                provider_id=run.provider_id,
+                model_id=run.model_id,
+                next_retry_at=datetime.now(UTC) + timedelta(minutes=5),
+            ))
+        else:
+            self._save_status(AutoAnalyticsStatus(
+                status="completed",
+                last_started_at=started_at,
+                last_completed_at=run.generated_at,
+                provider_id=run.provider_id,
+                model_id=run.model_id,
+            ))
         return self._save(run)
 
     async def run_if_due(self, *, after_sync: bool = False) -> AutoAnalyticsRun | None:
@@ -268,6 +350,10 @@ class AutoBusinessAnalyticsService:
             return await self.run()
         if "weekly" in triggers and now - latest.generated_at >= timedelta(days=7):
             return await self.run()
+        if latest.status == "failed":
+            status = self.status()
+            if status.status == "retry_wait" and status.next_retry_at and now >= status.next_retry_at:
+                return await self.run()
         return None
 
 
