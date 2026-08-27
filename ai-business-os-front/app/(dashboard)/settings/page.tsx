@@ -67,8 +67,15 @@ export default function Page() {
   }, []);
 
   const logout = () => {
-    document.cookie = "aibos_owner_session=; Path=/; Max-Age=0; SameSite=Lax";
-    router.replace("/login");
+    const cookie = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("aibos_owner_session="));
+    const token = cookie?.slice("aibos_owner_session=".length) ?? "";
+    void fetch(`${process.env.NEXT_PUBLIC_CORE_API_URL ?? "http://127.0.0.1:8000"}/api/v1/auth/logout`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${decodeURIComponent(token)}` },
+    }).finally(() => {
+      document.cookie = "aibos_owner_session=; Path=/; Max-Age=0; SameSite=Lax";
+      router.replace("/login");
+    });
   };
 
   return (

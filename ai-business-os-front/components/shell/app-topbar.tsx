@@ -17,6 +17,14 @@ import {
   getUnreadCount,
 } from "@/modules/alerts/notifications-data";
 
+const coreApiUrl = process.env.NEXT_PUBLIC_CORE_API_URL ?? "http://127.0.0.1:8000";
+
+function sessionHeaders() {
+  const value = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("aibos_owner_session="));
+  const token = value?.slice("aibos_owner_session=".length) ?? "";
+  return { Authorization: `Bearer ${decodeURIComponent(token)}` };
+}
+
 export function AppTopbar() {
   const router = useRouter();
   const [profilePhoto, setProfilePhoto] = useState<string | null>(null);
@@ -254,8 +262,10 @@ export function AppTopbar() {
                 type="button"
                 onClick={() => {
                   close();
-                  document.cookie = "aibos_owner_session=; Path=/; Max-Age=0; SameSite=Lax";
-                  router.replace("/login");
+                  void fetch(`${coreApiUrl}/api/v1/auth/logout`, { method: "POST", headers: sessionHeaders() }).finally(() => {
+                    document.cookie = "aibos_owner_session=; Path=/; Max-Age=0; SameSite=Lax";
+                    router.replace("/login");
+                  });
                 }}
                 className="block w-full rounded-2xl px-4 py-3 text-left text-sm text-rose-300 transition hover:bg-[#343840]"
               >

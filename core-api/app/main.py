@@ -70,7 +70,7 @@ async def enforce_web_session_lock(request: Request, call_next):
     if path.startswith(settings.api_v1_prefix) and path not in public:
         authorization = request.headers.get("authorization", "")
         token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
-        session = _session(token)
+        session = _session(token, get_core_store())
         if session is None:
             return JSONResponse({"detail": "Сессия недействительна"}, status_code=401)
         if session.locked:
