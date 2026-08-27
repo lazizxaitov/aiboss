@@ -75,7 +75,11 @@ class HermesModelRegistry:
     def _normalize(payload: Any) -> list[HermesProvider]:
         if not isinstance(payload, dict):
             return []
-        rows = payload.get("providers") or payload.get("data") or []
+        provider_rows = payload.get("providers")
+        if isinstance(provider_rows, list):
+            return HermesModelRegistry._normalize_provider_options(provider_rows)
+
+        rows = payload.get("data") or []
         if not isinstance(rows, list):
             return []
         grouped: dict[str, HermesProvider] = {}
@@ -120,6 +124,61 @@ class HermesModelRegistry:
         return list(grouped.values())
 
     @staticmethod
+    def _normalize_provider_options(rows: list[Any]) -> list[HermesProvider]:
+        grouped: dict[str, HermesProvider] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            provider_id = str(row.get("slug") or row.get("provider_id") or row.get("provider") or "").strip()
+            if not provider_id:
+                continue
+            authenticated = row.get("authenticated") is True
+            is_current = row.get("is_current") is True
+            if not authenticated and not is_current:
+                continue
+            raw_models = row.get("models") or row.get("available_models") or []
+            if not isinstance(raw_models, list):
+                continue
+            models: list[HermesModel] = []
+            for raw_model in raw_models:
+                if isinstance(raw_model, str):
+                    model_id = raw_model.strip()
+                    model_name = HermesModelRegistry._display_model_name(model_id)
+                elif isinstance(raw_model, dict):
+                    model_id = str(raw_model.get("id") or raw_model.get("model_id") or raw_model.get("model") or "").strip()
+                    model_name = str(raw_model.get("display_name") or raw_model.get("name") or model_id)
+                else:
+                    continue
+                if not model_id or any(model.id == model_id for model in models):
+                    continue
+                models.append(HermesModel(
+                    id=model_id,
+                    name=model_name,
+                    available=True,
+                    provider_id=provider_id,
+                ))
+            if not models:
+                continue
+            existing = grouped.get(provider_id)
+            if existing is None:
+                grouped[provider_id] = HermesProvider(
+                    id=provider_id,
+                    name=str(row.get("name") or provider_id),
+                    status="available",
+                    models=models,
+                    auth_type="oauth" if authenticated else ("custom_endpoint" if provider_id == "custom" else None),
+                )
+            else:
+                existing.models.extend(model for model in models if model.id not in {item.id for item in existing.models})
+        return list(grouped.values())
+
+    @staticmethod
+    def _display_model_name(model_id: str) -> str:
+        if model_id.lower().startswith("gpt-"):
+            return "GPT-" + model_id[4:].replace("-", " ").title()
+        return model_id
+
+    @staticmethod
     def _status(provider: dict[str, Any], model: dict[str, Any]) -> str:
         if provider.get("available") is False or provider.get("authenticated") is False:
             return "unavailable"
@@ -146,7 +205,7 @@ class HermesModelRegistry:
         if raw_id in {"codex", "openai_codex", "openai-codex"}:
             return "openai-codex", "OpenAI Codex", "oauth"
         if raw_id in {"custom", "custom_endpoint", "custom-endpoint"}:
-            return f"custom:{model_id}", "Custom endpoint", "custom_endpoint"
+            return "custom", "Custom endpoint", "custom_endpoint"
         name = str(model.get("provider_name") or model.get("display_name") or provider_hint or raw_id)
         return raw_id, name, str(model.get("auth_type")) if model.get("auth_type") else None
 

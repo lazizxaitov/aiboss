@@ -26,7 +26,20 @@ LIVE_SYNC_STATUS_KEY = "smartup:live_sync_status:v1"
 
 class SmartUpLiveSyncStatus(BaseModel):
     enabled: bool = True
-    status: Literal["idle", "running", "success", "warning", "error"] = "idle"
+    status: Literal[
+        "not_configured",
+        "initial_sync_required",
+        "initial_sync_running",
+        "ready",
+        "live_sync_running",
+        "retry_wait",
+        "error",
+        # Compatibility for statuses persisted by older builds.
+        "idle",
+        "running",
+        "success",
+        "warning",
+    ] = "idle"
     last_started_at: datetime | None = None
     last_completed_at: datetime | None = None
     last_success_at: datetime | None = None
@@ -65,13 +78,6 @@ class SmartUpLiveSyncService:
     def start(self) -> None:
         if not settings.smartup_live_sync_enabled or self._thread is not None:
             return
-        current = self.status()
-        if current.status == "running":
-            self._save(current.model_copy(update={
-                "status": "idle",
-                "next_run_at": self._next_scheduled_run(datetime.now(UTC)),
-                "message": "Автосинхронизация ожидает ближайшего запуска по расписанию.",
-            }))
         self._thread = Thread(target=self._run_loop, name="smartup-live-sync", daemon=True)
         self._thread.start()
 
@@ -82,9 +88,22 @@ class SmartUpLiveSyncService:
             self._thread = None
 
     def _run_loop(self) -> None:
+        self._run_startup_reconciliation()
         last_trigger: str | None = None
         while not self._stop.wait(30):
             now = datetime.now(UTC)
+            current = self.status()
+            if current.status == "not_configured" and self._configured_organizations():
+                self._run_startup_reconciliation()
+                continue
+            if current.status in {"retry_wait", "initial_sync_required"} and current.next_run_at and current.next_run_at <= now:
+                mode = (
+                    SmartUpMigrationMode.FULL_BACKFILL
+                    if self._initial_sync_required()
+                    else SmartUpMigrationMode.WEEKLY_RECONCILIATION
+                )
+                self.run_once(mode, initial=mode == SmartUpMigrationMode.FULL_BACKFILL)
+                continue
             local_now = now.astimezone(ZoneInfo("Asia/Tashkent"))
             for scheduled in self._schedule_times():
                 if local_now.hour == scheduled.hour and local_now.minute == scheduled.minute:
@@ -93,6 +112,48 @@ class SmartUpLiveSyncService:
                         last_trigger = trigger_key
                         self.run_once(SmartUpMigrationMode.ONE_DAY_CHECK)
                     break
+
+    def _run_startup_reconciliation(self) -> None:
+        organizations = self._configured_organizations()
+        if not organizations:
+            self._save(SmartUpLiveSyncStatus(
+                enabled=settings.smartup_live_sync_enabled,
+                status="not_configured",
+                next_run_at=None,
+                message="SmartUp не настроен.",
+            ))
+            return
+
+        initial = self._initial_sync_required()
+        self._save(self.status().model_copy(update={
+            "status": "initial_sync_required" if initial else "ready",
+            "next_run_at": datetime.now(UTC),
+            "message": (
+                "Требуется первичная синхронизация SmartUp."
+                if initial
+                else "SmartUp подключён. Данные готовы к обновлению."
+            ),
+        }))
+        self.run_once(
+            SmartUpMigrationMode.FULL_BACKFILL if initial else SmartUpMigrationMode.WEEKLY_RECONCILIATION,
+            initial=initial,
+        )
+
+    def _configured_organizations(self):
+        service = SmartUpAccountService(self.store)
+        organizations = service.list_organizations()
+        if not organizations:
+            return []
+        if any(not service.resolve_organization_auth(item).credentials_available for item in organizations):
+            return []
+        return organizations
+
+    def _initial_sync_required(self) -> bool:
+        organizations = self._configured_organizations()
+        return bool(organizations) and any(
+            item.last_sync_at is None or self.store.get_canonical_organization(item.id) is None
+            for item in organizations
+        )
 
     @staticmethod
     def _schedule_times() -> list[time]:
@@ -125,29 +186,39 @@ class SmartUpLiveSyncService:
             microsecond=0,
         ).astimezone(UTC)
 
-    def run_once(self, mode: SmartUpMigrationMode = SmartUpMigrationMode.ONE_DAY_CHECK) -> None:
+    def run_once(
+        self,
+        mode: SmartUpMigrationMode = SmartUpMigrationMode.ONE_DAY_CHECK,
+        *,
+        initial: bool = False,
+    ) -> bool:
         if SMARTUP_MIGRATION_LOCK.locked():
             current = self.status()
             self._save(current.model_copy(update={
+                "status": "initial_sync_required" if initial else "ready",
                 "skipped_due_to_running": True,
-                "message": "Синхронизация пропущена: предыдущий запуск ещё выполняется.",
-                "next_run_at": self._next_scheduled_run(datetime.now(UTC)),
+                "message": "Синхронизация уже выполняется. Автозапуск продолжится после её завершения.",
+                "next_run_at": datetime.now(UTC) + timedelta(seconds=30),
             }))
-            return
+            return False
 
         now = datetime.now(UTC)
         window_days = 7 if mode == SmartUpMigrationMode.WEEKLY_RECONCILIATION else 2
         self._save(SmartUpLiveSyncStatus(
             enabled=True,
-            status="running",
+            status="initial_sync_running" if initial else "live_sync_running",
             last_started_at=now,
             next_run_at=self._next_scheduled_run(now),
             last_mode=mode,
-            message="Синхронизация SmartUp выполняется.",
+            message="Первичная синхронизация SmartUp. Загружаем данные..." if initial else "Обновляем данные SmartUp...",
         ))
         payload = SmartUpAuthPayload(
             migration_mode=mode,
-            history_start=now - timedelta(days=window_days),
+            history_start=(
+                None
+                if mode == SmartUpMigrationMode.FULL_BACKFILL
+                else now - timedelta(days=window_days)
+            ),
             history_end=now,
         )
         job = SmartUpAccountService(self.store).start_migration_job(payload)
@@ -157,18 +228,20 @@ class SmartUpLiveSyncService:
 
         if job.status != "completed" or job.result is None:
             self._save(self.status().model_copy(update={
-                "status": "error",
+                "status": "retry_wait",
                 "last_completed_at": datetime.now(UTC),
                 "errors_count": 1,
-                "message": job.error or "Синхронизация SmartUp завершилась с ошибкой.",
+                "next_run_at": datetime.now(UTC) + timedelta(seconds=60),
+                "message": "Временно нет связи со SmartUp. Используются последние сохранённые данные. Повторное подключение выполняется автоматически.",
             }))
-            return
+            return False
 
         result = job.result
         errors = len(result.batch_errors) + result.summary.errors
         completed_at = datetime.now(UTC)
+        next_status = "retry_wait" if errors else "ready"
         self._save(self.status().model_copy(update={
-            "status": "warning" if errors else "success",
+            "status": next_status,
             "last_completed_at": completed_at,
             "last_success_at": completed_at if not errors else self.status().last_success_at,
             "organizations_processed": result.organizations_count,
@@ -177,14 +250,23 @@ class SmartUpLiveSyncService:
             "canonical_updated": True,
             "errors_count": errors,
             "skipped_due_to_running": False,
-            "message": result.message,
+            "next_run_at": (
+                completed_at + timedelta(seconds=60)
+                if errors
+                else self._next_scheduled_run(completed_at)
+            ),
+            "message": (
+                "Синхронизация завершена не для всех организаций. Повторяем автоматически."
+                if errors
+                else "SmartUp подключён. Данные актуальны."
+            ),
         }))
-        if result.counters.get("records", 0) > 0:
-            try:
-                asyncio.run(AutoBusinessAnalyticsService(self.store).run_if_due(after_sync=True))
-            except Exception:  # noqa: BLE001
-                # Data sync remains successful even if optional AI refresh fails.
-                pass
+        try:
+            asyncio.run(AutoBusinessAnalyticsService(self.store).run_if_due(after_sync=True))
+        except Exception:  # noqa: BLE001
+            # Data sync remains successful even if optional AI refresh fails.
+            pass
+        return not errors
 
     def _save(self, status: SmartUpLiveSyncStatus) -> None:
         from app.core.data_layer.entities import AppSetting

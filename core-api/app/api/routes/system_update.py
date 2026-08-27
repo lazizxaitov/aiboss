@@ -14,8 +14,8 @@ from app.core.system_update import SystemUpdateService
 router = APIRouter(prefix="/system/update")
 
 
-def require_owner(authorization: str | None) -> None:
-    if _session(_token_from_request(None, authorization)) is None:
+def require_owner(authorization: str | None, store: CoreDataStore) -> None:
+    if _session(_token_from_request(None, authorization), store) is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Сессия недействительна")
 
 
@@ -24,7 +24,7 @@ def update_status(
     store: Annotated[CoreDataStore, Depends(get_core_store)],
     authorization: str | None = Header(default=None),
 ) -> dict[str, object]:
-    require_owner(authorization)
+    require_owner(authorization, store)
     try:
         return SystemUpdateService(store).status()
     except Exception as exc:  # noqa: BLE001
@@ -36,7 +36,7 @@ def install_update(
     store: Annotated[CoreDataStore, Depends(get_core_store)],
     authorization: str | None = Header(default=None),
 ) -> dict[str, object]:
-    require_owner(authorization)
+    require_owner(authorization, store)
     return SystemUpdateService(store).start_install().model_dump(mode="json")
 
 
@@ -46,7 +46,7 @@ def update_job(
     store: Annotated[CoreDataStore, Depends(get_core_store)],
     authorization: str | None = Header(default=None),
 ) -> dict[str, object]:
-    require_owner(authorization)
+    require_owner(authorization, store)
     job = SystemUpdateService(store).get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Задача обновления не найдена")

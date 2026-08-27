@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from app.core.data_layer.contracts import CoreDataStore
 from app.core.data_layer.entities import AppSetting
 from app.core.organization_context import OrganizationContextService
+from app.core.owner_profile import OwnerProfileService
 
 AI_CONVERSATION_INDEX_KEY = "ai_conversations:index:v1"
 AI_CONVERSATION_KEY_PREFIX = "ai_conversations:conversation:v1:"
@@ -295,6 +296,7 @@ class AIConversationService:
                 f"{period_text} ({context.period_context.date_from.isoformat()}.."
                 f"{context.period_context.date_to.isoformat()})"
             )
+        profile_context = self._owner_profile_context(conversation.user_id or "owner")
         return (
             "Ты AI-ассистент AI Business OS.\n"
             "Работай только с текущим диалогом пользователя и доступными данными AI Business OS.\n"
@@ -310,8 +312,18 @@ class AIConversationService:
             "Answer in the user's language and keep the answer grounded in tool results.\n"
             f"Current organization context: {organization_text}.\n"
             f"Current period context: {period_text}.\n"
+            f"{profile_context}"
             f"Conversation id: {conversation.conversation_id}."
         )
+
+    def _owner_profile_context(self, owner_id: str) -> str:
+        profile = OwnerProfileService(self.store).load(owner_id)
+        parts: list[str] = []
+        if profile.name:
+            parts.append(f"Owner name: {profile.name}")
+        if profile.about:
+            parts.append(f"Owner preferences and background: {profile.about}")
+        return ("Owner profile context: " + " | ".join(parts) + ".\n") if parts else ""
 
     def build_hermes_messages(
         self,

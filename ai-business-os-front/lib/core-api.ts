@@ -572,7 +572,18 @@ export type SmartUpMigrationStatus = "pending" | "running" | "completed" | "fail
 
 export type SmartUpLiveSyncStatus = {
   enabled: boolean;
-  status: "idle" | "running" | "success" | "warning" | "error";
+  status:
+    | "not_configured"
+    | "initial_sync_required"
+    | "initial_sync_running"
+    | "ready"
+    | "live_sync_running"
+    | "retry_wait"
+    | "error"
+    | "idle"
+    | "running"
+    | "success"
+    | "warning";
   last_started_at: string | null;
   last_completed_at: string | null;
   last_success_at: string | null;
@@ -851,6 +862,8 @@ export type SystemUpdateJob = {
   message: string;
   current_version: string | null;
   target_version: string | null;
+  previous_commit: string | null;
+  target_commit: string | null;
   error: string | null;
 };
 

@@ -222,13 +222,13 @@ export default function Page() {
             <div className="flex flex-wrap items-center gap-3">
               <div className="rounded-2xl border border-[#3a3d43] bg-[#343840] px-4 py-3">
                 <div className="flex items-center gap-2">
-                  <span className={`h-2.5 w-2.5 rounded-full ${liveSync?.status === "running" ? "bg-yellow-300" : liveSync?.status === "success" ? "bg-emerald-400" : liveSync?.status === "error" ? "bg-rose-400" : "bg-slate-500"}`} />
+                  <span className={`h-2.5 w-2.5 rounded-full ${liveSync?.status === "initial_sync_required" || liveSync?.status === "initial_sync_running" || liveSync?.status === "live_sync_running" || liveSync?.status === "running" || liveSync?.status === "retry_wait" ? "bg-yellow-300" : liveSync?.status === "ready" || liveSync?.status === "success" ? "bg-emerald-400" : liveSync?.status === "error" ? "bg-rose-400" : "bg-slate-500"}`} />
                   <p className="text-sm font-medium text-slate-200">
-                    {liveSync?.status === "running" ? "Live-синхронизация выполняется" : liveSync?.status === "success" ? "Live-синхронизация активна" : liveSync?.status === "error" ? "Ошибка live-синхронизации" : "Статус live-синхронизации загружается"}
+                    {liveSync?.status === "not_configured" ? "SmartUp не настроен" : liveSync?.status === "initial_sync_required" || liveSync?.status === "initial_sync_running" ? "Первичная синхронизация SmartUp" : liveSync?.status === "live_sync_running" || liveSync?.status === "running" ? "Обновление данных SmartUp" : liveSync?.status === "retry_wait" ? "Временно нет связи со SmartUp" : liveSync?.status === "ready" || liveSync?.status === "success" ? "SmartUp подключён" : liveSync?.status === "error" ? "Ошибка подключения SmartUp" : "Статус SmartUp загружается"}
                   </p>
                 </div>
                 <p className="mt-1 text-xs text-slate-400">
-                  {liveSync?.last_success_at ? `Последний успех: ${formatDateTime(liveSync.last_success_at)}` : "Ожидание первого успешного запуска"}
+                  {liveSync?.status === "initial_sync_required" || liveSync?.status === "initial_sync_running" ? "Загружаем данные..." : liveSync?.status === "retry_wait" ? "Используются последние сохранённые данные. Повторное подключение выполняется автоматически." : liveSync?.last_success_at ? `Последний успех: ${formatDateTime(liveSync.last_success_at)}` : liveSync?.status === "not_configured" ? "Сохраните credentials и организации SmartUp" : "Ожидание автоматического запуска"}
                 </p>
               </div>
               <Link
@@ -395,6 +395,11 @@ function SystemUpdateCard() {
           <UpdateValue title="Последняя версия" value={systemStatus?.latest_version ?? "—"} />
           <UpdateValue title="Статус" value={systemStatus ? (systemStatus.update_available ? "Доступно обновление" : "Версия актуальна") : "Проверяется"} />
         </div>
+        {job?.previous_commit || job?.target_commit ? (
+          <p className="mt-3 text-xs text-slate-400">
+            Commit: текущий {job.current_version ?? "—"} · целевой {job.target_version ?? "—"}
+          </p>
+        ) : null}
         {systemStatus?.last_successful_update_at ? (
           <p className="mt-4 text-xs text-slate-400">Последнее успешное обновление: {formatDateTime(systemStatus.last_successful_update_at)}</p>
         ) : null}

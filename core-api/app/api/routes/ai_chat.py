@@ -506,7 +506,7 @@ async def chat(
 
     async def stream():
         conversation_service = AIConversationService(store)
-        session = _session(_token_from_request(None, authorization))
+        session = _session(_token_from_request(None, authorization), store)
         effective_user_id = request.user_id or (session.login if session is not None else None)
         shared_memory = SharedMemoryService(store)
         tools_service = HermesBusinessTools(store)

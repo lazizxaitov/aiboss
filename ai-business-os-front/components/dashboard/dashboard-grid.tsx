@@ -1030,21 +1030,21 @@ export function DashboardAssistantPanel() {
       .then(([providers, routing]) => {
         const nextModels = providers
           .filter((provider) => provider.status === "available" && provider.models.some((model) => model.available !== false))
-          .map((provider) => ({
-            providerId: provider.id,
-            name: provider.name,
-            models: provider.models.filter((model) => model.available !== false),
-            icon: providerIconKey(provider.id),
-          }));
+          .flatMap((provider) => provider.models
+            .filter((model) => model.available !== false)
+            .map((model) => ({
+              providerId: provider.id,
+              name: model.name,
+              models: [model],
+              icon: providerIconKey(provider.id),
+            })));
         setAvailableModels(nextModels);
         const chatAssignment = routing.config.roles.ai_chat;
         const assignedIndex = chatAssignment?.primary_provider_id
-          ? nextModels.findIndex((model) => model.providerId === chatAssignment.primary_provider_id)
+          ? nextModels.findIndex((model) => model.providerId === chatAssignment.primary_provider_id && model.models.some((item) => item.id === chatAssignment.primary_model_id))
           : -1;
         const nextIndex = assignedIndex >= 0 ? assignedIndex : 0;
-        const assignedModel = nextModels[nextIndex]?.models.find(
-          (model) => model.id === chatAssignment?.primary_model_id,
-        );
+        const assignedModel = nextModels[nextIndex]?.models[0];
         setSelectedModel(nextIndex);
         setSelectedModelId(assignedModel?.id ?? nextModels[nextIndex]?.models[0]?.id);
       })

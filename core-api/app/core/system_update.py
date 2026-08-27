@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import time
@@ -40,6 +41,8 @@ class SystemUpdateJob(BaseModel):
     message: str = "Проверка обновления"
     current_version: str | None = None
     target_version: str | None = None
+    previous_commit: str | None = None
+    target_commit: str | None = None
     error: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -92,12 +95,25 @@ class SystemUpdateService:
         try:
             self._assert_clean_worktree()
             rollback_commit = self._git_version("HEAD", short=False)
+            job.previous_commit = rollback_commit
             job.current_version = self._short(rollback_commit)
-            self._update(job, stage="downloading", message="Загрузка последней версии из GitHub")
+            self._update(job, stage="downloading", message="Получение последней версии из GitHub")
             self._run_git(["fetch", "origin", "main"], REPOSITORY_ROOT)
             target_commit = self._git_version("origin/main", short=False)
+            job.target_commit = target_commit
             job.target_version = self._short(target_commit)
             self._run_git(["reset", "--hard", "origin/main"], REPOSITORY_ROOT)
+            current_commit = self._git_version("HEAD", short=False)
+            origin_commit = self._git_version("origin/main", short=False)
+            if current_commit != target_commit or current_commit != origin_commit:
+                raise RuntimeError(
+                    "После обновления локальный HEAD не совпадает с origin/main: "
+                    f"HEAD={self._short(current_commit)}, "
+                    f"origin/main={self._short(origin_commit)}, "
+                    f"target={self._short(target_commit)}"
+                )
+            job.current_version = self._short(current_commit)
+            self._update(job, stage="downloading", message="Локальная ветка синхронизирована с origin/main")
             self._update(job, stage="backend_dependencies", message="Обновление зависимостей backend")
             self._run_command(["uv", "sync"], BACKEND_DIRECTORY)
             self._update(job, stage="frontend_dependencies", message="Обновление зависимостей frontend")
@@ -116,9 +132,9 @@ class SystemUpdateService:
             job.message = "Обновление установлено"
             self._update(job)
             self._save_state({"last_successful_update_at": datetime.now(UTC).isoformat(), "version": job.target_version})
-            self._restart_services(open_app=True)
             if app_backup:
                 self._remove_app_backup(app_backup)
+            self._restart_services(open_app=True)
         except Exception as exc:  # noqa: BLE001
             job.error = str(exc)
             if app_backup:
@@ -135,6 +151,13 @@ class SystemUpdateService:
                 return
             try:
                 self._run_git(["reset", "--hard", rollback_commit], REPOSITORY_ROOT)
+                restored_commit = self._git_version("HEAD", short=False)
+                if restored_commit != rollback_commit:
+                    raise RuntimeError(
+                        "После rollback HEAD не совпадает с предыдущим commit: "
+                        f"{self._short(restored_commit)} != {self._short(rollback_commit)}"
+                    )
+                job.current_version = self._short(restored_commit)
                 self._run_command(["uv", "sync"], BACKEND_DIRECTORY)
                 self._run_command(["npm", "ci"], FRONTEND_DIRECTORY)
                 self._run_command(["npm", "run", "build"], FRONTEND_DIRECTORY)
@@ -291,16 +314,16 @@ class SystemUpdateService:
     @staticmethod
     def _restart_services(*, open_app: bool) -> None:
         uid = str(os.getuid())
-        subprocess.run(["launchctl", "kickstart", "-k", f"gui/{uid}/com.aiboss.frontend"], capture_output=True, text=True, timeout=30, check=True)
+        frontend_label = f"gui/{uid}/com.aiboss.frontend"
+        backend_label = f"gui/{uid}/com.aiboss.backend"
+        commands = [f"launchctl kickstart -k {frontend_label}", "sleep 2"]
         if open_app:
-            subprocess.run(["osascript", "-e", 'tell application "AI Business OS" to quit'], capture_output=True, text=True, timeout=30, check=False)
-            subprocess.run(["open", INSTALLED_APP], capture_output=True, text=True, timeout=30, check=True)
-            deadline = time.monotonic() + 30
-            while time.monotonic() < deadline:
-                process = subprocess.run(["pgrep", "-x", "AI Business OS"], capture_output=True, text=True, timeout=5, check=False)
-                if process.returncode == 0:
-                    break
-                time.sleep(0.5)
-            else:
-                raise RuntimeError("Новая версия AI Business OS.app не запустилась")
-        subprocess.run(["launchctl", "kickstart", "-k", f"gui/{uid}/com.aiboss.backend"], capture_output=True, text=True, timeout=30, check=True)
+            # Open the shell as soon as Next is started; its bundled splash waits for backend health.
+            commands.extend([f"open {shlex.quote(INSTALLED_APP)}", "sleep 1"])
+        commands.append(f"launchctl kickstart -k {backend_label}")
+        subprocess.Popen(
+            ["/bin/sh", "-c", "; ".join(commands)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )

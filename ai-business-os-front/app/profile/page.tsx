@@ -29,11 +29,32 @@ export default function ProfilePage() {
     setName(localStorage.getItem("aibos_profile_name") ?? "");
     setAbout(localStorage.getItem("aibos_profile_about") ?? "");
     setPhoto(localStorage.getItem("aibos_profile_photo"));
+    const sessionToken = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("aibos_owner_session="))?.split("=").slice(1).join("=");
+    if (sessionToken) {
+      void fetch(`${coreApiUrl}/api/v1/auth/profile`, {
+        headers: { Authorization: `Bearer ${decodeURIComponent(sessionToken)}` },
+        cache: "no-store",
+      }).then((response) => response.ok ? response.json() : null).then((profile) => {
+        if (!profile) return;
+        setName(profile.name ?? "");
+        setAbout(profile.about ?? "");
+        localStorage.setItem("aibos_profile_name", profile.name ?? "");
+        localStorage.setItem("aibos_profile_about", profile.about ?? "");
+      }).catch(() => undefined);
+    }
   }, []);
 
   const saveAbout = () => {
     localStorage.setItem("aibos_profile_name", name);
     localStorage.setItem("aibos_profile_about", about);
+    const token = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("aibos_owner_session="))?.split("=").slice(1).join("=");
+    if (token) {
+      void fetch(`${coreApiUrl}/api/v1/auth/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${decodeURIComponent(token)}` },
+        body: JSON.stringify({ name, about }),
+      }).catch(() => undefined);
+    }
     window.dispatchEvent(new Event("aibos-profile-updated"));
     setNotice("Профиль сохранён");
   };
