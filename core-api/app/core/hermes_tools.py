@@ -106,6 +106,7 @@ class HermesBusinessTools:
         period: str | None = None,
         group_by: str,
         metrics: list[str] | None = None,
+        filters: dict | None = None,
         date_from: date | None = None,
         date_to: date | None = None,
         limit: int = 100,
@@ -140,6 +141,8 @@ class HermesBusinessTools:
         requested = self._normalize_metrics(metrics)
         items = []
         for row in rows:
+            if not self._aggregation_row_matches(row, dimension, filters):
+                continue
             normalized = self._serialize_aggregation_row(row, dimension, requested)
             if normalized is not None:
                 items.append(normalized)
@@ -178,7 +181,7 @@ class HermesBusinessTools:
     ) -> dict:
         query = self._build_query(organization_id=organization_id, period=period)
         report = BusinessAnalyticsEngine(self.store).build_products(query)
-        items = self._sort_items(self._filter_items(report.items, filters), sort, (
+        items = self._sort_items(self._filter_products_by_manager(report.items, filters), sort, (
             "revenue", "sold_units", "sales_velocity_30d", "current_stock",
         ))
         return self._domain_result("products", query, items[:self._safe_limit(limit)], report.data_quality, {
@@ -258,6 +261,7 @@ class HermesBusinessTools:
         selected = set(query.organization_ids)
         sources = {
             "product": (self.store.list_canonical_products(), lambda item: {item.name, item.code, item.product_id}),
+            "category": (self.store.list_canonical_product_categories(), lambda item: {item.name, item.code, item.group_id}),
             "customer": (self.store.list_canonical_customers(), lambda item: {item.name, item.code, item.person_id}),
             "manager": (self.store.list_canonical_sales_reps(), lambda item: {item.sales_manager_name, item.sales_manager_code, item.sales_manager_id}),
             "warehouse": (self.store.list_canonical_warehouses(), lambda item: {item.warehouse_name, item.warehouse_code, item.warehouse_id}),
@@ -346,6 +350,39 @@ class HermesBusinessTools:
             if matches:
                 result.append(item)
         return result
+
+    def _filter_products_by_manager(self, items: list, filters: dict | None) -> list:
+        if not isinstance(filters, dict) or not filters.get("manager_id"):
+            return self._filter_items(items, filters)
+        manager_id = str(filters["manager_id"])
+        product_ids = self._product_ids_for_manager(manager_id)
+        remaining = {key: value for key, value in filters.items() if key != "manager_id"}
+        filtered = [item for item in items if item.product_external_id in product_ids]
+        return self._filter_items(filtered, remaining)
+
+    def _product_ids_for_manager(self, manager_id: str) -> set[str]:
+        reps = [item for item in self.store.list_canonical_sales_reps()
+                if manager_id in {str(item.id), item.sales_manager_id, item.sales_manager_code}]
+        rep_ids = {item.sales_manager_id for item in reps} | {item.sales_manager_code for item in reps}
+        sale_ids = {sale.id for sale in self.store.list_canonical_sales()
+                     if sale.sales_rep_external_id in rep_ids or str(sale.sales_rep_id) == manager_id}
+        return {item.product_external_id for item in self.store.list_canonical_sale_items()
+                if item.sale_id in sale_ids and item.product_external_id}
+
+    def _aggregation_row_matches(self, row, dimension: str, filters: dict | None) -> bool:
+        if not isinstance(filters, dict):
+            return True
+        expected = filters.get({"sales_rep": "manager_id", "customer": "customer_id", "product": "product_id"}.get(dimension, "id"))
+        if dimension == "product" and filters.get("manager_id"):
+            return row.key in self._product_ids_for_manager(str(filters["manager_id"]))
+        if expected is None:
+            return self._filter_items([row], filters) != []
+        expected_values = {str(expected)} if not isinstance(expected, list) else {str(value) for value in expected}
+        if dimension == "sales_rep":
+            matches = [item for item in self.store.list_canonical_sales_reps()
+                       if str(item.id) in expected_values or item.sales_manager_id in expected_values or item.sales_manager_code in expected_values]
+            return any(row.key in {item.sales_manager_id, item.sales_manager_code} for item in matches)
+        return row.key in expected_values
 
     def _sort_items(self, items: list, sort: str, allowed: tuple[str, ...]) -> list:
         key = sort if sort in allowed else allowed[0]

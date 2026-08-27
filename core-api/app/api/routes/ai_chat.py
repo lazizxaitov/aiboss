@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from logging import getLogger
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -32,6 +33,7 @@ from app.core.hermes_tools import HermesBusinessTools
 from app.core.organization_context import OrganizationContextService
 
 router = APIRouter(prefix="/ai")
+logger = getLogger(__name__)
 
 
 class ChatMessage(BaseModel):
@@ -154,6 +156,7 @@ def _tool_definitions() -> list[dict[str, object]]:
                     "properties": {
                         "organization_id": {"type": ["string", "null"]},
                         "period": {"type": ["string", "null"]},
+                        "filters": {"type": ["object", "null"], "description": "Canonical entity filters such as manager_id, customer_id or product_id."},
                         "group_by": {
                             "type": "string",
                             "enum": ["manager", "seller", "employee", "organization", "filial", "product", "category", "client", "customer", "date", "day", "week", "month"],
@@ -248,7 +251,7 @@ def _tool_definitions() -> list[dict[str, object]]:
                 "name": "search_entities",
                 "description": "Read-only search across canonical products, customers, managers, warehouses, organizations and filials.",
                 "parameters": {"type": "object", "properties": {
-                    "entity_type": {"type": "string", "enum": ["product", "customer", "manager", "seller", "employee", "warehouse", "filial", "organization"]},
+                    "entity_type": {"type": "string", "enum": ["product", "category", "customer", "manager", "seller", "employee", "warehouse", "filial", "organization"]},
                     "search": {"type": "string"}, "organization_id": {"type": ["string", "null"]}, "limit": {"type": "integer", "default": 20},
                 }, "required": ["entity_type", "search"], "additionalProperties": False},
             },
@@ -439,6 +442,30 @@ def _tool_message(tool_call_id: str, result: object) -> dict[str, str]:
     }
 
 
+def _resolved_entities_from_search(result: object, arguments: dict[str, object]) -> list[dict[str, str]]:
+    if not isinstance(result, dict) or result.get("domain") != "entity_search":
+        return []
+    rows = result.get("data")
+    if not isinstance(rows, list):
+        return []
+    entity_type = str(arguments.get("entity_type") or "")
+    entities: list[dict[str, str]] = []
+    for row in rows[:20]:
+        if not isinstance(row, dict):
+            continue
+        entity_id = row.get("id")
+        display_name = row.get("name")
+        if entity_type in {"manager", "seller", "employee"}:
+            entity_id = row.get("sales_manager_id") or row.get("sales_manager_code") or entity_id
+            display_name = row.get("sales_manager_name") or display_name
+        elif entity_type == "warehouse":
+            entity_id = row.get("warehouse_id") or row.get("warehouse_code") or entity_id
+            display_name = row.get("warehouse_name") or display_name
+        if entity_id and display_name:
+            entities.append({"type": entity_type, "id": str(entity_id), "display_name": str(display_name)})
+    return entities
+
+
 async def _hermes_request(
     *,
     messages: list[dict[str, object]],
@@ -592,6 +619,7 @@ async def _resolve_tool_result(
             period=period,
             group_by=str(arguments.get("group_by") or ""),
             metrics=metrics,
+            filters=arguments.get("filters") if isinstance(arguments.get("filters"), dict) else None,
             limit=limit,
         )
     if tool_name == "query_inventory":
@@ -752,6 +780,7 @@ async def chat(
             target_channel=resolved_target_channel,
         )
         last_user_text = _message_text(last_user_message.content) if last_user_message is not None else ""
+        logger.info("AI business request: question_length=%s period=%s organization_id=%s", len(last_user_text), request.period, request.organization_id)
         try:
             business_context = tools_service.build_business_context(
                 last_user_text,
@@ -798,7 +827,7 @@ async def chat(
             if response is None:
                 yield _event({"message": "Не удалось выполнить задачу ни через основной, ни через резервный provider."}, "error")
                 return
-            for _ in range(3):
+            for _ in range(6):
                 if response.status_code >= 400:
                     detail = response.text
                     yield _event({"message": detail or "Hermes вернул ошибку."}, "error")
@@ -829,6 +858,18 @@ async def chat(
                         widget_builder,
                         router,
                     )
+                    if tool_name == "search_entities":
+                        resolved_entities = _resolved_entities_from_search(tool_result, _tool_arguments(tool_call))
+                        logger.info("AI entity resolution: entities=%s", resolved_entities)
+                        conversation = conversation_service.remember_entities(
+                            conversation,
+                            resolved_entities,
+                        )
+                    result_rows = tool_result.get("data") if isinstance(tool_result, dict) else None
+                    if isinstance(result_rows, list):
+                        logger.info("AI business tool: name=%s rows=%s", tool_name, len(result_rows))
+                    else:
+                        logger.info("AI business tool: name=%s", tool_name)
                     messages.append(_tool_message(str(tool_call.get("id")), tool_result))
                 response = await _hermes_request(
                     messages=messages,

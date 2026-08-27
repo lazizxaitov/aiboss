@@ -54,6 +54,7 @@ class AIConversationState(BaseModel):
     organization_id: UUID | None = None
     period: str | None = None
     messages: list[AIConversationMessage] = Field(default_factory=list)
+    resolved_entities: list[dict[str, str]] = Field(default_factory=list)
     source_channel: AIConversationChannel = AIConversationChannel.WEB
     target_channel: AIConversationTargetChannel | None = None
     telegram_chat_id: str | None = None
@@ -297,12 +298,24 @@ class AIConversationService:
                 f"{context.period_context.date_to.isoformat()})"
             )
         profile_context = self._owner_profile_context(conversation.user_id or "owner")
+        entity_context = ""
+        if conversation.resolved_entities:
+            entity_context = (
+                "Resolved business entities from this conversation (reuse their IDs for follow-up requests): "
+                + ", ".join(
+                    f"{item.get('type')}={item.get('id')} ({item.get('display_name')})"
+                    for item in conversation.resolved_entities[-10:]
+                )
+                + ".\n"
+            )
         return (
             "Ты AI-ассистент AI Business OS.\n"
             "Работай только с текущим диалогом пользователя и доступными данными AI Business OS.\n"
             "Не продолжай темы из других чатов или каналов. Не упоминай Telegram, файлы или другие сессии, если пользователь сам не спрашивает о них.\n"
             "Use ONLY the provided business data tools when the user asks about revenue, orders, sales, top products, "
             "business comparisons, organizations, current attention, or dashboard actions.\n"
+            "For a named business entity, first use search_entities, then pass the resolved canonical ID to the next data tool. "
+            "If search returns multiple matches, ask the user to choose and do not guess. Reuse resolved entity context for pronouns in follow-up questions.\n"
             "Do not request or reveal SQL, PostgreSQL, raw SmartUp payloads, terminal/file/system access, or secrets.\n"
             "If the user does not specify organization or period, rely on the current AI Business OS context.\n"
             "If the user explicitly asks to answer in the web chat or Telegram, respect that delivery target.\n"
@@ -313,8 +326,25 @@ class AIConversationService:
             f"Current organization context: {organization_text}.\n"
             f"Current period context: {period_text}.\n"
             f"{profile_context}"
+            f"{entity_context}"
             f"Conversation id: {conversation.conversation_id}."
         )
+
+    def remember_entities(self, conversation: AIConversationState, entities: list[dict[str, str]]) -> AIConversationState:
+        """Persist only safe type/id/display-name resolution context for follow-ups."""
+        existing = {(item.get("type"), item.get("id")): item for item in conversation.resolved_entities}
+        for entity in entities:
+            entity_type = str(entity.get("type") or "")
+            entity_id = str(entity.get("id") or "")
+            display_name = str(entity.get("display_name") or "")
+            if entity_type and entity_id and display_name:
+                existing[(entity_type, entity_id)] = {
+                    "type": entity_type,
+                    "id": entity_id,
+                    "display_name": display_name,
+                }
+        conversation.resolved_entities = list(existing.values())[-20:]
+        return self.save_conversation(conversation)
 
     def _owner_profile_context(self, owner_id: str) -> str:
         profile = OwnerProfileService(self.store).load(owner_id)
