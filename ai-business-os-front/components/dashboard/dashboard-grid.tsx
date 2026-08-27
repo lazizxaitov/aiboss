@@ -249,6 +249,7 @@ type WidgetCatalogItem = {
 };
 
 const CUSTOM_WIDGETS_STORAGE_KEY = "ai-business-os:dashboard-custom-widgets:v1";
+const CHAT_STATE_STORAGE_KEY = "ai-business-os:dashboard-chat:v1";
 const ALL_WIDGET_TYPES: DashboardWidgetType[] = [
   "kpi",
   "trend",
@@ -988,7 +989,7 @@ const FALLBACK_DASHBOARD_WIDGETS: DashboardManifestWidget[] = [
   }),
 ];
 
-export function DashboardAssistantPanel() {
+export function DashboardAssistantPanel({ floating = false }: { floating?: boolean }) {
   const { state: businessState } = useBusinessContext();
   const [expanded, setExpanded] = useState(false);
   const [conversationId, setConversationId] = useState(createConversationId);
@@ -1006,10 +1007,31 @@ export function DashboardAssistantPanel() {
   const messageInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const chatSurfaceRef = useRef<HTMLDivElement | null>(null);
+  const assistantRootRef = useRef<HTMLDivElement | null>(null);
   const chatThreadRef = useRef<HTMLDivElement | null>(null);
   const modelScrollerRef = useRef<HTMLDivElement | null>(null);
   const modelDragRef = useRef({ active: false, moved: false, startX: 0, scrollLeft: 0, lastX: 0, velocity: 0 });
   const modelMomentumRef = useRef<number | null>(null);
+  const chatStateHydrated = useRef(false);
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(CHAT_STATE_STORAGE_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored) as { conversationId?: string; messages?: ChatMessage[] };
+        if (typeof parsed.conversationId === "string" && parsed.conversationId) setConversationId(parsed.conversationId);
+        if (Array.isArray(parsed.messages)) setChatMessages(parsed.messages);
+      }
+    } catch {
+      // Ignore corrupt local chat state and start a clean conversation.
+    }
+    chatStateHydrated.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (!chatStateHydrated.current) return;
+    window.localStorage.setItem(CHAT_STATE_STORAGE_KEY, JSON.stringify({ conversationId, messages: chatMessages }));
+  }, [conversationId, chatMessages]);
 
   useEffect(() => {
     void getDashboardAIInsights()
@@ -1093,7 +1115,7 @@ export function DashboardAssistantPanel() {
     const handleOutsidePointerDown = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node)) return;
-      if (chatSurfaceRef.current?.contains(target)) return;
+      if (assistantRootRef.current?.contains(target)) return;
       setExpanded(false);
     };
 
@@ -1263,7 +1285,7 @@ export function DashboardAssistantPanel() {
     void handleSendMessage(prompt, [], taskType);
   };
 
-  const handleBackToStart = () => {
+  const handleEndConversation = () => {
     setChatMessages([]);
     setConversationId(createConversationId());
     setMessage("");
@@ -1274,8 +1296,22 @@ export function DashboardAssistantPanel() {
     });
   };
 
+  if (floating && !expanded) {
+    return (
+      <button
+        type="button"
+        onClick={() => setExpanded(true)}
+        className="fixed bottom-6 right-6 z-50 flex h-14 w-14 items-center justify-center rounded-full border border-[#4a4e56] bg-[#FFF27A] text-[#1E1E21] shadow-[0_16px_40px_rgba(0,0,0,0.35)] transition hover:scale-105"
+        aria-label="Открыть чат с ИИ"
+        title="Открыть чат с ИИ"
+      >
+        <ChatTileIcon kind="chat" />
+      </button>
+    );
+  }
+
   return (
-    <div className="flex min-h-0 flex-col gap-3 xl:sticky xl:top-[6.5rem] xl:h-[calc(100dvh-8rem)]">
+    <div ref={assistantRootRef} className={floating ? "fixed bottom-6 right-6 z-50 flex w-[min(420px,calc(100vw-2rem))] flex-col gap-3" : "flex min-h-0 flex-col gap-3 xl:sticky xl:top-[6.5rem] xl:h-[calc(100dvh-8rem)]"}>
       <div id="ai-chat" ref={chatSurfaceRef}>
         <Surface
           className={cn(
@@ -1311,7 +1347,7 @@ export function DashboardAssistantPanel() {
               <div className="flex items-center gap-4">
                 <button
                   type="button"
-                  onClick={handleBackToStart}
+                  onClick={() => setExpanded(false)}
                   className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-[#4a4e56] bg-[#343840] text-xl text-[#f4f7fb] transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] hover:border-[#FFF27A]/30 hover:text-[#FFF27A]"
                   aria-label="Назад"
                   title="Назад"
@@ -1330,6 +1366,13 @@ export function DashboardAssistantPanel() {
                       {activeModel.name}
                     </p>
                   </div>
+                  <button
+                    type="button"
+                    onClick={handleEndConversation}
+                    className="ml-auto shrink-0 rounded-full border border-[#4a4e56] px-3 py-2 text-[10px] uppercase tracking-[0.12em] text-slate-400 transition hover:border-[#FFF27A]/40 hover:text-[#FFF27A]"
+                  >
+                    Завершить диалог
+                  </button>
                 </div>
               </div>
             ) : (

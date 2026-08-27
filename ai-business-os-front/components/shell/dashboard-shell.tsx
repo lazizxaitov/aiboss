@@ -9,12 +9,15 @@ import { AppTopbar } from "@/components/shell/app-topbar";
 import { SessionLockGuard } from "@/components/auth/session-lock-guard";
 import { MobileInstallPrompt } from "@/components/pwa/mobile-install-prompt";
 import { MobileBottomNav } from "@/components/shell/mobile-bottom-nav";
+import { DashboardAssistantPanel } from "@/components/dashboard/dashboard-grid";
+import { usePathname } from "next/navigation";
 
 export function DashboardShell({
   children,
 }: Readonly<{
   children: ReactNode;
 }>) {
+  const pathname = usePathname();
   return (
     <Suspense fallback={null}>
       <SessionLockGuard>
@@ -31,6 +34,7 @@ export function DashboardShell({
           </div>
           <MobileBottomNav />
           <MobileInstallPrompt />
+          {pathname !== "/" ? <DashboardAssistantPanel floating /> : null}
         </BusinessContextProvider>
       </BusinessRefreshProvider>
       </SessionLockGuard>
