@@ -20,6 +20,119 @@ MAX_ROUNDS = 12
 MAX_TOOL_CALLS = 12
 
 
+def _tool_catalog(tools: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Expose descriptions and schemas, never Python tool implementations."""
+
+    catalog: list[dict[str, object]] = []
+    for item in tools:
+        function = item.get("function") if isinstance(item, dict) else None
+        if not isinstance(function, dict):
+            continue
+        catalog.append({
+            "name": function.get("name"),
+            "description": function.get("description"),
+            "arguments": function.get("parameters") or {"type": "object"},
+        })
+    return catalog
+
+
+def _structured_protocol_prompt(tools: list[dict[str, object]], *, repair: bool = False) -> str:
+    repair_text = "The previous output was invalid. Return valid JSON only.\n" if repair else ""
+    return (
+        "You are operating in AI Business OS agent mode.\n"
+        "Select your next action using only the supplied approved tool catalog.\n"
+        "Return ONLY valid JSON, without Markdown or explanation.\n"
+        "To inspect business data, return: {\"action\":\"tool\",\"tool\":\"<name>\",\"arguments\":{}}.\n"
+        "When sufficient verified evidence has been collected, return: {\"action\":\"final\",\"answer\":\"<answer>\"}.\n"
+        "Do not claim that business data or tools are unavailable before attempting a relevant tool.\n"
+        "The backend validates the selected tool and arguments; never select a provider or access SQL, RAW, files, or secrets.\n"
+        + repair_text
+        + "Approved tool catalog:\n"
+        + json.dumps(_tool_catalog(tools), ensure_ascii=False, default=str)
+    )
+
+
+def _parse_structured_action(
+    content: object,
+    tool_names: set[str],
+) -> tuple[dict[str, object] | None, str | None]:
+    """Parse and validate the model-selected structured action."""
+
+    if not isinstance(content, str) or not content.strip():
+        return None, "Модель не вернула JSON-действие."
+    text = content.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None, "Ответ structured agent не является корректным JSON."
+    if not isinstance(payload, dict):
+        return None, "Structured action должен быть JSON-объектом."
+    action = payload.get("action")
+    if action == "final":
+        answer = payload.get("answer")
+        if not isinstance(answer, str) or not answer.strip():
+            return None, "Final action должен содержать непустое поле answer."
+        return {"action": "final", "answer": answer}, None
+    if action != "tool":
+        return None, "Поле action должно быть tool или final."
+    tool_name = payload.get("tool")
+    arguments = payload.get("arguments", {})
+    if not isinstance(tool_name, str) or not tool_name:
+        return None, "Tool action должен содержать имя инструмента."
+    if not isinstance(arguments, dict):
+        return None, "Поле arguments должно быть JSON-объектом."
+    if tool_name not in tool_names:
+        return {
+            "action": "tool",
+            "tool": tool_name,
+            "arguments": arguments,
+            "approved": False,
+        }, None
+    return {"action": "tool", "tool": tool_name, "arguments": arguments, "approved": True}, None
+
+
+def _validate_tool_arguments(
+    tool_name: str,
+    arguments: dict[str, object],
+    tools: list[dict[str, object]],
+) -> str | None:
+    """Apply the catalog's top-level required/property contract before execution."""
+
+    definition = next(
+        (
+            item.get("function")
+            for item in tools
+            if isinstance(item, dict)
+            and isinstance(item.get("function"), dict)
+            and item["function"].get("name") == tool_name
+        ),
+        None,
+    )
+    if not isinstance(definition, dict):
+        return "Запрошен неизвестный или неразрешённый AI Business OS tool."
+    parameters = definition.get("parameters")
+    if not isinstance(parameters, dict):
+        return None
+    properties = parameters.get("properties")
+    if isinstance(properties, dict):
+        unknown = sorted(set(arguments) - set(properties))
+        if unknown:
+            return "Инструмент получил неизвестные аргументы: " + ", ".join(unknown)
+    required = parameters.get("required")
+    if isinstance(required, list):
+        missing = [name for name in required if isinstance(name, str) and name not in arguments]
+        if missing:
+            return "Инструменту не хватает обязательных аргументов: " + ", ".join(missing)
+    return None
+
+
 @dataclass(slots=True)
 class AIBusinessAgentResult:
     """Final result and metadata produced by the shared agent loop."""
@@ -121,8 +234,15 @@ class AIBusinessAgentService:
         total_tool_calls = 0
         rounds = 0
         evidence_retry_used = False
+        structured_mode = False
+        structured_repair_used = False
         business_request = _looks_business_related(user_text)
         tool_choice_for_round = "auto"
+        tool_names = {
+            str(item.get("function", {}).get("name"))
+            for item in tools
+            if isinstance(item, dict) and isinstance(item.get("function"), dict)
+        }
         logger.info(
             "AI_AGENT_START request_id=%s provider=%s model=%s organization=%s period=%s source=%s",
             request_id,
@@ -132,6 +252,7 @@ class AIBusinessAgentService:
             conversation.period,
             source_channel,
         )
+        logger.info("AI_AGENT_MODE request_id=%s mode=native", request_id)
 
         response = None
         for candidate in candidates:
@@ -162,6 +283,72 @@ class AIBusinessAgentService:
             if assistant_message is None:
                 raise ValueError("AI не вернул корректный ответ.")
             tool_calls = _parse_tool_calls(assistant_message)
+            structured_action: dict[str, object] | None = None
+            if structured_mode and not tool_calls:
+                structured_action, parse_error = _parse_structured_action(
+                    assistant_message.get("content"),
+                    tool_names,
+                )
+                if structured_action is None:
+                    if not structured_repair_used:
+                        structured_repair_used = True
+                        messages.append({"role": "assistant", "content": str(assistant_message.get("content") or "")})
+                        messages.append({
+                            "role": "system",
+                            "content": _structured_protocol_prompt(tools, repair=True)
+                            + "\nValidation error: " + str(parse_error),
+                        })
+                        response = await _hermes_request(
+                            messages=messages,
+                            tools=tools,
+                            stream=False,
+                            tool_choice="auto",
+                            model=str(runtime["model_id"]),
+                            provider=str(runtime["provider_id"]),
+                        )
+                        if response.status_code >= 400:
+                            raise ValueError("AI provider вернул ошибку при исправлении structured action.")
+                        continue
+                    if business_request and total_tool_calls == 0:
+                        raise ValueError("AI не выполнил обязательную проверку бизнес-данных.")
+                    raise ValueError("AI не вернул корректное structured business action.")
+                logger.info(
+                    "AI_AGENT_ACTION request_id=%s round=%s action=%s tool=%s",
+                    request_id,
+                    rounds,
+                    structured_action.get("action"),
+                    structured_action.get("tool"),
+                )
+                if structured_action.get("action") == "final":
+                    if business_request and total_tool_calls == 0:
+                        raise ValueError("AI не выполнил обязательную проверку бизнес-данных.")
+                    final_text = str(structured_action["answer"])
+                    logger.info(
+                        "AI_AGENT_FINAL request_id=%s rounds=%s tool_calls=%s provider=%s model=%s preview=%s",
+                        request_id, rounds, total_tool_calls, runtime.get("provider_id"),
+                        runtime.get("model_id"), _preview(final_text),
+                    )
+                    return AIBusinessAgentResult(
+                        final_text=final_text, messages=messages, runtime=runtime,
+                        rounds=rounds, tool_calls=total_tool_calls,
+                    )
+                structured_tool_name = str(structured_action.get("tool") or "")
+                structured_tool_id = f"structured-{request_id}-{rounds}"
+                tool_calls = [{
+                    "id": structured_tool_id,
+                    "function": {
+                        "name": structured_tool_name,
+                        "arguments": json.dumps(
+                            structured_action.get("arguments") or {},
+                            ensure_ascii=False,
+                        ),
+                    },
+                }]
+            elif structured_mode and tool_calls:
+                # A provider may recover native calling on the structured retry.
+                # From this point use its native protocol for the remaining loop.
+                structured_mode = False
+                logger.info("AI_AGENT_MODE request_id=%s mode=native", request_id)
             if not tool_calls:
                 final_text = str(assistant_message.get("content") or "")
                 if business_request and rounds == 1 and not evidence_retry_used:
@@ -183,12 +370,20 @@ class AIBusinessAgentService:
                         runtime.get("provider_id"),
                         runtime.get("model_id"),
                     )
-                    tool_choice_for_round = "required"
+                    structured_mode = True
+                    structured_repair_used = False
+                    logger.info("AI_AGENT_MODE request_id=%s mode=structured", request_id)
+                    messages.append({
+                        "role": "system",
+                        "content": _structured_protocol_prompt(tools),
+                    })
                     response = await _hermes_request(
                         messages=messages,
                         tools=tools,
                         stream=False,
-                        tool_choice=tool_choice_for_round,
+                        # Hermes Codex accepts this request but ignores required.
+                        # Structured JSON is the provider-independent enforcement layer.
+                        tool_choice="auto",
                         model=str(runtime["model_id"]),
                         provider=str(runtime["provider_id"]),
                     )
@@ -219,6 +414,13 @@ class AIBusinessAgentService:
                 "content": assistant_message.get("content") or "",
                 "tool_calls": tool_calls,
             })
+            logger.info(
+                "AI_AGENT_ACTION request_id=%s round=%s action=tool tool=%s native=%s",
+                request_id,
+                rounds,
+                ",".join(str(call.get("function", {}).get("name") or "") for call in tool_calls),
+                not structured_mode,
+            )
             for tool_call in tool_calls:
                 arguments = _tool_arguments(tool_call)
                 tool_name = str(tool_call.get("function", {}).get("name") or "")
@@ -228,7 +430,14 @@ class AIBusinessAgentService:
                     sort_keys=True,
                     default=str,
                 )
-                if cache_key in result_cache:
+                validation_error = _validate_tool_arguments(tool_name, arguments, tools)
+                if validation_error:
+                    tool_result = {
+                        "status": "error",
+                        "message": validation_error,
+                    }
+                    logger.info("AI_TOOL_RESULT request_id=%s name=%s rejected=true", request_id, tool_name)
+                elif cache_key in result_cache:
                     tool_result = result_cache[cache_key]
                     logger.info("AI_TOOL_RESULT request_id=%s name=%s rows=%s cached=true", request_id, tool_name, _row_count(tool_result))
                 elif total_tool_calls >= MAX_TOOL_CALLS:
@@ -267,6 +476,11 @@ class AIBusinessAgentService:
                     + json.dumps(tool_result, ensure_ascii=False, default=str),
                 })
             tool_choice_for_round = "auto"
+            if structured_mode:
+                messages.append({
+                    "role": "system",
+                    "content": _structured_protocol_prompt(tools),
+                })
             response = await _hermes_request(
                 messages=messages,
                 tools=tools,

@@ -76,15 +76,58 @@ def test_business_text_without_tools_gets_generic_evidence_retry():
         "Какой менеджер продал на самую большую сумму за эту неделю? Покажи топ-5 менеджеров.",
         [
             _response({"content": "В baseline нет разбивки по менеджерам."}),
-            _response({"content": None, "tool_calls": [tool_call]}),
-            _response({"content": "Ответ подтвержден строками менеджеров"}),
+            _response({"content": '{"action":"tool","tool":"aggregate_sales","arguments":{"group_by":"manager"}}'}),
+            _response({"content": '{"action":"final","answer":"Ответ подтвержден строками менеджеров"}'}),
         ],
     )
     assert result.final_text == "Ответ подтвержден строками менеджеров"
     assert resolve.await_count == 1
     assert request.await_args_list[0].kwargs["tool_choice"] == "auto"
-    assert request.await_args_list[1].kwargs["tool_choice"] == "required"
-    assert request.await_args_list[2].kwargs["tool_choice"] == "auto"
+    assert all(call.kwargs["tool_choice"] == "auto" for call in request.await_args_list)
+
+
+def test_structured_multi_step_agent_lets_model_choose_each_tool():
+    result, resolve, request = _run(
+        "Почему продажи упали?",
+        [
+            _response({"content": "Сначала проверю данные."}),
+            _response({"content": '{"action":"tool","tool":"compare_periods","arguments":{}}'}),
+            _response({"content": '{"action":"tool","tool":"aggregate_sales","arguments":{"group_by":"manager"}}'}),
+            _response({"content": '{"action":"final","answer":"Падение подтверждено."}'}),
+        ],
+    )
+    assert result.final_text == "Падение подтверждено."
+    assert resolve.await_count == 2
+    assert [call.args[0] for call in resolve.await_args_list] == ["compare_periods", "aggregate_sales"]
+    assert all(call.kwargs["tool_choice"] == "auto" for call in request.await_args_list)
+
+
+def test_structured_unknown_tool_is_rejected_without_execution():
+    result, resolve, _ = _run(
+        "Проверь продажи",
+        [
+            _response({"content": "Проверю данные."}),
+            _response({"content": '{"action":"tool","tool":"read_database","arguments":{}}'}),
+            _response({"content": '{"action":"tool","tool":"aggregate_sales","arguments":{"group_by":"manager"}}'}),
+            _response({"content": '{"action":"final","answer":"Инструмент не разрешён."}'}),
+        ],
+    )
+    assert result.final_text == "Инструмент не разрешён."
+    assert all(call.args[0] != "read_database" for call in resolve.await_args_list)
+
+
+def test_structured_malformed_json_gets_one_repair_retry():
+    result, _, request = _run(
+        "Проверь склад",
+        [
+            _response({"content": "Нужна проверка."}),
+            _response({"content": "не json"}),
+            _response({"content": '{"action":"tool","tool":"query_inventory","arguments":{}}'}),
+            _response({"content": '{"action":"final","answer":"Склад проверен."}'}),
+        ],
+    )
+    assert result.final_text == "Склад проверен."
+    assert len(request.await_args_list) == 4
 
 
 def test_required_evidence_round_without_tool_returns_controlled_error():
@@ -92,6 +135,7 @@ def test_required_evidence_round_without_tool_returns_controlled_error():
         with patch("app.api.routes.ai_chat._hermes_request", new_callable=AsyncMock) as request:
             request.side_effect = [
                 _response({"content": "В baseline недостаточно данных."}),
+                _response({"content": "Инструменты не подключены."}),
                 _response({"content": "Инструменты не подключены."}),
             ]
             try:
@@ -108,7 +152,7 @@ def test_required_evidence_round_without_tool_returns_controlled_error():
 
     message, request = asyncio.run(execute())
     assert message == "AI не выполнил обязательную проверку бизнес-данных."
-    assert request.await_args_list[1].kwargs["tool_choice"] == "required"
+    assert request.await_args_list[1].kwargs["tool_choice"] == "auto"
 
 
 def test_product_question_uses_product_aggregation():
