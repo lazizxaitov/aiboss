@@ -8,7 +8,7 @@ import { Drawer } from "@/components/ui/drawer";
 import { Select } from "@/components/ui/select";
 import { Surface } from "@/components/ui/surface";
 import { useOwnerSessionState } from "@/components/auth/session-lock-guard";
-import { getAiRouting, saveAiRouting, type AiRoutingConfig, type AiRoutingResponse } from "@/lib/core-api";
+import { getAiRouting, saveAiRouting, type AiRoutingConfig } from "@/lib/core-api";
 
 type Provider = {
   id: string;
@@ -21,8 +21,6 @@ type Provider = {
 
 type Assignment = AiRoutingConfig["roles"][string];
 type RoutingConfig = AiRoutingConfig;
-type RoutingResponse = AiRoutingResponse;
-
 const roles = [
   {
     id: "business_analytics",
@@ -66,8 +64,9 @@ export function AiRoutingSettings() {
     if (!session.hydrated || !session.authenticated || session.locked) return;
     void getAiRouting()
       .then((payload) => {
-        setProviders(payload.providers);
+        setProviders(Array.isArray(payload.providers) ? payload.providers : []);
         setConfig(payload.config);
+        if (payload.malformed) setNotice("Не удалось загрузить настройки ИИ");
       })
       .catch((error) => {
         const message = error instanceof Error ? error.message : "";
@@ -101,7 +100,7 @@ export function AiRoutingSettings() {
     setNotice(null);
     try {
       const payload = await saveAiRouting(config);
-      setProviders(payload.providers);
+      setProviders(Array.isArray(payload.providers) ? payload.providers : []);
       setConfig(payload.config);
       setNotice("Настройки сохранены");
     } catch (error) {

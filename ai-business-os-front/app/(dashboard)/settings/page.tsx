@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { Component, type ErrorInfo, type ReactNode, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Surface } from "@/components/ui/surface";
@@ -107,9 +107,13 @@ export default function Page() {
         </div>
       </Surface>
 
-      <MobileAccessCard />
+      <SettingsBlockBoundary fallback="Не удалось загрузить мобильный доступ.">
+        <MobileAccessCard />
+      </SettingsBlockBoundary>
 
-      <SystemUpdateCard />
+      <SettingsBlockBoundary fallback="Не удалось загрузить обновление системы.">
+        <SystemUpdateCard />
+      </SettingsBlockBoundary>
 
 
       <div className="grid gap-6">
@@ -245,9 +249,30 @@ export default function Page() {
         </div>
       </Surface>
 
-      <AiRoutingSettings />
+      <SettingsBlockBoundary fallback="Не удалось загрузить настройки ИИ">
+        <AiRoutingSettings />
+      </SettingsBlockBoundary>
     </section>
   );
+}
+
+type SettingsBlockBoundaryProps = { children: ReactNode; fallback: string };
+type SettingsBlockBoundaryState = { hasError: boolean };
+
+class SettingsBlockBoundary extends Component<SettingsBlockBoundaryProps, SettingsBlockBoundaryState> {
+  state: SettingsBlockBoundaryState = { hasError: false };
+
+  static getDerivedStateFromError(): SettingsBlockBoundaryState {
+    return { hasError: true };
+  }
+
+  componentDidCatch(_error: Error, _info: ErrorInfo) {
+    // Keep a malformed optional Settings block from taking down the page.
+  }
+
+  render() {
+    return this.state.hasError ? <p className="rounded-[28px] bg-[#2E3137] p-6 text-sm text-slate-300">{this.props.fallback}</p> : this.props.children;
+  }
 }
 
 function AutoLockSetting() {

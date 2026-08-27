@@ -2485,10 +2485,74 @@ export type AiRoutingResponse = {
     available: boolean;
   }>;
   config: AiRoutingConfig;
+  malformed?: boolean;
 };
 
-export function getAiRouting(): Promise<AiRoutingResponse> {
-  return requestJson<AiRoutingResponse>("/api/v1/ai/routing", {}, 10_000);
+const emptyAiRoutingAssignment = (): AiRoutingAssignment => ({
+  primary_provider_id: null,
+  primary_model_id: null,
+  fallback_provider_id: null,
+  fallback_model_id: null,
+});
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeAiRoutingProvider(value: unknown): AiRoutingResponse["providers"][number] | null {
+  if (!isRecord(value)) return null;
+  const id = typeof value.id === "string" ? value.id : "";
+  const provider = typeof value.provider === "string" ? value.provider : "";
+  const model = typeof value.model === "string" ? value.model : "";
+  if (!id || !provider || !model) return null;
+  const status = value.status === "available" || value.status === "unavailable" || value.status === "not_configured"
+    ? value.status
+    : value.available === true ? "available" : "unavailable";
+  return {
+    id,
+    provider,
+    model,
+    name: typeof value.name === "string" && value.name ? value.name : model,
+    status,
+    available: value.available === true && status === "available",
+  };
+}
+
+function normalizeAiRoutingAssignment(value: unknown): AiRoutingAssignment {
+  if (!isRecord(value)) return emptyAiRoutingAssignment();
+  const stringOrNull = (candidate: unknown) => typeof candidate === "string" && candidate ? candidate : null;
+  return {
+    primary_provider_id: stringOrNull(value.primary_provider_id),
+    primary_model_id: stringOrNull(value.primary_model_id),
+    fallback_provider_id: stringOrNull(value.fallback_provider_id),
+    fallback_model_id: stringOrNull(value.fallback_model_id),
+  };
+}
+
+function normalizeAiRoutingResponse(value: unknown): AiRoutingResponse {
+  const payload = isRecord(value) ? value : {};
+  const rawProviders = Array.isArray(payload.providers) ? payload.providers : [];
+  const providers = rawProviders.map(normalizeAiRoutingProvider).filter((provider): provider is NonNullable<typeof provider> => provider !== null);
+  const rawConfig = isRecord(payload.config) ? payload.config : {};
+  const rawRoles = isRecord(rawConfig.roles) ? rawConfig.roles : {};
+  const roles = Object.fromEntries(Object.entries(rawRoles).map(([role, assignment]) => [role, normalizeAiRoutingAssignment(assignment)]));
+  const triggers = Array.isArray(rawConfig.business_analytics_triggers)
+    ? rawConfig.business_analytics_triggers.filter((trigger): trigger is string => typeof trigger === "string")
+    : [];
+  return {
+    providers,
+    config: {
+      roles,
+      business_analytics_auto_enabled: rawConfig.business_analytics_auto_enabled === true,
+      business_analytics_triggers: triggers,
+    },
+    malformed: !isRecord(value) || !Array.isArray(payload.providers) || !isRecord(payload.config) || !isRecord(rawConfig.roles),
+  };
+}
+
+export async function getAiRouting(): Promise<AiRoutingResponse> {
+  const payload = await requestJson<unknown>("/api/v1/ai/routing", {}, 10_000);
+  return normalizeAiRoutingResponse(payload);
 }
 
 export type SessionLockSettings = {
@@ -2506,11 +2570,12 @@ export function saveSessionLockSettings(timeoutMinutes: number): Promise<Session
   });
 }
 
-export function saveAiRouting(config: AiRoutingConfig): Promise<AiRoutingResponse> {
-  return requestJson<AiRoutingResponse>("/api/v1/ai/routing", {
+export async function saveAiRouting(config: AiRoutingConfig): Promise<AiRoutingResponse> {
+  const payload = await requestJson<unknown>("/api/v1/ai/routing", {
     method: "PUT",
     body: JSON.stringify(config),
   }, 10_000);
+  return normalizeAiRoutingResponse(payload);
 }
 
 export type DashboardAIInsight = {
