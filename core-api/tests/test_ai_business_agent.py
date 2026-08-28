@@ -75,6 +75,22 @@ def test_seller_question_uses_manager_aggregation():
     assert resolve.await_args.args[1]["group_by"] == "manager"
 
 
+def test_internal_database_question_receives_business_data_capability():
+    result, _, request = _run(
+        "Найди в нашей базе не в интернете данные о том кто продал больше всех по суммам за неделю.",
+        [_response({"content": None, "tool_calls": [{
+            "id": "1",
+            "function": {"name": "query_business_data", "arguments": '{"dataset":"sales"}'},
+        }]}), _response({"content": "Ответ подтвержден внутренними данными."})],
+    )
+
+    assert result.final_text == "Ответ подтвержден внутренними данными."
+    first_messages = request.await_args_list[0].kwargs["messages"]
+    capability = "\n".join(str(message.get("content")) for message in first_messages)
+    assert "INTERNAL AI BUSINESS OS DATA ACCESS IS CONNECTED" in capability
+    assert "query_business_data" in capability
+
+
 def test_business_text_without_tools_gets_generic_evidence_retry():
     tool_call = {"id": "1", "function": {"name": "aggregate_sales", "arguments": '{"group_by":"manager"}'}}
     result, resolve, request = _run(

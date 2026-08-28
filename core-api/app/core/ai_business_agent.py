@@ -256,14 +256,34 @@ class AIBusinessAgentService:
                     ),
                 },
             )
+        business_request = _looks_business_related(user_text)
         tools = _tool_definitions()
+        if business_request:
+            # Native tool schemas are not equally visible to every Hermes provider.
+            # Keep the same backend-approved catalog in the prompt as an explicit
+            # capability contract; the model still chooses the tool and arguments.
+            messages.insert(
+                3,
+                {
+                    "role": "system",
+                    "content": (
+                        "INTERNAL AI BUSINESS OS DATA ACCESS IS CONNECTED.\n"
+                        "For factual questions about the owner's business, use the approved read-only "
+                        "business tools below. Do not use internet or external search, and do not claim "
+                        "that the database or tools are unavailable before attempting a relevant tool. "
+                        "Choose the dataset, dimensions, metrics, period, filters, sort and limit yourself "
+                        "from the catalog. The backend validates and executes the selected query.\n"
+                        "Approved BusinessDataQueryService catalog:\n"
+                        + json.dumps(_tool_catalog(tools), ensure_ascii=False, default=str)
+                    ),
+                },
+            )
         result_cache: dict[str, object] = {}
         total_tool_calls = 0
         rounds = 0
         evidence_retry_used = False
         structured_mode = False
         structured_repair_used = False
-        business_request = _looks_business_related(user_text)
         tool_choice_for_round = "auto"
         tool_names = {
             str(item.get("function", {}).get("name"))
@@ -642,6 +662,7 @@ def _looks_business_related(text: str) -> bool:
         "визит", "магазин", "организац", "филиал", "продав", "менеджер", "бизнес",
         "проблем", "аналит", "kpi", "revenue", "sales", "inventory", "customer",
         "product", "order", "stock", "dashboard", "виджет",
+        "в нашей базе", "нашей базе", "внутренн", "из базы", "по базе",
     }
     normalized = text.lower()
     return any(term in normalized for term in business_terms)

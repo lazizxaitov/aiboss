@@ -443,7 +443,7 @@ def _routing_context(router: AITaskRouter) -> str:
     assignments = router.get_config().roles
     lines = [
         "AI BOS ROLE ROUTING:",
-        "You are the orchestrator. Infer task_type and use delegate_ai_task without selecting a provider or model.",
+        "You are the orchestrator. For this interactive chat, use approved business data tools directly when factual business evidence is needed. Use delegate_ai_task only for a distinct delegated task; never select a provider or model.",
         "For system_action assigned to the current agent, use the existing AI BOS tools directly and do not delegate back to yourself.",
     ]
     for task_type in ("business_analytics", "system_action", "communications"):
@@ -867,6 +867,10 @@ async def chat(
                 system_prompt=conversation_service.build_system_prompt(conversation),
                 provider_id=request.provider,
                 model_id=request.model,
+                # Interactive chat must let the model plan the relevant query
+                # from the approved catalog; deep automatic analytics owns its
+                # separate baseline flow.
+                build_baseline=False,
                 request_id=request_id,
             )
             assistant_text = result.final_text
