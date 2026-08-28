@@ -36,7 +36,11 @@ from app.integrations.smartup.operations import (
     SmartUpResetResponse,
     SMARTUP_MIGRATION_LOCK,
 )
-from app.integrations.smartup.live_sync import SmartUpLiveSyncService, SmartUpLiveSyncStatus
+from app.integrations.smartup.live_sync import (
+    SmartUpLiveSyncService,
+    SmartUpLiveSyncStatus,
+    wake_smartup_live_sync,
+)
 from app.integrations.smartup.models import SmartUpMigrationMode
 from app.integrations.smartup.rebuild import (
     SmartUpCoreRebuildReport,
@@ -266,7 +270,10 @@ def test_smartup_organization_connection(
 ) -> SmartUpConnectionCheckResponse:
     service = SmartUpAccountService(target=store)
     try:
-        return service.check_connection(organization_id, payload)
+        response = service.check_connection(organization_id, payload)
+        if response.connected:
+            wake_smartup_live_sync()
+        return response
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
@@ -282,7 +289,10 @@ def test_smartup_organization_connection_legacy(
 ) -> SmartUpConnectionCheckResponse:
     service = SmartUpAccountService(target=store)
     try:
-        return service.check_connection(organization_id, payload)
+        response = service.check_connection(organization_id, payload)
+        if response.connected:
+            wake_smartup_live_sync()
+        return response
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
@@ -443,7 +453,10 @@ def test_smartup_connection_legacy(
     store: Annotated[CoreDataStore, Depends(get_core_store)],
 ) -> SmartUpConnectionCheckResponse:
     service = SmartUpAccountService(target=store)
-    return service.check_connection(payload)
+    response = service.check_connection(payload)
+    if response.connected:
+        wake_smartup_live_sync()
+    return response
 
 
 @router.post("/smartup/migration/history", response_model=SmartUpMigrationAllResponse)

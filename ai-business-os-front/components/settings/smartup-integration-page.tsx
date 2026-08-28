@@ -180,6 +180,16 @@ export function SmartUpIntegrationPage() {
     return timestamps.sort((a, b) => Date.parse(b) - Date.parse(a))[0];
   }, [organizations]);
 
+  const savedConnection = useMemo(() => {
+    const selected = liveSync?.organization_connections.find(
+      (item) => item.organization_id === selectedOrganizationId,
+    );
+    if (selected?.status === "connected") return true;
+    return ["initial_sync_required", "initial_sync_running", "ready", "live_sync_running"].includes(
+      liveSync?.status ?? "",
+    );
+  }, [liveSync, selectedOrganizationId]);
+
   const makePayload = (): SmartUpAccessPayload => ({
     base_url: form.baseUrl.trim() || DEFAULT_BASE_URL,
     username: form.username,
@@ -637,7 +647,10 @@ export function SmartUpIntegrationPage() {
             </div>
 
             <div className="mt-5 space-y-3">
-              <SummaryLine label="Подключение" value={connectionState.status === "success" ? "Проверено" : "Требует проверки"} />
+              <SummaryLine
+                label="Подключение"
+                value={connectionState.status === "success" || savedConnection ? "Проверено" : "Требует проверки"}
+              />
               <SummaryLine
                 label="Синхронизация"
                 value={job?.status === "running" ? "Выполняется" : job?.status === "failed" ? "Есть ошибки" : "Доступна"}

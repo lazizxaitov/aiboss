@@ -257,6 +257,11 @@ class AIBusinessAgentService:
                 },
             )
         business_request = _looks_business_related(user_text)
+        internal_business = business_request or task_type in {
+            "business_analytics",
+            "system_action",
+            "communications",
+        }
         tools = _tool_definitions()
         if business_request:
             # Native tool schemas are not equally visible to every Hermes provider.
@@ -330,11 +335,19 @@ class AIBusinessAgentService:
             try:
                 response = await _hermes_request(
                     messages=messages,
-                    tools=tools,
+                    # Internal requests use Hermes as an inference gateway only.
+                    # The model selects JSON actions from the prompt catalog;
+                    # backend code validates and executes every business tool.
+                    tools=[] if internal_business else tools,
                     stream=False,
-                    tool_choice=tool_choice,
+                    tool_choice="none" if internal_business else tool_choice,
                     model=model,
                     provider=provider,
+                    response_format=(
+                        {"type": "json_object"}
+                        if internal_business
+                        else None
+                    ),
                 )
             except Exception:
                 logger.info(

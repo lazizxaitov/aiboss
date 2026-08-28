@@ -26,6 +26,13 @@ from app.integrations.smartup.operations import (
 logger = getLogger(__name__)
 
 LIVE_SYNC_STATUS_KEY = "smartup:live_sync_status:v1"
+SMARTUP_LIVE_SYNC_WAKE = Event()
+
+
+def wake_smartup_live_sync() -> None:
+    """Wake the process-owned sync loop after configuration changes."""
+
+    SMARTUP_LIVE_SYNC_WAKE.set()
 
 
 class SmartUpOrganizationConnectionState(BaseModel):
@@ -108,9 +115,25 @@ class SmartUpLiveSyncService:
     def _run_loop(self) -> None:
         self._run_startup_reconciliation()
         last_trigger: str | None = None
-        while not self._stop.wait(30):
+        while not self._stop.is_set():
+            woke = False
+            for _ in range(60):
+                if self._stop.is_set():
+                    break
+                if SMARTUP_LIVE_SYNC_WAKE.wait(0.5):
+                    woke = True
+                    break
+            SMARTUP_LIVE_SYNC_WAKE.clear()
+            if self._stop.is_set():
+                break
             now = datetime.now(UTC)
             current = self.status()
+            if woke and self._configured_organizations() and current.status not in {
+                "initial_sync_running",
+                "live_sync_running",
+            }:
+                self._run_startup_reconciliation()
+                continue
             if current.status == "not_configured" and self._configured_organizations():
                 self._run_startup_reconciliation()
                 continue

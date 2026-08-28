@@ -502,6 +502,7 @@ async def _hermes_request(
     tool_choice: str | dict[str, object] | None = None,
     model: str | None = None,
     provider: str | None = None,
+    response_format: dict[str, object] | None = None,
 ) -> httpx.Response:
     url = f"{settings.hermes_base_url.rstrip('/')}/chat/completions"
     headers = {"Authorization": f"Bearer {settings.hermes_api_key}"}
@@ -517,6 +518,8 @@ async def _hermes_request(
         body["tools"] = tools
     if tool_choice is not None:
         body["tool_choice"] = tool_choice
+    if response_format is not None:
+        body["response_format"] = response_format
 
     client = httpx.AsyncClient(timeout=None)
     response = await client.post(url, headers=headers, json=body)

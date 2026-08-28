@@ -1283,7 +1283,15 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
         businessState.period.preset,
       );
     } catch (error) {
-      setChatError(error instanceof Error ? error.message : "Не удалось получить ответ AI.");
+      const errorMessage = error instanceof Error ? error.message : "Не удалось получить ответ AI.";
+      setChatError(errorMessage);
+      setChatMessages((current) =>
+        current.map((item) =>
+          item.id === assistantId && !item.text.trim()
+            ? { ...item, text: errorMessage }
+            : item,
+        ),
+      );
     } finally {
       setIsGenerating(false);
     }
@@ -1785,12 +1793,13 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
         </Surface>
       </div>
 
-      <Surface
-        className={cn(
-          "relative flex min-h-0 flex-col overflow-hidden border-[#3c4048] bg-[linear-gradient(180deg,#2E3137_0%,#2A2D33_100%)] px-4 py-4 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
-          expanded ? "flex-none" : "flex-1",
-        )}
-      >
+      {!floating ? (
+        <Surface
+          className={cn(
+            "relative flex min-h-0 flex-col overflow-hidden border-[#3c4048] bg-[linear-gradient(180deg,#2E3137_0%,#2A2D33_100%)] px-4 py-4 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
+            expanded ? "flex-none" : "flex-1",
+          )}
+        >
         <div className="flex items-center justify-between gap-3">
           <div>
             <p className="text-[10px] uppercase tracking-[0.3em] text-slate-400">Мысли ИИ</p>
@@ -1822,7 +1831,8 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
             </div>
           ))}
         </div>
-      </Surface>
+        </Surface>
+      ) : null}
     </div>
   );
 }

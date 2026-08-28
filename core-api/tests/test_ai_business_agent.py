@@ -103,8 +103,8 @@ def test_business_text_without_tools_gets_generic_evidence_retry():
     )
     assert result.final_text == "Ответ подтвержден строками менеджеров"
     assert resolve.await_count == 1
-    assert request.await_args_list[0].kwargs["tool_choice"] == "auto"
-    assert all(call.kwargs["tool_choice"] == "auto" for call in request.await_args_list)
+    assert request.await_args_list[0].kwargs["tool_choice"] == "none"
+    assert all(call.kwargs["tool_choice"] == "none" for call in request.await_args_list)
 
 
 def test_structured_multi_step_agent_lets_model_choose_each_tool():
@@ -120,7 +120,7 @@ def test_structured_multi_step_agent_lets_model_choose_each_tool():
     assert result.final_text == "Падение подтверждено."
     assert resolve.await_count == 2
     assert [call.args[0] for call in resolve.await_args_list] == ["compare_periods", "aggregate_sales"]
-    assert all(call.kwargs["tool_choice"] == "auto" for call in request.await_args_list)
+    assert all(call.kwargs["tool_choice"] == "none" for call in request.await_args_list)
 
 
 def test_structured_unknown_tool_is_rejected_without_execution():
@@ -172,7 +172,7 @@ def test_required_evidence_round_without_tool_returns_controlled_error():
 
     message, request = asyncio.run(execute())
     assert message == "AI не выполнил обязательную проверку бизнес-данных."
-    assert request.await_args_list[1].kwargs["tool_choice"] == "auto"
+    assert request.await_args_list[1].kwargs["tool_choice"] == "none"
 
 
 def test_product_question_uses_product_aggregation():
@@ -198,8 +198,8 @@ def test_multi_step_analysis_and_duplicate_tool_call_are_bounded():
     assert result.final_text == "Падение подтверждено"
     assert resolve.await_count == 1
     assert result.tool_calls == 1
-    assert request.await_args_list[0].kwargs["tool_choice"] == "auto"
-    assert request.await_args_list[1].kwargs["tool_choice"] == "auto"
+    assert request.await_args_list[0].kwargs["tool_choice"] == "none"
+    assert request.await_args_list[1].kwargs["tool_choice"] == "none"
 
 
 def test_broad_analysis_can_execute_multiple_distinct_tools():
