@@ -1037,14 +1037,23 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
     const refreshInsights = () => {
       void getDashboardAIInsights()
         .then((payload) => {
-        const items = payload.items.length === 0 && payload.status === "AI_UNAVAILABLE"
-          ? [{ label: "Статус", title: "ИИ-аналитика временно недоступна", text: "Базовые показатели и данные бизнеса продолжают работать." }]
-          : payload.items.map((item) => ({
+        if (payload.status === "empty" || payload.status === "running" || payload.status === "error") {
+          setAiThoughts([{
+            label: "Статус",
+            title: payload.status === "empty" ? "ИИ-анализ ещё не выполнен" : payload.status === "running" ? "ИИ анализирует бизнес..." : "ИИ-анализ недоступен",
+            text: payload.message ?? "Результат анализа пока недоступен.",
+          }]);
+          return;
+        }
+        const summary = payload.summary
+          ? [{ label: "AI Аналитик", title: "Краткая сводка", text: `${payload.summary}${payload.generated_at ? ` · ${new Date(payload.generated_at).toLocaleString("ru-RU")}` : ""}` }]
+          : [];
+        const items = payload.items.map((item) => ({
           label: item.type === "recommendation" ? "Рекомендует" : item.priority === "critical" || item.priority === "high" ? "Требует внимания" : "Наблюдение",
           title: item.title,
           text: [item.description, item.affected_entity, item.affected_metric].filter(Boolean).join(" · "),
         }));
-        setAiThoughts(items);
+        setAiThoughts([...summary, ...items]);
         })
         .catch(() => setAiThoughts([]));
     };
