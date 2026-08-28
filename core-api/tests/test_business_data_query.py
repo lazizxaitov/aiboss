@@ -7,6 +7,7 @@ from app.core.business_data_query import BusinessDataQueryService
 
 def test_generic_sales_query_delegates_validated_dimensions_and_metrics():
     tools = Mock()
+    tools.store.get_app_setting.return_value = None
     tools.aggregate_sales.return_value = {"available": True, "rows": []}
 
     result = BusinessDataQueryService(tools).query(
@@ -27,6 +28,7 @@ def test_generic_sales_query_delegates_validated_dimensions_and_metrics():
 
 def test_generic_query_rejects_unknown_dataset_or_dimension_without_execution():
     tools = Mock()
+    tools.store.get_app_setting.return_value = None
     service = BusinessDataQueryService(tools)
 
     dataset_result = service.query(dataset="users")

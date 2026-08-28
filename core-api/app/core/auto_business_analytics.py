@@ -90,6 +90,11 @@ class AutoAnalyticsResult(BaseModel):
     recommendations: list[AutoAnalyticsRecommendation] = Field(default_factory=list)
     anomalies: list[str] = Field(default_factory=list)
     top_opportunities: list[str] = Field(default_factory=list)
+    findings: list[dict[str, Any]] = Field(default_factory=list)
+    checked_datasets: list[str] = Field(default_factory=list)
+    queries_executed: list[dict[str, Any]] = Field(default_factory=list)
+    organization_ids: list[str] = Field(default_factory=list)
+    analysis_period: dict[str, Any] = Field(default_factory=dict)
     risks: list[AutoAnalyticsInsight] = Field(default_factory=list)
     dashboard_plan: DashboardPlan | None = None
 
@@ -268,6 +273,12 @@ class AutoBusinessAnalyticsService:
         )
         last_error: Exception | None = None
         try:
+            previous = self.latest_successful()
+            previous_metadata = (
+                f" Previous analysis metadata: generated_at={previous.generated_at.isoformat()}, "
+                f"provider={previous.provider_id}, model={previous.model_id}."
+                if previous is not None else ""
+            )
             conversation = AIConversationState(
                 user_id="auto-business-analytics",
                 organization_id=(context.organization_context.organization_ids[0]
@@ -289,6 +300,7 @@ class AutoBusinessAnalyticsService:
                 system_prompt=(
                     "You are the business analytics agent for AI Business OS. "
                     "Investigate facts through approved read-only tools; do not rely on precomputed narrative."
+                    + previous_metadata
                 ),
                 provider_id=None,
                 model_id=None,
@@ -301,6 +313,15 @@ class AutoBusinessAnalyticsService:
             result.provider_id = str(agent_result.runtime.get("provider_id"))
             result.model_id = str(agent_result.runtime.get("model_id"))
             result.fallback_used = bool(agent_result.runtime.get("fallback_used"))
+            result.organization_ids = run.organization_scope
+            result.analysis_period = {"preset": run.period}
+            result.queries_executed = _queries_from_agent_messages(agent_result.messages)
+            result.checked_datasets = list(dict.fromkeys(
+                str(query.get("arguments", {}).get("dataset"))
+                for query in result.queries_executed
+                if query.get("tool") == "query_business_data"
+                and query.get("arguments", {}).get("dataset")
+            ))
             run.provider_id = result.provider_id
             run.model_id = result.model_id
             run.status = "completed"
@@ -316,6 +337,7 @@ class AutoBusinessAnalyticsService:
             )
         except (ValueError, TypeError, json.JSONDecodeError) as error:
             last_error = error
+            logger.info("BUSINESS_ANALYSIS_ERROR analysis_id=%s error=%s", run.analysis_id, str(error)[:300])
         if run.status != "completed":
             run.status = "failed"
             run.error = f"Не удалось завершить автоанализ: {last_error or 'нет доступного provider/model'}"
@@ -336,6 +358,32 @@ class AutoBusinessAnalyticsService:
                 model_id=run.model_id,
             ))
         return self._save(run)
+
+
+def _queries_from_agent_messages(messages: list[dict[str, object]]) -> list[dict[str, Any]]:
+    """Persist only compact query metadata, never complete tool payloads."""
+
+    queries: list[dict[str, Any]] = []
+    for message in messages:
+        calls = message.get("tool_calls") if isinstance(message, dict) else None
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            function = call.get("function")
+            if not isinstance(function, dict):
+                continue
+            name = function.get("name")
+            if not isinstance(name, str):
+                continue
+            arguments = function.get("arguments")
+            try:
+                parsed = json.loads(arguments) if isinstance(arguments, str) else arguments
+            except json.JSONDecodeError:
+                parsed = {}
+            queries.append({"tool": name, "arguments": parsed if isinstance(parsed, dict) else {}})
+    return queries
 
     async def run_if_due(self, *, after_sync: bool = False) -> AutoAnalyticsRun | None:
         config = AITaskRouter(self.store).get_config()

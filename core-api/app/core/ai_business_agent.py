@@ -42,8 +42,9 @@ def _structured_protocol_prompt(tools: list[dict[str, object]], *, repair: bool 
         "You are operating in AI Business OS agent mode.\n"
         "Select your next action using only the supplied approved tool catalog.\n"
         "Return ONLY valid JSON, without Markdown or explanation.\n"
-        "To inspect business data, return: {\"action\":\"tool\",\"tool\":\"<name>\",\"arguments\":{}}.\n"
-        "When sufficient verified evidence has been collected, return: {\"action\":\"final\",\"answer\":\"<answer>\"}.\n"
+        "To inspect business data, return: {\"action\":\"query\",\"query\":{\"dataset\":\"sales\",\"dimensions\":[],\"metrics\":[],\"limit\":10}}.\n"
+        "A provider may also use action=tool with a name from the catalog.\n"
+        "When sufficient verified evidence has been collected, return: {\"action\":\"final\",\"analysis\":{...}}.\n"
         "Do not claim that business data or tools are unavailable before attempting a relevant tool.\n"
         "The backend validates the selected tool and arguments; never select a provider or access SQL, RAW, files, or secrets.\n"
         + repair_text
@@ -77,11 +78,24 @@ def _parse_structured_action(
     action = payload.get("action")
     if action == "final":
         answer = payload.get("answer")
+        analysis = payload.get("analysis")
+        if isinstance(analysis, dict):
+            answer = json.dumps(analysis, ensure_ascii=False)
         if not isinstance(answer, str) or not answer.strip():
-            return None, "Final action должен содержать непустое поле answer."
+            return None, "Final action должен содержать непустое поле answer или analysis."
         return {"action": "final", "answer": answer}, None
+    if action == "query":
+        query = payload.get("query")
+        if not isinstance(query, dict):
+            return None, "Query action должен содержать объект query."
+        return {
+            "action": "tool",
+            "tool": "query_business_data",
+            "arguments": query,
+            "approved": True,
+        }, None
     if action != "tool":
-        return None, "Поле action должно быть tool или final."
+        return None, "Поле action должно быть query, tool или final."
     tool_name = payload.get("tool")
     arguments = payload.get("arguments", {})
     if not isinstance(tool_name, str) or not tool_name:
@@ -280,6 +294,12 @@ class AIBusinessAgentService:
                 total_tool_calls,
                 tool_choice_for_round,
             )
+            if task_type == "business_analytics":
+                logger.info(
+                    "BUSINESS_ANALYSIS_ROUND analysis_id=%s round=%s",
+                    request_id,
+                    rounds,
+                )
             assistant_message = _extract_assistant_message(response.json())
             if assistant_message is None:
                 raise ValueError("AI не вернул корректный ответ.")
@@ -425,6 +445,14 @@ class AIBusinessAgentService:
             for tool_call in tool_calls:
                 arguments = _tool_arguments(tool_call)
                 tool_name = str(tool_call.get("function", {}).get("name") or "")
+                if task_type == "business_analytics":
+                    logger.info(
+                        "BUSINESS_ANALYSIS_QUERY analysis_id=%s query_number=%s tool=%s args=%s",
+                        request_id,
+                        total_tool_calls + 1,
+                        tool_name,
+                        _sanitized_args(arguments),
+                    )
                 cache_key = json.dumps(
                     {"name": tool_name, "arguments": arguments},
                     ensure_ascii=False,
@@ -476,6 +504,13 @@ class AIBusinessAgentService:
                     "content": "AUTHORITATIVE AI BUSINESS OS TOOL RESULT. Use these returned values as factual business evidence.\n"
                     + json.dumps(tool_result, ensure_ascii=False, default=str),
                 })
+                if task_type == "business_analytics":
+                    logger.info(
+                        "BUSINESS_ANALYSIS_QUERY_RESULT analysis_id=%s tool=%s rows=%s",
+                        request_id,
+                        tool_name,
+                        _row_count(tool_result),
+                    )
             tool_choice_for_round = "auto"
             if structured_mode:
                 messages.append({
