@@ -156,7 +156,10 @@ class AITaskRouter:
         model_id: str | None = None,
     ) -> list[dict[str, object]]:
         targets = {(target.provider, target.model): target for target in _providers()}
-        if provider_id or model_id:
+        # Manual provider/model selection is intentionally scoped to the
+        # conversational chat. Role-owned work must always follow the current
+        # assignment in Settings, including its configured fallback.
+        if task_type == "ai_chat" and (provider_id or model_id):
             assignment = [(provider_id, model_id, False)]
         else:
             role = self.resolve(task_type)

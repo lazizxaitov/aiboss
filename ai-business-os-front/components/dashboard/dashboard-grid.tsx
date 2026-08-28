@@ -1263,8 +1263,8 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
           ),
         undefined,
         taskType,
-        activeModel.providerId || undefined,
-        selectedModelId,
+        taskType === "ai_chat" ? activeModel.providerId || undefined : undefined,
+        taskType === "ai_chat" ? selectedModelId : undefined,
         (meta) => {
           if (meta.provider_id) {
             const index = availableModels.findIndex((model) => model.providerId === meta.provider_id && model.models.some((item) => item.id === meta.model_id));

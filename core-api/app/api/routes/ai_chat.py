@@ -804,8 +804,8 @@ async def chat(
         router = AITaskRouter(store)
         candidates = router.resolve_candidates(
             request.task_type,
-            provider_id=request.provider,
-            model_id=request.model,
+            provider_id=request.provider if request.task_type == "ai_chat" else None,
+            model_id=request.model if request.task_type == "ai_chat" else None,
         )
         if not candidates:
             yield _event({"message": "Для этой задачи нет доступного provider/model."}, "error")
@@ -868,8 +868,11 @@ async def chat(
                 widget_builder=widget_builder,
                 memory_prompt=shared_memory.prompt_context(conversation.user_id or effective_user_id or "owner"),
                 system_prompt=conversation_service.build_system_prompt(conversation),
-                provider_id=request.provider,
-                model_id=request.model,
+                # Chat selection is a per-message override only for the
+                # conversational role. Business analytics and system actions
+                # must always use their assignments from AI Routing settings.
+                provider_id=request.provider if request.task_type == "ai_chat" else None,
+                model_id=request.model if request.task_type == "ai_chat" else None,
                 # Interactive chat must let the model plan the relevant query
                 # from the approved catalog; deep automatic analytics owns its
                 # separate baseline flow.

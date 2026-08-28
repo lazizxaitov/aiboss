@@ -164,7 +164,10 @@ def get_dashboard_manifest(
         language=language,
         force_refresh=force_refresh,
     ).model_copy(deep=True)
-    manifest = apply_dashboard_plan(manifest, AutoBusinessAnalyticsService(store).latest())
+    # A failed or running retry must not hide the last successful AI analysis.
+    # The dashboard should continue showing the latest usable result while the
+    # next role-routed business analytics run is in progress.
+    manifest = apply_dashboard_plan(manifest, AutoBusinessAnalyticsService(store).latest_successful())
     custom_widgets_service = WidgetBuilderService(store)
     custom_widgets = custom_widgets_service.append_custom_widgets(
         manifest.widgets,
