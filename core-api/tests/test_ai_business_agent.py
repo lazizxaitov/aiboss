@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.core.ai_business_agent import AIBusinessAgentService
-from app.core.ai_conversation import AIConversationState, AIConversationMessage, AIConversationChannel
+from app.core.ai_conversation import (
+    AIConversationChannel,
+    AIConversationMessage,
+    AIConversationState,
+)
 
 
 class FakeRouter:
@@ -244,3 +249,21 @@ def test_web_and_telegram_routes_use_the_same_agent_service():
     from app.api.routes.telegram_ai import AIBusinessAgentService as TelegramAgent
 
     assert WebAgent is TelegramAgent is AIBusinessAgentService
+
+
+def test_agent_emits_request_model_query_and_final_diagnostics(caplog):
+    tool_call = {"id": "1", "function": {"name": "aggregate_sales", "arguments": '{"group_by":"manager"}'}}
+    with caplog.at_level(logging.INFO, logger="app.core.ai_business_agent"):
+        result, _, _ = _run(
+            "Проверь продажи",
+            [_response({"content": None, "tool_calls": [tool_call]}), _response({"content": "Готово"})],
+        )
+
+    assert result.final_text == "Готово"
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "AI_AGENT_START" in messages
+    assert "AI_AGENT_MODEL_REQUEST" in messages
+    assert "AI_AGENT_MODEL_RESPONSE" in messages
+    assert "AI_BUSINESS_QUERY_START" in messages
+    assert "AI_BUSINESS_QUERY_RESULT" in messages
+    assert "AI_AGENT_FINAL" in messages

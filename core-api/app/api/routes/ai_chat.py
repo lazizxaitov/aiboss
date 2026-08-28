@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 from datetime import date
 from logging import getLogger
+from time import monotonic
 from typing import Annotated, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, Header
@@ -14,7 +15,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, BaseModel, Field
 
 from app.api.routes.auth import _session, _token_from_request
-from app.core.ai_business_agent import AIBusinessAgentService
+from app.core.ai_business_agent import AIBusinessAgentService, _looks_business_related
 from app.core.ai_conversation import (
     AIConversationChannel,
     AIConversationService,
@@ -27,16 +28,17 @@ from app.core.analytics.widget_builder import (
     WidgetBuilderService,
     WidgetBuilderUpdatePatch,
 )
+from app.core.business_data_query import BusinessDataQueryService
 from app.core.config import settings
 from app.core.data_layer.contracts import CoreDataStore
 from app.core.data_layer.factory import get_core_store
-from app.core.business_data_query import BusinessDataQueryService
 from app.core.hermes_model_registry import hermes_model_registry
 from app.core.hermes_tools import HermesBusinessTools
 from app.core.organization_context import OrganizationContextService
 
 router = APIRouter(prefix="/ai")
 logger = getLogger(__name__)
+logger.setLevel("INFO")
 
 
 class ChatMessage(BaseModel):
@@ -780,8 +782,17 @@ async def chat(
 ) -> StreamingResponse:
     """Proxy Hermes' OpenAI-compatible stream without exposing its credentials."""
 
+    request_id = str(uuid4())
+    request_started = monotonic()
+
     async def stream():
         conversation_service = AIConversationService(store)
+        logger.info(
+            "AI_CHAT_REQUEST_START request_id=%s selected_provider=%s selected_model=%s",
+            request_id,
+            request.provider or "settings",
+            request.model or "settings",
+        )
         session = _session(_token_from_request(None, authorization), store)
         effective_user_id = request.user_id or (session.login if session is not None else None)
         shared_memory = SharedMemoryService(store)
@@ -796,8 +807,12 @@ async def chat(
         )
         if not candidates:
             yield _event({"message": "Для этой задачи нет доступного provider/model."}, "error")
+            logger.info(
+                "AI_CHAT_RESPONSE request_id=%s status=error elapsed_ms=%.2f response_type=configuration",
+                request_id,
+                (monotonic() - request_started) * 1000,
+            )
             return
-        routing_runtime = candidates[0]
         conversation = conversation_service.resolve_or_create_conversation(
             source_channel=request.source_channel,
             user_id=effective_user_id,
@@ -827,6 +842,13 @@ async def chat(
             target_channel=resolved_target_channel,
         )
         last_user_text = _message_text(last_user_message.content) if last_user_message is not None else ""
+        delegated = request.task_type != "ai_chat" or _looks_business_related(last_user_text)
+        logger.info(
+            "AI_CHAT_ANALYTICS_DELEGATION request_id=%s delegated=%s role=%s",
+            request_id,
+            delegated,
+            "business_analytics" if delegated else "none",
+        )
         logger.info("AI business request: question_length=%s period=%s organization_id=%s", len(last_user_text), request.period, request.organization_id)
         shared_memory.remember(
             conversation.user_id or effective_user_id or "owner",
@@ -846,8 +868,11 @@ async def chat(
                 system_prompt=conversation_service.build_system_prompt(conversation),
                 provider_id=request.provider,
                 model_id=request.model,
+                request_id=request_id,
             )
             assistant_text = result.final_text
+            if not assistant_text.strip():
+                raise ValueError("AI не вернул завершённый ответ.")
             conversation_service.append_message(
                 conversation,
                 role="assistant",
@@ -886,7 +911,17 @@ async def chat(
                 },
                 "done",
             )
-        except (httpx.HTTPError, ValueError) as error:
+            logger.info(
+                "AI_CHAT_RESPONSE request_id=%s status=success elapsed_ms=%.2f response_type=assistant",
+                request_id,
+                (monotonic() - request_started) * 1000,
+            )
+        except Exception as error:  # noqa: BLE001 - SSE clients need a terminal error event
+            logger.exception(
+                "AI_CHAT_RESPONSE request_id=%s status=error elapsed_ms=%.2f response_type=error",
+                request_id,
+                (monotonic() - request_started) * 1000,
+            )
             yield _event({"message": str(error) or "Не удалось подключиться к AI."}, "error")
 
     return StreamingResponse(

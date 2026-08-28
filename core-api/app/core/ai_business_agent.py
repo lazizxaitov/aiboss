@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from logging import getLogger
+from time import monotonic
 from uuid import uuid4
 
 from app.core.ai_conversation import AIConversationService, AIConversationState
@@ -179,6 +181,7 @@ class AIBusinessAgentService:
         provider_id: str | None = None,
         model_id: str | None = None,
         build_baseline: bool = True,
+        request_id: str | None = None,
     ) -> AIBusinessAgentResult:
         """Resolve a target, execute tools, and stop at the first final answer."""
 
@@ -195,7 +198,8 @@ class AIBusinessAgentService:
             _tool_definitions,
         )
 
-        request_id = str(uuid4())
+        request_id = request_id or str(uuid4())
+        started_at = monotonic()
         candidates = router.resolve_candidates(
             task_type,
             provider_id=provider_id,
@@ -204,6 +208,15 @@ class AIBusinessAgentService:
         if not candidates:
             raise ValueError("Для этой задачи нет доступного provider/model.")
         runtime = candidates[0]
+        logger.info(
+            "AI_AGENT_START request_id=%s provider=%s model=%s organization=%s period=%s source=%s",
+            request_id,
+            runtime.get("provider_id"),
+            runtime.get("model_id"),
+            conversation.organization_id,
+            conversation.period,
+            source_channel,
+        )
         baseline = None
         if build_baseline and _looks_business_related(user_text):
             try:
@@ -258,26 +271,74 @@ class AIBusinessAgentService:
             for item in tools
             if isinstance(item, dict) and isinstance(item.get("function"), dict)
         }
-        logger.info(
-            "AI_AGENT_START request_id=%s provider=%s model=%s organization=%s period=%s source=%s",
-            request_id,
-            runtime.get("provider_id"),
-            runtime.get("model_id"),
-            conversation.organization_id,
-            conversation.period,
-            source_channel,
-        )
         logger.info("AI_AGENT_MODE request_id=%s mode=native", request_id)
+
+        async def model_request(
+            *,
+            round_number: int,
+            messages: list[dict[str, object]],
+            tool_choice: str | dict[str, object] | None,
+            model: str,
+            provider: str,
+        ):
+            request_started = monotonic()
+            logger.info(
+                "AI_AGENT_MODEL_REQUEST request_id=%s round=%s timestamp=%s tool_choice=%s provider=%s model=%s",
+                request_id,
+                round_number,
+                datetime.now(UTC).isoformat(),
+                tool_choice,
+                provider,
+                model,
+            )
+            try:
+                response = await _hermes_request(
+                    messages=messages,
+                    tools=tools,
+                    stream=False,
+                    tool_choice=tool_choice,
+                    model=model,
+                    provider=provider,
+                )
+            except Exception:
+                logger.info(
+                    "AI_AGENT_MODEL_RESPONSE request_id=%s round=%s elapsed_ms=%.2f action=invalid",
+                    request_id,
+                    round_number,
+                    (monotonic() - request_started) * 1000,
+                )
+                raise
+            action = "invalid"
+            usage_tokens = None
+            try:
+                payload = response.json()
+                usage = payload.get("usage") if isinstance(payload, dict) else None
+                if isinstance(usage, dict):
+                    usage_tokens = usage.get("total_tokens")
+                assistant = _extract_assistant_message(payload) if isinstance(payload, dict) else None
+                if assistant is not None:
+                    action = "query" if _parse_tool_calls(assistant) else "final"
+            except (ValueError, TypeError, json.JSONDecodeError):
+                pass
+            logger.info(
+                "AI_AGENT_MODEL_RESPONSE request_id=%s round=%s elapsed_ms=%.2f usage_tokens=%s action=%s status=%s",
+                request_id,
+                round_number,
+                (monotonic() - request_started) * 1000,
+                usage_tokens,
+                action,
+                response.status_code,
+            )
+            return response
 
         response = None
         for candidate in candidates:
-            candidate_response = await _hermes_request(
+            candidate_response = await model_request(
                 messages=messages,
-                tools=tools,
-                stream=False,
                 tool_choice="auto",
                 model=str(candidate["model_id"]),
                 provider=str(candidate["provider_id"]),
+                round_number=1,
             )
             if candidate_response.status_code < 400:
                 runtime = candidate
@@ -319,13 +380,12 @@ class AIBusinessAgentService:
                             "content": _structured_protocol_prompt(tools, repair=True)
                             + "\nValidation error: " + str(parse_error),
                         })
-                        response = await _hermes_request(
+                        response = await model_request(
                             messages=messages,
-                            tools=tools,
-                            stream=False,
                             tool_choice="auto",
                             model=str(runtime["model_id"]),
                             provider=str(runtime["provider_id"]),
+                            round_number=rounds + 1,
                         )
                         if response.status_code >= 400:
                             raise ValueError("AI provider вернул ошибку при исправлении structured action.")
@@ -345,9 +405,9 @@ class AIBusinessAgentService:
                         raise ValueError("AI не выполнил обязательную проверку бизнес-данных.")
                     final_text = str(structured_action["answer"])
                     logger.info(
-                        "AI_AGENT_FINAL request_id=%s rounds=%s tool_calls=%s provider=%s model=%s preview=%s",
+                        "AI_AGENT_FINAL request_id=%s rounds=%s tool_calls=%s provider=%s model=%s elapsed_ms=%.2f preview=%s",
                         request_id, rounds, total_tool_calls, runtime.get("provider_id"),
-                        runtime.get("model_id"), _preview(final_text),
+                        runtime.get("model_id"), (monotonic() - started_at) * 1000, _preview(final_text),
                     )
                     return AIBusinessAgentResult(
                         final_text=final_text, messages=messages, runtime=runtime,
@@ -398,15 +458,14 @@ class AIBusinessAgentService:
                         "role": "system",
                         "content": _structured_protocol_prompt(tools),
                     })
-                    response = await _hermes_request(
+                    response = await model_request(
                         messages=messages,
-                        tools=tools,
-                        stream=False,
                         # Hermes Codex accepts this request but ignores required.
                         # Structured JSON is the provider-independent enforcement layer.
                         tool_choice="auto",
                         model=str(runtime["model_id"]),
                         provider=str(runtime["provider_id"]),
+                        round_number=rounds + 1,
                     )
                     if response.status_code >= 400:
                         raise ValueError("AI provider вернул ошибку при повторной проверке business tools.")
@@ -414,12 +473,13 @@ class AIBusinessAgentService:
                 if business_request and evidence_retry_used and total_tool_calls == 0:
                     raise ValueError("AI не выполнил обязательную проверку бизнес-данных.")
                 logger.info(
-                    "AI_AGENT_FINAL request_id=%s rounds=%s tool_calls=%s provider=%s model=%s preview=%s",
+                    "AI_AGENT_FINAL request_id=%s rounds=%s tool_calls=%s provider=%s model=%s elapsed_ms=%.2f preview=%s",
                     request_id,
                     rounds,
                     total_tool_calls,
                     runtime.get("provider_id"),
                     runtime.get("model_id"),
+                    (monotonic() - started_at) * 1000,
                     _preview(final_text),
                 )
                 return AIBusinessAgentResult(
@@ -483,6 +543,15 @@ class AIBusinessAgentService:
                         tool_name,
                         _sanitized_args(arguments),
                     )
+                    if tool_name in {"query_business_data", "aggregate_sales", "query_inventory", "query_products", "query_customers", "query_returns", "query_visits", "query_finance"}:
+                        logger.info(
+                            "AI_BUSINESS_QUERY_START request_id=%s dataset=%s dimensions=%s metrics=%s",
+                            request_id,
+                            arguments.get("dataset") or tool_name.removeprefix("query_"),
+                            arguments.get("dimensions") or arguments.get("group_by"),
+                            arguments.get("metrics"),
+                        )
+                        query_started = monotonic()
                     tool_result = await _resolve_tool_result(
                         tool_name,
                         arguments,
@@ -492,6 +561,13 @@ class AIBusinessAgentService:
                     )
                     result_cache[cache_key] = tool_result
                     logger.info("AI_TOOL_RESULT request_id=%s name=%s rows=%s", request_id, tool_name, _row_count(tool_result))
+                    if tool_name in {"query_business_data", "aggregate_sales", "query_inventory", "query_products", "query_customers", "query_returns", "query_visits", "query_finance"}:
+                        logger.info(
+                            "AI_BUSINESS_QUERY_RESULT request_id=%s elapsed_ms=%.2f row_count=%s",
+                            request_id,
+                            (monotonic() - query_started) * 1000,
+                            _row_count(tool_result),
+                        )
                     if tool_name == "search_entities":
                         conversation_service = AIConversationService(self.store)
                         conversation_service.remember_entities(
@@ -517,13 +593,12 @@ class AIBusinessAgentService:
                     "role": "system",
                     "content": _structured_protocol_prompt(tools),
                 })
-            response = await _hermes_request(
+            response = await model_request(
                 messages=messages,
-                tools=tools,
-                stream=False,
                 tool_choice=tool_choice_for_round,
                 model=str(runtime["model_id"]),
                 provider=str(runtime["provider_id"]),
+                round_number=rounds + 1,
             )
             if response.status_code >= 400:
                 raise ValueError("AI provider вернул ошибку после выполнения business tool.")

@@ -2646,6 +2646,7 @@ export async function streamAiChat(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let receivedDone = false;
   while (true) {
     const { value, done } = await reader.read();
     buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
@@ -2658,9 +2659,13 @@ export async function streamAiChat(
       const payload = JSON.parse(data) as { content?: string; message?: string; provider_id?: string; provider_name?: string; model_id?: string };
       if (eventName === "error") throw new Error(payload.message || "Не удалось получить ответ AI.");
       if (eventName === "meta") onMeta?.(payload);
+      if (eventName === "done") receivedDone = true;
       if (payload.content) onChunk(payload.content);
     }
     if (done) break;
+  }
+  if (!receivedDone) {
+    throw new Error("AI Chat завершил соединение без готового ответа.");
   }
 }
 
