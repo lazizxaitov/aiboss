@@ -570,6 +570,17 @@ export type NotificationMutationResponse = {
 
 export type SmartUpMigrationStatus = "pending" | "running" | "completed" | "failed";
 
+export type SmartUpOrganizationConnectionState = {
+  organization_id: string;
+  organization_name: string;
+  status: "not_configured" | "checking" | "connected" | "retry_wait" | "error";
+  sync_available: boolean;
+  code: string | null;
+  message: string | null;
+  last_checked_at: string | null;
+  last_success_at: string | null;
+};
+
 export type SmartUpLiveSyncStatus = {
   enabled: boolean;
   status:
@@ -596,6 +607,7 @@ export type SmartUpLiveSyncStatus = {
   skipped_due_to_running: boolean;
   last_mode: SmartUpMigrationMode | null;
   message: string | null;
+  organization_connections: SmartUpOrganizationConnectionState[];
 };
 
 export type SmartUpMigrationJobResponse = {

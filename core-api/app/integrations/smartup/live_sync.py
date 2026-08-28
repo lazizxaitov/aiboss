@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, time, timedelta
+from logging import getLogger
 from threading import Event, Thread
 from time import sleep
 from typing import Literal
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field
@@ -21,7 +23,22 @@ from app.integrations.smartup.operations import (
     SmartUpAuthPayload,
 )
 
+logger = getLogger(__name__)
+
 LIVE_SYNC_STATUS_KEY = "smartup:live_sync_status:v1"
+
+
+class SmartUpOrganizationConnectionState(BaseModel):
+    """Persisted connection state for one configured SmartUp organization."""
+
+    organization_id: UUID
+    organization_name: str
+    status: Literal["not_configured", "checking", "connected", "retry_wait", "error"]
+    sync_available: bool = False
+    code: str | None = None
+    message: str | None = None
+    last_checked_at: datetime | None = None
+    last_success_at: datetime | None = None
 
 
 class SmartUpLiveSyncStatus(BaseModel):
@@ -52,6 +69,7 @@ class SmartUpLiveSyncStatus(BaseModel):
     skipped_due_to_running: bool = False
     last_mode: SmartUpMigrationMode | None = None
     message: str | None = None
+    organization_connections: list[SmartUpOrganizationConnectionState] = Field(default_factory=list)
 
 
 class SmartUpLiveSyncService:
@@ -96,7 +114,13 @@ class SmartUpLiveSyncService:
             if current.status == "not_configured" and self._configured_organizations():
                 self._run_startup_reconciliation()
                 continue
-            if current.status in {"retry_wait", "initial_sync_required"} and current.next_run_at and current.next_run_at <= now:
+            if (
+                current.status in {"retry_wait", "initial_sync_required"}
+                and current.next_run_at
+                and current.next_run_at <= now
+            ):
+                if not self._verify_startup_connections():
+                    continue
                 mode = (
                     SmartUpMigrationMode.FULL_BACKFILL
                     if self._initial_sync_required()
@@ -114,14 +138,7 @@ class SmartUpLiveSyncService:
                     break
 
     def _run_startup_reconciliation(self) -> None:
-        organizations = self._configured_organizations()
-        if not organizations:
-            self._save(SmartUpLiveSyncStatus(
-                enabled=settings.smartup_live_sync_enabled,
-                status="not_configured",
-                next_run_at=None,
-                message="SmartUp не настроен.",
-            ))
+        if not self._verify_startup_connections():
             return
 
         initial = self._initial_sync_required()
@@ -135,18 +152,143 @@ class SmartUpLiveSyncService:
             ),
         }))
         self.run_once(
-            SmartUpMigrationMode.FULL_BACKFILL if initial else SmartUpMigrationMode.WEEKLY_RECONCILIATION,
+            (
+                SmartUpMigrationMode.FULL_BACKFILL
+                if initial
+                else SmartUpMigrationMode.WEEKLY_RECONCILIATION
+            ),
             initial=initial,
         )
 
     def _configured_organizations(self):
         service = SmartUpAccountService(self.store)
+        return [
+            organization
+            for organization in service.list_organizations()
+            if organization.is_active
+            and service.resolve_organization_auth(organization).credentials_available
+        ]
+
+    def _verify_startup_connections(self) -> bool:
+        """Verify saved credentials before allowing the sync pipeline to run."""
+
+        service = SmartUpAccountService(self.store)
         organizations = service.list_organizations()
-        if not organizations:
-            return []
-        if any(not service.resolve_organization_auth(item).credentials_available for item in organizations):
-            return []
-        return organizations
+        now = datetime.now(UTC)
+        current = self.status()
+        previous = {str(item.organization_id): item for item in current.organization_connections}
+        states: list[SmartUpOrganizationConnectionState] = []
+        configured_count = 0
+        connected_count = 0
+
+        logger.info("SMARTUP_STARTUP_CHECK_START organizations=%s", len(organizations))
+        for organization in organizations:
+            if not organization.is_active:
+                continue
+            resolved = service.resolve_organization_auth(organization)
+            if not resolved.credentials_available:
+                state = SmartUpOrganizationConnectionState(
+                    organization_id=organization.id,
+                    organization_name=organization.name,
+                    status="not_configured",
+                    message="Сохраните credentials SmartUp для этой организации.",
+                    last_checked_at=now,
+                )
+                states.append(state)
+                logger.info(
+                    "SMARTUP_STARTUP_CHECK_FAILED organization_id=%s "
+                    "code=SMARTUP_CREDENTIALS_NOT_FOUND",
+                    organization.id,
+                )
+                continue
+
+            configured_count += 1
+            logger.info(
+                "SMARTUP_STARTUP_CHECK_ORGANIZATION organization_id=%s",
+                organization.id,
+            )
+            previous_state = previous.get(str(organization.id))
+            checking = SmartUpOrganizationConnectionState(
+                organization_id=organization.id,
+                organization_name=organization.name,
+                status="checking",
+                sync_available=False,
+                last_checked_at=now,
+                last_success_at=previous_state.last_success_at if previous_state else None,
+            )
+            states.append(checking)
+            self._save(current.model_copy(update={
+                "status": "initial_sync_required",
+                "organization_connections": states + [
+                    item for item in current.organization_connections
+                    if item.organization_id not in {state.organization_id for state in states}
+                ],
+                "message": "Проверяем подключение SmartUp...",
+            }))
+            try:
+                result = service.check_connection(organization.id, SmartUpAuthPayload())
+            except Exception as exc:  # noqa: BLE001
+                result = None
+                error_message = f"Не удалось проверить подключение SmartUp: {exc}"
+            else:
+                error_message = result.message
+
+            if result is not None and result.connected:
+                connected_count += 1
+                state = checking.model_copy(update={
+                    "status": "connected",
+                    "sync_available": True,
+                    "code": result.code,
+                    "message": result.message,
+                    "last_success_at": now,
+                })
+                logger.info("SMARTUP_STARTUP_CHECK_SUCCESS organization_id=%s", organization.id)
+            else:
+                code = result.code if result is not None else "SMARTUP_UNAVAILABLE"
+                state = checking.model_copy(update={
+                    "status": "retry_wait",
+                    "code": code,
+                    "message": error_message,
+                })
+                logger.info(
+                    "SMARTUP_STARTUP_CHECK_FAILED organization_id=%s code=%s",
+                    organization.id,
+                    code,
+                )
+                logger.info(
+                    "SMARTUP_CONNECTION_RETRY organization_id=%s next_retry_at=%s",
+                    organization.id,
+                    now + timedelta(seconds=60),
+                )
+            states[-1] = state
+
+        if configured_count == 0:
+            self._save(current.model_copy(update={
+                "status": "not_configured",
+                "organization_connections": states,
+                "next_run_at": None,
+                "message": "SmartUp не настроен.",
+            }))
+            logger.info("SMARTUP_STARTUP_CHECK_COMPLETE connected=0 configured=0")
+            return False
+
+        verified = connected_count > 0
+        self._save(current.model_copy(update={
+            "status": "initial_sync_required" if verified else "retry_wait",
+            "organization_connections": states,
+            "next_run_at": now if verified else now + timedelta(seconds=60),
+            "message": (
+                "Подключение SmartUp подтверждено. Запускаем синхронизацию."
+                if verified
+                else "Временно нет связи со SmartUp. Повторяем проверку автоматически."
+            ),
+        }))
+        logger.info(
+            "SMARTUP_STARTUP_CHECK_COMPLETE connected=%s configured=%s",
+            connected_count,
+            configured_count,
+        )
+        return verified
 
     def _initial_sync_required(self) -> bool:
         organizations = self._configured_organizations()
@@ -197,20 +339,29 @@ class SmartUpLiveSyncService:
             self._save(current.model_copy(update={
                 "status": "initial_sync_required" if initial else "ready",
                 "skipped_due_to_running": True,
-                "message": "Синхронизация уже выполняется. Автозапуск продолжится после её завершения.",
+                "message": (
+                    "Синхронизация уже выполняется. Автозапуск продолжится "
+                    "после её завершения."
+                ),
                 "next_run_at": datetime.now(UTC) + timedelta(seconds=30),
             }))
             return False
 
         now = datetime.now(UTC)
         window_days = 7 if mode == SmartUpMigrationMode.WEEKLY_RECONCILIATION else 2
+        current = self.status()
         self._save(SmartUpLiveSyncStatus(
             enabled=True,
             status="initial_sync_running" if initial else "live_sync_running",
             last_started_at=now,
             next_run_at=self._next_scheduled_run(now),
             last_mode=mode,
-            message="Первичная синхронизация SmartUp. Загружаем данные..." if initial else "Обновляем данные SmartUp...",
+            message=(
+                "Первичная синхронизация SmartUp. Загружаем данные..."
+                if initial
+                else "Обновляем данные SmartUp..."
+            ),
+            organization_connections=current.organization_connections,
         ))
         payload = SmartUpAuthPayload(
             migration_mode=mode,
@@ -232,8 +383,15 @@ class SmartUpLiveSyncService:
                 "last_completed_at": datetime.now(UTC),
                 "errors_count": 1,
                 "next_run_at": datetime.now(UTC) + timedelta(seconds=60),
-                "message": "Временно нет связи со SmartUp. Используются последние сохранённые данные. Повторное подключение выполняется автоматически.",
+                "message": (
+                    "Временно нет связи со SmartUp. Используются последние сохранённые "
+                    "данные. Повторное подключение выполняется автоматически."
+                ),
             }))
+            logger.info(
+                "SMARTUP_CONNECTION_RETRY next_retry_at=%s",
+                datetime.now(UTC) + timedelta(seconds=60),
+            )
             return False
 
         result = job.result

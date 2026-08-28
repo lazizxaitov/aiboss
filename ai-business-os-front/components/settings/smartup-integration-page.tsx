@@ -464,8 +464,8 @@ export function SmartUpIntegrationPage() {
                   Статус синхронизации
                 </h2>
               </div>
-              <Badge variant={liveSync?.status === "running" ? "accent" : liveSync?.status === "error" ? "dark" : "soft"}>
-                {liveSync?.status === "running" ? "выполняется" : liveSync?.status === "warning" ? "с предупреждениями" : liveSync?.status === "success" ? "активен" : "готово"}
+              <Badge variant={liveSync?.status === "running" || liveSync?.status === "initial_sync_running" || liveSync?.status === "live_sync_running" ? "accent" : liveSync?.status === "error" ? "dark" : "soft"}>
+                {liveSync?.status === "running" || liveSync?.status === "initial_sync_running" || liveSync?.status === "live_sync_running" ? "выполняется" : liveSync?.status === "warning" ? "с предупреждениями" : liveSync?.status === "success" || liveSync?.status === "ready" ? "активен" : liveSync?.status === "retry_wait" ? "повторная попытка" : "готово"}
               </Badge>
             </div>
 
