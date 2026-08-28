@@ -34,8 +34,8 @@ class AIRoleAssignment(BaseModel):
 
 class AIRoutingConfig(BaseModel):
     roles: dict[TaskType, AIRoleAssignment] = Field(default_factory=dict)
-    business_analytics_auto_enabled: bool = False
-    business_analytics_triggers: list[str] = Field(default_factory=list)
+    business_analytics_auto_enabled: bool = True
+    business_analytics_triggers: list[str] = Field(default_factory=lambda: ["after_sync"])
 
 
 class AIRoutingResponse(BaseModel):
@@ -78,6 +78,15 @@ class AITaskRouter:
         if setting is None:
             return self.default_config()
         config = AIRoutingConfig.model_validate(setting.setting_value)
+        # Older installations persisted the pre-automatic defaults. Once
+        # credentials and a successful sync exist, analytics must not silently
+        # remain disabled just because that legacy config had no triggers.
+        if not config.business_analytics_auto_enabled and not config.business_analytics_triggers:
+            config = config.model_copy(update={
+                "business_analytics_auto_enabled": True,
+                "business_analytics_triggers": ["after_sync"],
+            })
+            self._persist_config(config)
         migrated = self._migrate_legacy_config(config)
         if migrated != config:
             self._persist_config(migrated)

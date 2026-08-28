@@ -24,16 +24,15 @@ def configure_application_logging() -> None:
 
     application_logger = getLogger("app")
     application_logger.setLevel(INFO)
-    application_logger.propagate = True
-    root_logger = getLogger()
-    root_logger.setLevel(min(root_logger.level or INFO, INFO))
-    if root_logger.handlers:
+    application_logger.propagate = False
+    if any(getattr(handler, "_aiboss_application_handler", False) for handler in application_logger.handlers):
         return
 
     handler = StreamHandler(sys.stderr)
+    handler._aiboss_application_handler = True
     handler.setLevel(INFO)
     handler.setFormatter(Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
-    root_logger.addHandler(handler)
+    application_logger.addHandler(handler)
 
 
 @asynccontextmanager

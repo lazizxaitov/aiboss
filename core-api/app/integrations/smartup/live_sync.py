@@ -420,10 +420,16 @@ class SmartUpLiveSyncService:
             ),
         }))
         try:
+            logger.info(
+                "BUSINESS_ANALYSIS_TRIGGERED source=smartup_sync organizations=%s raw_records=%s canonical_updated=%s",
+                result.organizations_count,
+                result.counters.get("records", 0),
+                True,
+            )
             asyncio.run(AutoBusinessAnalyticsService(self.store).run_if_due(after_sync=True))
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             # Data sync remains successful even if optional AI refresh fails.
-            pass
+            logger.exception("BUSINESS_ANALYSIS_ERROR stage=trigger error=%s", str(exc)[:300])
         return not errors
 
     def _save(self, status: SmartUpLiveSyncStatus) -> None:

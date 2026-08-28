@@ -242,6 +242,13 @@ class AutoBusinessAnalyticsService:
         router = AITaskRouter(self.store)
         candidates = router.resolve_candidates("business_analytics")
         runtime = candidates[0] if candidates else {}
+        logger.info(
+            "BUSINESS_ANALYSIS_ROLE_RESOLVED role=business_analytics candidates=%s provider=%s model=%s fallback_used=%s",
+            len(candidates),
+            runtime.get("provider_id"),
+            runtime.get("model_id"),
+            runtime.get("fallback_used", False),
+        )
         started_at = datetime.now(UTC)
         self._save_status(AutoAnalyticsStatus(
             status="analyzing",
@@ -401,9 +408,20 @@ def _queries_from_agent_messages(messages: list[dict[str, object]]) -> list[dict
         config = AITaskRouter(self.store).get_config()
         triggers = set(config.business_analytics_triggers)
         latest = self.latest()
-        if config.business_analytics_auto_enabled and after_sync and "after_sync" in triggers:
+        logger.info(
+            "BUSINESS_ANALYSIS_TRIGGERED after_sync=%s auto_enabled=%s triggers=%s latest_analysis_id=%s",
+            after_sync,
+            config.business_analytics_auto_enabled,
+            sorted(triggers),
+            latest.analysis_id if latest else None,
+        )
+        if after_sync and config.business_analytics_auto_enabled and "after_sync" in triggers:
             return await self.run()
         if not config.business_analytics_auto_enabled or not latest:
+            logger.info(
+                "BUSINESS_ANALYSIS_TRIGGER_SKIPPED reason=%s",
+                "disabled" if not config.business_analytics_auto_enabled else "no_schedule_or_previous_analysis",
+            )
             return None
         now = datetime.now(UTC)
         if "daily" in triggers and now - latest.generated_at >= timedelta(days=1):

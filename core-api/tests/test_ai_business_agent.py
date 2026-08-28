@@ -141,14 +141,13 @@ def test_structured_malformed_json_gets_one_repair_retry():
     result, _, request = _run(
         "Проверь склад",
         [
-            _response({"content": "Нужна проверка."}),
             _response({"content": "не json"}),
             _response({"content": '{"action":"tool","tool":"query_inventory","arguments":{}}'}),
             _response({"content": '{"action":"final","answer":"Склад проверен."}'}),
         ],
     )
     assert result.final_text == "Склад проверен."
-    assert len(request.await_args_list) == 4
+    assert len(request.await_args_list) == 3
 
 
 def test_required_evidence_round_without_tool_returns_controlled_error():

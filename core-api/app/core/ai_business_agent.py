@@ -282,7 +282,10 @@ class AIBusinessAgentService:
         total_tool_calls = 0
         rounds = 0
         evidence_retry_used = False
-        structured_mode = False
+        # Business requests start in the internal structured protocol. This
+        # prevents a provider's own web/API discovery tools from becoming the
+        # execution path; the model still selects the approved tool/query.
+        structured_mode = business_request
         structured_repair_used = False
         tool_choice_for_round = "auto"
         tool_names = {
@@ -291,6 +294,12 @@ class AIBusinessAgentService:
             if isinstance(item, dict) and isinstance(item.get("function"), dict)
         }
         logger.info("AI_AGENT_MODE request_id=%s mode=native", request_id)
+        if structured_mode:
+            messages.append({
+                "role": "system",
+                "content": _structured_protocol_prompt(tools),
+            })
+            logger.info("AI_AGENT_MODE request_id=%s mode=structured", request_id)
 
         async def model_request(
             *,
@@ -310,6 +319,14 @@ class AIBusinessAgentService:
                 provider,
                 model,
             )
+            if task_type == "business_analytics":
+                logger.info(
+                    "BUSINESS_ANALYSIS_MODEL_REQUEST analysis_id=%s round=%s provider=%s model=%s",
+                    request_id,
+                    round_number,
+                    provider,
+                    model,
+                )
             try:
                 response = await _hermes_request(
                     messages=messages,
@@ -336,7 +353,21 @@ class AIBusinessAgentService:
                     usage_tokens = usage.get("total_tokens")
                 assistant = _extract_assistant_message(payload) if isinstance(payload, dict) else None
                 if assistant is not None:
-                    action = "query" if _parse_tool_calls(assistant) else "final"
+                    if _parse_tool_calls(assistant):
+                        action = "query"
+                    else:
+                        content = assistant.get("content")
+                        if isinstance(content, str):
+                            try:
+                                structured_action = json.loads(content)
+                            except json.JSONDecodeError:
+                                structured_action = None
+                            if isinstance(structured_action, dict) and structured_action.get("action") == "query":
+                                action = "query"
+                            else:
+                                action = "final"
+                        else:
+                            action = "final"
             except (ValueError, TypeError, json.JSONDecodeError):
                 pass
             logger.info(
