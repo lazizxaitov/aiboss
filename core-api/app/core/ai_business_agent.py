@@ -16,7 +16,6 @@ from app.core.data_layer.contracts import CoreDataStore
 from app.core.hermes_tools import HermesBusinessTools
 
 logger = getLogger(__name__)
-logger.setLevel("INFO")
 
 MAX_ROUNDS = 12
 MAX_TOOL_CALLS = 12

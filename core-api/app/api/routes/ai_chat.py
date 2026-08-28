@@ -38,7 +38,6 @@ from app.core.organization_context import OrganizationContextService
 
 router = APIRouter(prefix="/ai")
 logger = getLogger(__name__)
-logger.setLevel("INFO")
 
 
 class ChatMessage(BaseModel):

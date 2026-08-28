@@ -15,7 +15,6 @@ from app.core.auto_business_analytics import (
 from app.core.data_layer.contracts import CoreDataStore
 
 logger = getLogger(__name__)
-logger.setLevel("INFO")
 
 
 @dataclass(slots=True)

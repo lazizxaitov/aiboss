@@ -1,27 +1,47 @@
 """FastAPI application entrypoint."""
 
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from logging import getLogger
+from logging import INFO, Formatter, StreamHandler, getLogger
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.router import api_router
+from app.api.routes.auth import _session
 from app.core.config import settings
 from app.core.data_layer.factory import get_core_store
 from app.integrations.smartup.bootstrap import bootstrap_smartup_organizations_from_env
 from app.integrations.smartup.live_sync import SmartUpLiveSyncService
-from app.api.routes.auth import _session
 
 logger = getLogger(__name__)
+
+
+def configure_application_logging() -> None:
+    """Enable application INFO logs on the process stream used by Uvicorn."""
+
+    application_logger = getLogger("app")
+    application_logger.setLevel(INFO)
+    application_logger.propagate = True
+    root_logger = getLogger()
+    root_logger.setLevel(min(root_logger.level or INFO, INFO))
+    if root_logger.handlers:
+        return
+
+    handler = StreamHandler(sys.stderr)
+    handler.setLevel(INFO)
+    handler.setFormatter(Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root_logger.addHandler(handler)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Own application startup and shutdown for SmartUp runtime services."""
 
+    configure_application_logging()
+    logger.info("AIBOSS_APPLICATION_LOGGING_READY")
     store = get_core_store()
     result = bootstrap_smartup_organizations_from_env(store)
     if result.organizations:
