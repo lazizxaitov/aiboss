@@ -3,7 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 
 from app.core.ai_insight_presentation import AIInsightPresentationService
-from app.core.auto_business_analytics import AutoBusinessAnalyticsService
+from app.core.auto_business_analytics import AutoAnalyticsRun, AutoBusinessAnalyticsService
 from app.core.data_layer.contracts import CoreDataStore
 from app.core.data_layer.factory import get_core_store
 
@@ -20,6 +20,15 @@ def get_automatic_analytics_status(
 @router.get("/dashboard")
 def get_dashboard_insights(store: Annotated[CoreDataStore, Depends(get_core_store)]) -> dict:
     return AIInsightPresentationService(store).dashboard()
+
+
+@router.post("/analyze", response_model=AutoAnalyticsRun)
+async def run_dashboard_analysis(
+    store: Annotated[CoreDataStore, Depends(get_core_store)],
+) -> AutoAnalyticsRun:
+    """Run the existing business analytics agent on explicit user request."""
+
+    return await AutoBusinessAnalyticsService(store).run()
 
 
 @router.get("/page/{page}")

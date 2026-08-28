@@ -2607,11 +2607,22 @@ export type DashboardAIInsightsResponse = {
   summary: string | null;
   status?: string;
   message?: string;
+  findings: Array<Record<string, unknown>>;
+  opportunities: Array<Record<string, unknown>>;
+  recommendations: Array<Record<string, unknown>>;
+  provider_id?: string | null;
+  model_id?: string | null;
+  organization_ids?: string[];
+  period?: Record<string, unknown>;
   items: DashboardAIInsight[];
 };
 
 export async function getDashboardAIInsights(): Promise<DashboardAIInsightsResponse> {
   return requestJson<DashboardAIInsightsResponse>("/api/v1/ai/insights/dashboard", {}, 10_000);
+}
+
+export async function runDashboardAIAnalysis(): Promise<unknown> {
+  return requestJson<unknown>("/api/v1/ai/insights/analyze", { method: "POST" }, 120_000);
 }
 
 export async function streamAiChat(

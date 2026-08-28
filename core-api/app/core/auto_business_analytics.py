@@ -208,6 +208,18 @@ class AutoBusinessAnalyticsService:
             created_at=now,
             updated_at=now,
         ))
+        structured = run.structured_result
+        findings_count = (
+            len(structured.findings) + len(structured.insights) + len(structured.recommendations)
+            if structured is not None
+            else 0
+        )
+        logger.info(
+            "BUSINESS_ANALYSIS_SAVE analysis_id=%s findings_count=%s status=%s",
+            run.analysis_id,
+            findings_count,
+            run.status,
+        )
         return run
 
     async def run(self) -> AutoAnalyticsRun:
@@ -335,7 +347,7 @@ class AutoBusinessAnalyticsService:
                 run.model_id,
                 agent_result.rounds,
             )
-        except (ValueError, TypeError, json.JSONDecodeError) as error:
+        except Exception as error:  # noqa: BLE001 - failed runs must remain observable and persisted
             last_error = error
             logger.info("BUSINESS_ANALYSIS_ERROR analysis_id=%s error=%s", run.analysis_id, str(error)[:300])
         if run.status != "completed":
