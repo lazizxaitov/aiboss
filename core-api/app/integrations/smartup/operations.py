@@ -297,6 +297,13 @@ class _SmartUpMigrationJobRegistry:
                 return None
             return job.model_copy(deep=True)
 
+    def active(self) -> SmartUpMigrationJobResponse | None:
+        with self.lock:
+            for job in reversed(list(self.jobs.values())):
+                if job.status in {"pending", "running"}:
+                    return job.model_copy(deep=True)
+        return None
+
     def update(self, job_id: UUID, **changes: object) -> SmartUpMigrationJobResponse | None:
         with self.lock:
             job = self.jobs.get(job_id)
@@ -601,6 +608,9 @@ class SmartUpAccountService:
             return self._migrate_all_core(payload)
 
     def start_migration_job(self, payload: SmartUpAuthPayload) -> SmartUpMigrationJobResponse:
+        active_job = _MIGRATION_JOBS.active()
+        if active_job is not None:
+            return active_job
         job = _MIGRATION_JOBS.create("Миграция SmartUp поставлена в очередь.")
         _MIGRATION_JOBS.update(job.job_id, migration_mode=payload.migration_mode)
         thread = Thread(
