@@ -132,6 +132,19 @@ def test_business_text_without_tools_gets_generic_evidence_retry():
     assert all(call.kwargs["tool_choice"] == "none" for call in request.await_args_list)
 
 
+def test_seller_lookup_with_past_tense_enters_structured_business_flow():
+    result, resolve, request = _run(
+        "Кто продал больше по сумме за эту неделю?",
+        [
+            _response({"content": '{"action":"query","query":{"dataset":"sales","dimensions":["manager"],"metrics":["revenue"],"limit":5}}'}),
+            _response({"content": '{"action":"final","answer":"Бекзод — лидер по сумме продаж."}'}),
+        ],
+    )
+    assert result.final_text == "Бекзод — лидер по сумме продаж."
+    assert resolve.await_args.args[0] == "query_business_data"
+    assert request.await_args_list[0].kwargs["response_format"] == {"type": "json_object"}
+
+
 def test_structured_multi_step_agent_lets_model_choose_each_tool():
     result, resolve, request = _run(
         "Почему продажи упали?",
