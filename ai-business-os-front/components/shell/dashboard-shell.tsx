@@ -10,6 +10,7 @@ import { SessionLockGuard } from "@/components/auth/session-lock-guard";
 import { MobileInstallPrompt } from "@/components/pwa/mobile-install-prompt";
 import { MobileBottomNav } from "@/components/shell/mobile-bottom-nav";
 import { DashboardAssistantPanel } from "@/components/dashboard/dashboard-grid";
+import { BackendStartupGate } from "@/components/startup/backend-startup-gate";
 import { usePathname } from "next/navigation";
 
 export function DashboardShell({
@@ -20,6 +21,7 @@ export function DashboardShell({
   const pathname = usePathname();
   return (
     <Suspense fallback={null}>
+      <BackendStartupGate>
       <SessionLockGuard>
       <BusinessRefreshProvider>
         <BusinessContextProvider>
@@ -38,6 +40,7 @@ export function DashboardShell({
         </BusinessContextProvider>
       </BusinessRefreshProvider>
       </SessionLockGuard>
+      </BackendStartupGate>
     </Suspense>
   );
 }

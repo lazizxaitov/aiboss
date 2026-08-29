@@ -85,6 +85,10 @@ export function SessionLockGuard({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (hydrated && !authenticated) router.replace("/login");
+  }, [authenticated, hydrated, router]);
+
+  useEffect(() => {
     const preventLockedNavigation = (event: MouseEvent) => {
       if (!locked) return;
       const target = event.target;
