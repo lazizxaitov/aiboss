@@ -19,6 +19,9 @@ logger = getLogger(__name__)
 
 MAX_ROUNDS = 12
 MAX_TOOL_CALLS = 12
+CHAT_MAX_ROUNDS = 4
+CHAT_TOOL_CALLS = 2
+LIGHTWEIGHT_ANALYSIS_MAX_ROUNDS = 6
 
 
 def _tool_catalog(tools: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -45,6 +48,7 @@ def _structured_protocol_prompt(tools: list[dict[str, object]], *, repair: bool 
         "Return exactly one JSON object with one of two actions: query or final.\n"
         "For business data, return: {\"action\":\"query\",\"query\":{\"dataset\":\"sales\",\"period\":\"this_week\",\"dimensions\":[\"manager\"],\"metrics\":[\"revenue\"],\"filters\":{},\"sort\":[{\"field\":\"revenue\",\"direction\":\"desc\"}],\"limit\":5}}.\n"
         "After verified evidence is supplied, return: {\"action\":\"final\",\"answer\":\"...\",\"evidence\":[]}.\n"
+        "Do not query for the sake of querying. Once sufficient evidence exists to answer the task, you MUST return final.\n"
         "Do not claim that business data or tools are unavailable before attempting a relevant tool.\n"
         "The backend validates the selected tool and arguments; never select a provider or access SQL, RAW, files, or secrets.\n"
         + repair_text
@@ -289,6 +293,7 @@ class AIBusinessAgentService:
                 },
             )
         result_cache: dict[str, object] = {}
+        duplicate_query_keys: set[str] = set()
         total_tool_calls = 0
         rounds = 0
         evidence_retry_used = False
@@ -298,6 +303,12 @@ class AIBusinessAgentService:
         structured_mode = business_request
         structured_repair_used = False
         tool_choice_for_round = "auto"
+        max_rounds = MAX_ROUNDS
+        if task_type == "ai_chat" and business_request:
+            max_rounds = CHAT_MAX_ROUNDS
+            tool_call_budget = min(tool_call_budget, CHAT_TOOL_CALLS)
+        elif task_type == "business_analytics" and tool_call_budget <= 4:
+            max_rounds = LIGHTWEIGHT_ANALYSIS_MAX_ROUNDS
         tool_names = {
             str(item.get("function", {}).get("name"))
             for item in tools
@@ -415,7 +426,49 @@ class AIBusinessAgentService:
         if response is None:
             raise ValueError("Не удалось выполнить запрос через доступные provider/model.")
 
-        for rounds in range(1, MAX_ROUNDS + 1):
+        async def final_synthesis(*, round_number: int) -> AIBusinessAgentResult:
+            """Ask once for an evidence-only answer when the loop cannot continue."""
+
+            messages.append({
+                "role": "system",
+                "content": (
+                    "FINAL SYNTHESIS: Use ONLY the authoritative business evidence already collected in this conversation. "
+                    "Do not request or call any more tools. Return the final answer now. "
+                    "If the evidence is insufficient, state exactly what is missing."
+                ),
+            })
+            synthesis_response = await model_request(
+                messages=messages,
+                tool_choice="auto",
+                model=str(runtime["model_id"]),
+                provider=str(runtime["provider_id"]),
+                round_number=round_number,
+            )
+            if synthesis_response.status_code >= 400:
+                raise ValueError("AI provider не смог сформировать финальный ответ по полученным данным.")
+            assistant = _extract_assistant_message(synthesis_response.json())
+            if assistant is None or _parse_tool_calls(assistant):
+                raise ValueError("AI не смог сформировать финальный ответ по полученным данным.")
+            if structured_mode:
+                action, error = _parse_structured_action(assistant.get("content"), tool_names)
+                if action is None or action.get("action") != "final":
+                    raise ValueError(error or "AI не смог сформировать финальный ответ по полученным данным.")
+                final_text = str(action["answer"])
+            else:
+                final_text = str(assistant.get("content") or "")
+            if not final_text.strip():
+                raise ValueError("AI не смог сформировать финальный ответ по полученным данным.")
+            logger.info(
+                "AI_AGENT_FINAL request_id=%s rounds=%s tool_calls=%s provider=%s model=%s elapsed_ms=%.2f preview=%s",
+                request_id, round_number, total_tool_calls, runtime.get("provider_id"),
+                runtime.get("model_id"), (monotonic() - started_at) * 1000, _preview(final_text),
+            )
+            return AIBusinessAgentResult(
+                final_text=final_text, messages=messages, runtime=runtime,
+                rounds=round_number, tool_calls=total_tool_calls,
+            )
+
+        for rounds in range(1, max_rounds + 1):
             logger.info(
                 "AI_AGENT_ROUND request_id=%s round=%s tool_calls=%s tool_choice=%s",
                 request_id,
@@ -587,6 +640,8 @@ class AIBusinessAgentService:
                     sort_keys=True,
                     default=str,
                 )
+                cached_query = cache_key in result_cache
+                repeated_query = cached_query and cache_key in duplicate_query_keys
                 validation_error = _validate_tool_arguments(tool_name, arguments, tools)
                 if validation_error:
                     tool_result = {
@@ -596,6 +651,7 @@ class AIBusinessAgentService:
                     logger.info("AI_TOOL_RESULT request_id=%s name=%s rejected=true", request_id, tool_name)
                 elif cache_key in result_cache:
                     tool_result = result_cache[cache_key]
+                    duplicate_query_keys.add(cache_key)
                     logger.info("AI_TOOL_RESULT request_id=%s name=%s rows=%s cached=true", request_id, tool_name, _row_count(tool_result))
                 elif total_tool_calls >= tool_call_budget:
                     tool_result = {
@@ -648,6 +704,23 @@ class AIBusinessAgentService:
                     "content": "AUTHORITATIVE AI BUSINESS OS TOOL RESULT. Use these returned values as factual business evidence.\n"
                     + json.dumps(tool_result, ensure_ascii=False, default=str),
                 })
+                if cached_query:
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "This exact query has already been executed. Use the cached authoritative evidence below. "
+                            "Do not repeat this query. Return action=final now; no further query is needed."
+                        ),
+                    })
+                else:
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "The requested business data has now been retrieved. The result below is TRUSTED BUSINESS "
+                            "EVIDENCE from AI Business OS. If it is sufficient to answer the original user question, "
+                            "return action=final now. Only request another query when specific additional data is genuinely required."
+                        ),
+                    })
                 if task_type == "business_analytics":
                     logger.info(
                         "BUSINESS_ANALYSIS_QUERY_RESULT analysis_id=%s tool=%s rows=%s",
@@ -655,6 +728,10 @@ class AIBusinessAgentService:
                         tool_name,
                         _row_count(tool_result),
                     )
+                if repeated_query:
+                    return await final_synthesis(round_number=rounds + 1)
+            if rounds >= max_rounds:
+                return await final_synthesis(round_number=rounds + 1)
             tool_choice_for_round = "auto"
             if structured_mode:
                 messages.append({
@@ -670,6 +747,8 @@ class AIBusinessAgentService:
             )
             if response.status_code >= 400:
                 raise ValueError("AI provider вернул ошибку после выполнения business tool.")
+        if total_tool_calls:
+            return await final_synthesis(round_number=max_rounds + 1)
         raise ValueError("AI достиг безопасного лимита шагов без финального ответа.")
 
 

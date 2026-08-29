@@ -240,6 +240,36 @@ def test_multi_step_analysis_and_duplicate_tool_call_are_bounded():
     assert request.await_args_list[1].kwargs["tool_choice"] == "none"
 
 
+def test_repeated_structured_query_uses_cached_evidence_and_synthesizes_final():
+    query = '{"action":"query","query":{"dataset":"sales","dimensions":["manager"],"metrics":["revenue"]}}'
+    result, resolve, request = _run(
+        "Кто продал больше всех за неделю?",
+        [
+            _response({"content": query}),
+            _response({"content": query}),
+            _response({"content": '{"action":"final","answer":"Бекзод — 100."}'}),
+        ],
+    )
+    assert result.final_text == "Бекзод — 100."
+    assert resolve.await_count == 1
+    assert len(request.await_args_list) == 3
+
+
+def test_step_limit_uses_evidence_only_final_synthesis():
+    tool_call = {"id": "1", "function": {"name": "aggregate_sales", "arguments": '{"group_by":"manager"}'}}
+    result, resolve, request = _run(
+        "Почему продажи упали?",
+        [
+            _response({"content": None, "tool_calls": [tool_call]}),
+            _response({"content": None, "tool_calls": [tool_call]}),
+            _response({"content": "Падение подтверждено по собранным данным."}),
+        ],
+    )
+    assert result.final_text == "Падение подтверждено по собранным данным."
+    assert resolve.await_count == 1
+    assert len(request.await_args_list) == 3
+
+
 def test_broad_analysis_can_execute_multiple_distinct_tools():
     first = {"id": "1", "function": {"name": "compare_periods", "arguments": "{}"}}
     second = {"id": "2", "function": {"name": "detect_anomalies", "arguments": "{}"}}
