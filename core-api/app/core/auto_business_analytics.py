@@ -87,6 +87,7 @@ class AutoAnalyticsResult(BaseModel):
     fallback_used: bool = False
     kpis: list[dict[str, Any]] = Field(default_factory=list)
     insights: list[AutoAnalyticsInsight] = Field(default_factory=list)
+    warnings: list[Any] = Field(default_factory=list)
     recommendations: list[AutoAnalyticsRecommendation] = Field(default_factory=list)
     anomalies: list[str] = Field(default_factory=list)
     top_opportunities: list[str] = Field(default_factory=list)
@@ -338,7 +339,14 @@ class AutoBusinessAnalyticsService:
             raw = agent_result.final_text.strip()
             if raw.startswith("```"):
                 raw = "\n".join(raw.splitlines()[1:-1]).strip()
-            result = AutoAnalyticsResult.model_validate(json.loads(raw))
+            payload = json.loads(raw)
+            if isinstance(payload, dict) and isinstance(payload.get("findings"), list):
+                payload["findings"] = [
+                    {"title": item, "description": item}
+                    if isinstance(item, str) else item
+                    for item in payload["findings"]
+                ]
+            result = AutoAnalyticsResult.model_validate(payload)
             result.provider_id = str(agent_result.runtime.get("provider_id"))
             result.model_id = str(agent_result.runtime.get("model_id"))
             result.fallback_used = bool(agent_result.runtime.get("fallback_used"))

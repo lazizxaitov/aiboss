@@ -123,7 +123,7 @@ def test_business_text_without_tools_gets_generic_evidence_retry():
         [
             _response({"content": "В baseline нет разбивки по менеджерам."}),
             _response({"content": '{"action":"query","query":{"dataset":"sales","dimensions":["manager"],"metrics":["revenue"],"limit":5}}'}),
-            _response({"content": '{"action":"final","answer":"Ответ подтвержден строками менеджеров"}'}),
+            _response({"content": "Ответ подтвержден строками менеджеров"}),
         ],
     )
     assert result.final_text == "Ответ подтвержден строками менеджеров"
@@ -137,7 +137,7 @@ def test_seller_lookup_with_past_tense_enters_structured_business_flow():
         "Кто продал больше по сумме за эту неделю?",
         [
             _response({"content": '{"action":"query","query":{"dataset":"sales","dimensions":["manager"],"metrics":["revenue"],"limit":5}}'}),
-            _response({"content": '{"action":"final","answer":"Бекзод — лидер по сумме продаж."}'}),
+                _response({"content": "Бекзод — лидер по сумме продаж."}),
         ],
     )
     assert result.final_text == "Бекзод — лидер по сумме продаж."
@@ -152,7 +152,7 @@ def test_structured_multi_step_agent_lets_model_choose_each_tool():
             _response({"content": "Сначала проверю данные."}),
             _response({"content": '{"action":"query","query":{"dataset":"sales","dimensions":["date"],"metrics":["revenue"]}}'}),
             _response({"content": '{"action":"query","query":{"dataset":"sales","dimensions":["manager"],"metrics":["revenue"]}}'}),
-            _response({"content": '{"action":"final","answer":"Падение подтверждено."}'}),
+            _response({"content": "Падение подтверждено."}),
         ],
     )
     assert result.final_text == "Падение подтверждено."
@@ -168,7 +168,7 @@ def test_structured_invalid_dataset_is_rejected_without_execution():
             _response({"content": "Проверю данные."}),
             _response({"content": '{"action":"query","query":{"dataset":"not_approved","metrics":["revenue"]}}'}),
             _response({"content": '{"action":"query","query":{"dataset":"sales","metrics":["revenue"]}}'}),
-            _response({"content": '{"action":"final","answer":"Проверка завершена."}'}),
+            _response({"content": "Проверка завершена."}),
         ],
     )
     assert result.final_text == "Проверка завершена."
@@ -181,7 +181,7 @@ def test_structured_malformed_json_gets_one_repair_retry():
         [
             _response({"content": "не json"}),
             _response({"content": '{"action":"query","query":{"dataset":"inventory","metrics":["current_stock"]}}'}),
-            _response({"content": '{"action":"final","answer":"Склад проверен."}'}),
+            _response({"content": "Склад проверен."}),
         ],
     )
     assert result.final_text == "Склад проверен."
@@ -240,19 +240,55 @@ def test_multi_step_analysis_and_duplicate_tool_call_are_bounded():
     assert request.await_args_list[1].kwargs["tool_choice"] == "none"
 
 
-def test_repeated_structured_query_uses_cached_evidence_and_synthesizes_final():
+def test_chat_passes_actual_query_rows_to_next_model_request():
     query = '{"action":"query","query":{"dataset":"sales","dimensions":["manager"],"metrics":["revenue"]}}'
     result, resolve, request = _run(
         "Кто продал больше всех за неделю?",
         [
             _response({"content": query}),
-            _response({"content": query}),
-            _response({"content": '{"action":"final","answer":"Бекзод — 100."}'}),
+            _response({"content": "Seller A — 500000."}),
+        ],
+        tool_result=[
+            {"manager": "Seller A", "revenue": 500000},
+            {"manager": "Seller B", "revenue": 300000},
         ],
     )
-    assert result.final_text == "Бекзод — 100."
+    assert result.final_text == "Seller A — 500000."
     assert resolve.await_count == 1
-    assert len(request.await_args_list) == 3
+    follow_up_messages = request.await_args_list[1].kwargs["messages"]
+    serialized = "\n".join(str(message.get("content")) for message in follow_up_messages)
+    assert "Seller A" in serialized
+    assert "500000" in serialized
+    assert "Seller B" in serialized
+    assert "300000" in serialized
+
+
+def test_business_analytics_accepts_structured_result_without_chat_answer_action():
+    async def execute():
+        with patch("app.api.routes.ai_chat._hermes_request", new_callable=AsyncMock) as request:
+            request.side_effect = [
+                _response({"content": '{"action":"query","query":{"dataset":"sales","metrics":["revenue"]}}'}),
+                _response({
+                    "content": (
+                        '{"summary":"Продажи выросли","findings":["Seller A лидер"],'
+                        '"warnings":[],"opportunities":[],"recommendations":[]}'
+                    ),
+                }),
+            ]
+            with patch("app.api.routes.ai_chat._resolve_tool_result", new_callable=AsyncMock) as resolve:
+                resolve.return_value = [{"manager": "Seller A", "revenue": 500000}]
+                result = await AIBusinessAgentService(object()).run(
+                    conversation=_conversation("Сделай краткий анализ продаж"),
+                    user_text="Сделай краткий анализ продаж",
+                    source_channel="system", task_type="business_analytics", router=FakeRouter(),
+                    tools_service=FakeTools(), widget_builder=object(), memory_prompt="memory",
+                    system_prompt="agent", build_baseline=False, tool_call_budget=4,
+                )
+                return result, resolve
+
+    result, resolve = asyncio.run(execute())
+    assert '"summary": "Продажи выросли"' in result.final_text
+    assert resolve.await_count == 1
 
 
 def test_step_limit_uses_evidence_only_final_synthesis():

@@ -73,26 +73,9 @@ def _parse_structured_action(
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
         text = "\n".join(lines).strip()
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
-        # Providers occasionally add a short preamble or trailing explanation
-        # despite JSON mode. Accept an unambiguous JSON object and validate it
-        # exactly like a clean response.
-        decoder = json.JSONDecoder()
-        payload = None
-        for index, character in enumerate(text):
-            if character != "{":
-                continue
-            try:
-                candidate, end = decoder.raw_decode(text[index:])
-            except json.JSONDecodeError:
-                continue
-            if isinstance(candidate, dict) and not text[index + end :].lstrip().startswith("{"):
-                payload = candidate
-                break
-        if payload is None:
-            return None, "Ответ structured agent не является корректным JSON."
+    payload = _parse_json_object(text)
+    if payload is None:
+        return None, "Ответ structured agent не является корректным JSON."
     if not isinstance(payload, dict):
         return None, "Structured action должен быть JSON-объектом."
     action = payload.get("action")
@@ -112,6 +95,45 @@ def _parse_structured_action(
             "approved": True,
         }, None
     return None, "Поле action должно быть query или final."
+
+
+def _parse_json_object(content: object) -> dict[str, object] | None:
+    """Parse a provider JSON object while tolerating a short text wrapper."""
+
+    if not isinstance(content, str) or not content.strip():
+        return None
+    text = content.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        for index, character in enumerate(text):
+            if character != "{":
+                continue
+            try:
+                candidate, end = decoder.raw_decode(text[index:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict) and not text[index + end :].lstrip().startswith("{"):
+                return candidate
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _is_analytics_result(payload: dict[str, object] | None) -> bool:
+    """Recognize the analytics result contract without requiring chat actions."""
+
+    if not isinstance(payload, dict) or not isinstance(payload.get("summary"), str):
+        return False
+    fields = ("findings", "warnings", "opportunities", "recommendations", "insights", "risks")
+    return any(field in payload and isinstance(payload[field], list) for field in fields)
 
 
 def _validate_tool_arguments(
@@ -265,7 +287,11 @@ class AIBusinessAgentService:
                     ),
                 },
             )
-        business_request = _looks_business_related(user_text)
+        business_request = _looks_business_related(user_text) or any(
+            _looks_business_related(message.content)
+            for message in conversation.messages
+            if message.role == "user" and message.content != user_text
+        )
         internal_business = business_request or task_type in {
             "business_analytics",
             "system_action",
@@ -311,6 +337,7 @@ class AIBusinessAgentService:
         # prevents a provider's own web/API discovery tools from becoming the
         # execution path; the model still selects the approved tool/query.
         structured_mode = business_request
+        chat_lookup = task_type == "ai_chat" and not _looks_analytical_request(user_text)
         structured_repair_used = False
         tool_choice_for_round = "auto"
         max_rounds = MAX_ROUNDS
@@ -371,7 +398,7 @@ class AIBusinessAgentService:
                     provider=provider,
                     response_format=(
                         {"type": "json_object"}
-                        if internal_business
+                        if structured_mode
                         else None
                     ),
                 )
@@ -498,6 +525,30 @@ class AIBusinessAgentService:
             tool_calls = _parse_tool_calls(assistant_message)
             structured_action: dict[str, object] | None = None
             if structured_mode and not tool_calls:
+                if task_type != "business_analytics" and total_tool_calls:
+                    payload = _parse_json_object(assistant_message.get("content"))
+                    if not isinstance(payload, dict) or payload.get("action") != "query":
+                        final_text = str(assistant_message.get("content") or "")
+                        if isinstance(payload, dict) and payload.get("action") == "final":
+                            final_text = str(payload.get("answer") or "")
+                        if final_text.strip():
+                            return AIBusinessAgentResult(
+                                final_text=final_text, messages=messages, runtime=runtime,
+                                rounds=rounds, tool_calls=total_tool_calls,
+                            )
+                if task_type == "business_analytics":
+                    analytics_payload = _parse_json_object(assistant_message.get("content"))
+                    if _is_analytics_result(analytics_payload):
+                        final_text = json.dumps(analytics_payload, ensure_ascii=False, default=str)
+                        logger.info(
+                            "AI_AGENT_FINAL request_id=%s rounds=%s tool_calls=%s provider=%s model=%s elapsed_ms=%.2f preview=%s",
+                            request_id, rounds, total_tool_calls, runtime.get("provider_id"),
+                            runtime.get("model_id"), (monotonic() - started_at) * 1000, _preview(final_text),
+                        )
+                        return AIBusinessAgentResult(
+                            final_text=final_text, messages=messages, runtime=runtime,
+                            rounds=rounds, tool_calls=total_tool_calls,
+                        )
                 structured_action, parse_error = _parse_structured_action(
                     assistant_message.get("content"),
                     tool_names,
@@ -636,6 +687,7 @@ class AIBusinessAgentService:
             for tool_call in tool_calls:
                 arguments = _tool_arguments(tool_call)
                 tool_name = str(tool_call.get("function", {}).get("name") or "")
+                query_executed = False
                 if task_type == "business_analytics":
                     logger.info(
                         "BUSINESS_ANALYSIS_QUERY analysis_id=%s query_number=%s tool=%s args=%s",
@@ -693,6 +745,7 @@ class AIBusinessAgentService:
                         widget_builder,
                         router,
                     )
+                    query_executed = tool_name == "query_business_data"
                     result_cache[cache_key] = tool_result
                     logger.info("AI_TOOL_RESULT request_id=%s name=%s rows=%s", request_id, tool_name, _row_count(tool_result))
                     if tool_name in {"query_business_data", "aggregate_sales", "query_inventory", "query_products", "query_customers", "query_returns", "query_visits", "query_finance"}:
@@ -740,6 +793,16 @@ class AIBusinessAgentService:
                     )
                 if repeated_query:
                     return await final_synthesis(round_number=rounds + 1)
+                if task_type != "business_analytics" and query_executed and chat_lookup:
+                    structured_mode = False
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "The query result above contains the actual returned business rows. "
+                            "Answer the original user question in ordinary natural language now. "
+                            "Do not return another query action and do not say that the result was not passed."
+                        ),
+                    })
             if rounds >= max_rounds:
                 return await final_synthesis(round_number=rounds + 1)
             tool_choice_for_round = "auto"
@@ -805,3 +868,15 @@ def _looks_business_related(text: str) -> bool:
     }
     normalized = text.lower()
     return any(term in normalized for term in business_terms)
+
+
+def _looks_analytical_request(text: str) -> bool:
+    """Keep multi-step investigations structured; simple lookups can answer in prose."""
+
+    analytical_terms = (
+        "почему", "проанализ", "сравни", "сравнение", "динамик", "проблем",
+        "аномал", "рекомендац", "главн", "обзор", "исследуй", "исследован",
+        "упал", "сниз", "вырос", "изменил", "что происходит",
+    )
+    normalized = text.lower()
+    return any(term in normalized for term in analytical_terms)
