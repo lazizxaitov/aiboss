@@ -2,7 +2,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.core.ai_readonly_sql import AIReadOnlyQueryError, AIReadOnlySQLService
+from app.core.ai_readonly_sql import (
+    AIReadOnlyQueryError,
+    AIReadOnlySQLService,
+    AI_ANALYTICAL_VIEW_DDL,
+    AI_ANALYTICAL_VIEW_SQLITE_DDL,
+)
 
 
 class FakeStore:
@@ -27,6 +32,12 @@ def test_sql_research_is_scoped_limited_and_read_only():
     assert params == ("org-1",)
     assert timeout == 20_000
     assert "LIMIT 100" in sql
+
+
+def test_database_specific_view_ddl_is_idempotent():
+    assert len(AI_ANALYTICAL_VIEW_DDL) == 10
+    assert all(statement.startswith("CREATE OR REPLACE VIEW ai_") for statement in AI_ANALYTICAL_VIEW_DDL)
+    assert all(statement.startswith("CREATE VIEW IF NOT EXISTS ai_") for statement in AI_ANALYTICAL_VIEW_SQLITE_DDL)
 
 
 @pytest.mark.parametrize("query", [

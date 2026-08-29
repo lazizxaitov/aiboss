@@ -16,7 +16,7 @@ from uuid import UUID
 from app.core.data_layer.schema import CORE_DATA_LAYER_SCHEMA_V2
 from app.storage.postgres.adapter import PostgresCoreStore, Row
 from app.storage.sqlite.ddl import render_core_data_layer_ddl
-from app.core.ai_readonly_sql import AI_ANALYTICAL_VIEW_DDL
+from app.core.ai_readonly_sql import AI_ANALYTICAL_VIEW_SQLITE_DDL
 
 
 class SQLiteCursor(Protocol):
@@ -124,7 +124,7 @@ class SQLiteCoreStore(PostgresCoreStore):
         """Create core tables and indexes if they do not exist."""
 
         self._execute_many(render_core_data_layer_ddl())
-        self._execute_many(list(AI_ANALYTICAL_VIEW_DDL))
+        self._execute_many(list(AI_ANALYTICAL_VIEW_SQLITE_DDL))
 
     def execute_ai_readonly_sql(
         self,

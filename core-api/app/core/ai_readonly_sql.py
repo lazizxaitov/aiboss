@@ -116,15 +116,19 @@ class AIReadOnlySQLService:
         }
 
 
-AI_ANALYTICAL_VIEW_DDL = (
-    "CREATE VIEW IF NOT EXISTS ai_sales AS SELECT organization_id, sale_at, sales_rep_id, sales_rep_external_id, customer_id, customer_external_id, customer_name, total_amount, sold_quantity, returned_quantity, order_id, deal_id, currency_code FROM canonical_sales",
-    "CREATE VIEW IF NOT EXISTS ai_sale_items AS SELECT organization_id, sale_id, sale_external_id, product_id, product_external_id, product_code, product_name, warehouse_id, warehouse_external_id, sold_quantity, returned_quantity, unit_price, amount, margin_amount, currency_code FROM canonical_sale_items",
-    "CREATE VIEW IF NOT EXISTS ai_orders AS SELECT organization_id, order_at, sales_rep_id, sales_rep_external_id, customer_id, customer_external_id, customer_name, total_amount, ordered_quantity, sold_quantity, normalized_status, order_id, deal_id, currency_code FROM canonical_orders",
-    "CREATE VIEW IF NOT EXISTS ai_products AS SELECT organization_id, id, product_id, code, name, short_name, state, source_kind, measure_code FROM canonical_products",
-    "CREATE VIEW IF NOT EXISTS ai_customers AS SELECT organization_id, id, person_id, code, name, short_name, state, customer_kind FROM canonical_customers",
-    "CREATE VIEW IF NOT EXISTS ai_returns AS SELECT organization_id, return_at, sales_rep_id, sales_rep_external_id, customer_id, customer_external_id, customer_name, total_amount, returned_quantity, normalized_status, linked_sale_id, deal_id, currency_code FROM canonical_customer_returns",
-    "CREATE VIEW IF NOT EXISTS ai_visits AS SELECT organization_id, visit_date, visited_at, sales_rep_id, sales_rep_external_id, sales_rep_name, customer_id, customer_external_id, customer_name, working_zone_id, working_zone_external_id FROM canonical_visits",
-    "CREATE VIEW IF NOT EXISTS ai_inventory AS SELECT organization_id, snapshot_date, warehouse_id, warehouse_external_id, product_id, product_external_id, product_code, product_name, quantity, available_quantity, reserved_quantity, valuation_amount, currency_code, inventory_kind FROM canonical_inventory_balances",
-    "CREATE VIEW IF NOT EXISTS ai_finance AS SELECT organization_id, operation_at, normalized_operation_type, direction, amount, currency_code, counterparty_external_id, posted FROM canonical_financial_operations",
-    "CREATE VIEW IF NOT EXISTS ai_organizations AS SELECT organization_id, name, company_id, filial_id, filial_code, project_code, is_active FROM canonical_organizations",
+_AI_VIEW_SELECTS = (
+    "ai_sales AS SELECT organization_id, sale_at, sales_rep_id, sales_rep_external_id, customer_id, customer_external_id, customer_name, total_amount, sold_quantity, returned_quantity, order_id, deal_id, currency_code FROM canonical_sales",
+    "ai_sale_items AS SELECT organization_id, sale_id, sale_external_id, product_id, product_external_id, product_code, product_name, warehouse_id, warehouse_external_id, sold_quantity, returned_quantity, unit_price, amount, margin_amount, currency_code FROM canonical_sale_items",
+    "ai_orders AS SELECT organization_id, order_at, sales_rep_id, sales_rep_external_id, customer_id, customer_external_id, customer_name, total_amount, ordered_quantity, sold_quantity, normalized_status, order_id, deal_id, currency_code FROM canonical_orders",
+    "ai_products AS SELECT organization_id, id, product_id, code, name, short_name, state, source_kind, measure_code FROM canonical_products",
+    "ai_customers AS SELECT organization_id, id, person_id, code, name, short_name, state, customer_kind FROM canonical_customers",
+    "ai_returns AS SELECT organization_id, return_at, sales_rep_id, sales_rep_external_id, customer_id, customer_external_id, customer_name, total_amount, returned_quantity, normalized_status, linked_sale_id, deal_id, currency_code FROM canonical_customer_returns",
+    "ai_visits AS SELECT organization_id, visit_date, visited_at, sales_rep_id, sales_rep_external_id, sales_rep_name, customer_id, customer_external_id, customer_name, working_zone_id, working_zone_external_id FROM canonical_visits",
+    "ai_inventory AS SELECT organization_id, snapshot_date, warehouse_id, warehouse_external_id, product_id, product_external_id, product_code, product_name, quantity, available_quantity, reserved_quantity, valuation_amount, currency_code, inventory_kind FROM canonical_inventory_balances",
+    "ai_finance AS SELECT organization_id, operation_at, normalized_operation_type, direction, amount, currency_code, counterparty_external_id, posted FROM canonical_financial_operations",
+    "ai_organizations AS SELECT organization_id, name, company_id, filial_id, filial_code, project_code, is_active FROM canonical_organizations",
 )
+
+# PostgreSQL has no CREATE VIEW IF NOT EXISTS; OR REPLACE is idempotent.
+AI_ANALYTICAL_VIEW_DDL = tuple(f"CREATE OR REPLACE VIEW {definition}" for definition in _AI_VIEW_SELECTS)
+AI_ANALYTICAL_VIEW_SQLITE_DDL = tuple(f"CREATE VIEW IF NOT EXISTS {definition}" for definition in _AI_VIEW_SELECTS)
