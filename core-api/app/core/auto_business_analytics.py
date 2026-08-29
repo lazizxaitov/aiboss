@@ -110,6 +110,8 @@ class AutoAnalyticsRun(BaseModel):
     summary: str = ""
     structured_result: AutoAnalyticsResult | None = None
     error: str | None = None
+    analysis_level: Literal["widget", "daily", "deep"] = "deep"
+    data_version: str | None = None
 
 
 class AutoAnalyticsStatus(BaseModel):
@@ -126,7 +128,7 @@ class AutoBusinessAnalyticsService:
     def __init__(self, store: CoreDataStore) -> None:
         self.store = store
 
-    def latest(self) -> AutoAnalyticsRun | None:
+    def latest(self, level: Literal["widget", "daily", "deep"] | None = None) -> AutoAnalyticsRun | None:
         index_setting = self.store.get_app_setting(AUTO_ANALYTICS_INDEX_KEY)
         if index_setting is None:
             return None
@@ -136,12 +138,14 @@ class AutoBusinessAnalyticsService:
             if setting is None:
                 continue
             try:
-                return AutoAnalyticsRun.model_validate(setting.setting_value)
+                run = AutoAnalyticsRun.model_validate(setting.setting_value)
+                if level is None or run.analysis_level == level:
+                    return run
             except Exception:  # noqa: BLE001
                 continue
         return None
 
-    def latest_successful(self) -> AutoAnalyticsRun | None:
+    def latest_successful(self, level: Literal["widget", "daily", "deep"] | None = None) -> AutoAnalyticsRun | None:
         index_setting = self.store.get_app_setting(AUTO_ANALYTICS_INDEX_KEY)
         if index_setting is None:
             return None
@@ -154,7 +158,7 @@ class AutoBusinessAnalyticsService:
                 run = AutoAnalyticsRun.model_validate(setting.setting_value)
             except Exception:  # noqa: BLE001
                 continue
-            if run.status == "completed" and run.structured_result is not None:
+            if run.status == "completed" and run.structured_result is not None and (level is None or run.analysis_level == level):
                 return run
         return None
 
@@ -222,11 +226,11 @@ class AutoBusinessAnalyticsService:
         )
         return run
 
-    async def run(self) -> AutoAnalyticsRun:
+    async def run(self, mode: Literal["widget", "daily", "deep"] = "deep") -> AutoAnalyticsRun:
         if not _AUTO_ANALYTICS_RUN_LOCK.acquire(blocking=False):
             return self.latest() or AutoAnalyticsRun(status="failed", error="Автоанализ уже выполняется.")
         try:
-            return await self._run_locked()
+            return await self._run_locked(mode)
         except Exception as error:  # noqa: BLE001 - sync must remain healthy when AI preparation fails
             self._save_status(AutoAnalyticsStatus(
                 status="error",
@@ -237,7 +241,7 @@ class AutoBusinessAnalyticsService:
         finally:
             _AUTO_ANALYTICS_RUN_LOCK.release()
 
-    async def _run_locked(self) -> AutoAnalyticsRun:
+    async def _run_locked(self, mode: Literal["widget", "daily", "deep"]) -> AutoAnalyticsRun:
         await hermes_model_registry.get_providers(refresh=True)
         router = AITaskRouter(self.store)
         candidates = router.resolve_candidates("business_analytics")
@@ -258,12 +262,15 @@ class AutoBusinessAnalyticsService:
         ))
         tools = HermesBusinessTools(self.store)
         context = OrganizationContextService(self.store).get_context()
+        data_version = self._data_version()
         run = AutoAnalyticsRun(
             organization_scope=[str(item) for item in context.organization_context.organization_ids],
             period=context.period_context.preset.value,
             provider_id=runtime.get("provider_id") if runtime else None,
             model_id=runtime.get("model_id") if runtime else None,
             status="running",
+            analysis_level=mode,
+            data_version=data_version,
         )
         self._save(run)
         logger.info(
@@ -280,7 +287,9 @@ class AutoBusinessAnalyticsService:
             self._save_status(AutoAnalyticsStatus(status="retry_wait", last_started_at=started_at, last_error=run.error, next_retry_at=datetime.now(UTC) + timedelta(minutes=5)))
             return self._save(run)
         instruction = (
-            "Проведи самостоятельный автоматический анализ AI Business OS через доступные read-only business tools. "
+            f"Проведи {'лёгкий widget-анализ' if mode == 'widget' else 'короткий ежедневный обзор' if mode == 'daily' else 'глубокий автоматический анализ'} AI Business OS через доступные read-only business tools. "
+            + ("Ограничься несколькими ключевыми агрегатами и не углубляйся без необходимости. " if mode != "deep" else "")
+            + ""
             "Начни с compact query по sales и сравнения периодов, затем сам выбери дополнительные queries, "
             "если они нужны для проверки причин, продавцов, товаров, клиентов, организаций, возвратов, визитов, "
             "склада или финансов. Не используй один заранее заданный сценарий и не повторяй ненужные запросы. "
@@ -324,6 +333,7 @@ class AutoBusinessAnalyticsService:
                 provider_id=None,
                 model_id=None,
                 build_baseline=False,
+                tool_call_budget={"widget": 4, "daily": 6, "deep": 12}[mode],
             )
             raw = agent_result.final_text.strip()
             if raw.startswith("```"):
@@ -378,6 +388,28 @@ class AutoBusinessAnalyticsService:
             ))
         return self._save(run)
 
+    def _data_version(self) -> str | None:
+        """Return a stable version of configured SmartUp data for AI invalidation."""
+
+        organizations = getattr(self.store, "list_smartup_organizations", lambda **_: [])(
+            integration_id=None,
+            is_active=True,
+        )
+        values = [
+            f"{item.id}:{item.last_sync_at.isoformat() if item.last_sync_at else ''}"
+            for item in organizations
+        ]
+        return "|".join(sorted(values)) or None
+
+    async def run_widget_if_needed(self) -> AutoAnalyticsRun | None:
+        existing = self.latest_successful("widget")
+        version = self._data_version()
+        if existing is not None and existing.data_version == version:
+            return existing
+        if not list(self.store.list_canonical_organizations()):
+            return None
+        return await self.run("widget")
+
 
 def _queries_from_agent_messages(messages: list[dict[str, object]]) -> list[dict[str, Any]]:
     """Persist only compact query metadata, never complete tool payloads."""
@@ -416,19 +448,23 @@ def _queries_from_agent_messages(messages: list[dict[str, object]]) -> list[dict
             latest.analysis_id if latest else None,
         )
         if after_sync and config.business_analytics_auto_enabled and "after_sync" in triggers:
-            return await self.run()
-        if not config.business_analytics_auto_enabled or not latest:
+            return await self.run_widget_if_needed()
+        if not config.business_analytics_auto_enabled:
             logger.info(
                 "BUSINESS_ANALYSIS_TRIGGER_SKIPPED reason=%s",
-                "disabled" if not config.business_analytics_auto_enabled else "no_schedule_or_previous_analysis",
+                "disabled",
             )
             return None
         now = datetime.now(UTC)
-        if "daily" in triggers and now - latest.generated_at >= timedelta(days=1):
-            return await self.run()
-        if "weekly" in triggers and now - latest.generated_at >= timedelta(days=7):
-            return await self.run()
-        if latest.status == "failed":
+        daily = self.latest_successful("daily")
+        if "daily" in triggers and (daily is None or now - daily.generated_at >= timedelta(days=1)):
+            return await self.run("daily")
+        deep = self.latest_successful("deep")
+        if "weekly" in triggers and (deep is None or now - deep.generated_at >= timedelta(days=7)):
+            return await self.run("deep")
+        if latest is None:
+            logger.info("BUSINESS_ANALYSIS_TRIGGER_SKIPPED reason=no_schedule_or_previous_analysis")
+        if latest is not None and latest.status == "failed":
             status = self.status()
             if status.status == "retry_wait" and status.next_retry_at and now >= status.next_retry_at:
                 return await self.run()

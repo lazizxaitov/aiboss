@@ -105,6 +105,19 @@ class SmartUpLiveSyncService:
             return
         self._thread = Thread(target=self._run_loop, name="smartup-live-sync", daemon=True)
         self._thread.start()
+        Thread(
+            target=self._run_startup_widget_analysis,
+            name="aiboss-widget-analysis",
+            daemon=True,
+        ).start()
+
+    def _run_startup_widget_analysis(self) -> None:
+        """Refresh lightweight AI insights from existing Core data immediately."""
+
+        try:
+            asyncio.run(AutoBusinessAnalyticsService(self.store).run_widget_if_needed())
+        except Exception as exc:  # noqa: BLE001 - analytics must never stop sync
+            logger.info("BUSINESS_ANALYSIS_ERROR stage=startup_widget error=%s", str(exc)[:300])
 
     def stop(self) -> None:
         self._stop.set()
@@ -161,6 +174,13 @@ class SmartUpLiveSyncService:
                     break
 
     def _run_startup_reconciliation(self) -> None:
+        if self._configured_organizations():
+            current = self.status()
+            self._save(current.model_copy(update={
+                "status": "initial_sync_required",
+                "next_run_at": datetime.now(UTC),
+                "message": "Проверяем подключение SmartUp и готовим автоматическую синхронизацию...",
+            }))
         if not self._verify_startup_connections():
             return
 

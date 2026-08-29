@@ -235,7 +235,7 @@ export default function Page() {
                   </p>
                 </div>
                 <p className="mt-1 text-xs text-slate-400">
-                  {liveSync?.status === "initial_sync_required" || liveSync?.status === "initial_sync_running" ? "Загружаем данные..." : liveSync?.status === "retry_wait" ? "Используются последние сохранённые данные. Повторное подключение выполняется автоматически." : liveSync?.last_success_at ? `Последний успех: ${formatDateTime(liveSync.last_success_at)}` : liveSync?.status === "not_configured" ? "Сохраните credentials и организации SmartUp" : "Ожидание автоматического запуска"}
+                  {liveSync?.status === "initial_sync_required" || liveSync?.status === "initial_sync_running" ? "Загружаем данные..." : liveSync?.status === "retry_wait" ? "Используются последние сохранённые данные. Повторное подключение выполняется автоматически." : liveSync?.last_success_at ? `Последний успех: ${formatDateTime(liveSync.last_success_at)}` : liveSync?.status === "ready" || liveSync?.status === "success" ? "Данные готовы, синхронизация запланирована" : liveSync?.status === "not_configured" ? "Сохраните credentials и организации SmartUp" : "Сервис запускается автоматически"}
                 </p>
               </div>
               <Link

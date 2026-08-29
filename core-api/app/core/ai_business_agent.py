@@ -185,6 +185,7 @@ class AIBusinessAgentService:
         model_id: str | None = None,
         build_baseline: bool = True,
         request_id: str | None = None,
+        tool_call_budget: int = MAX_TOOL_CALLS,
     ) -> AIBusinessAgentResult:
         """Resolve a target, execute tools, and stop at the first final answer."""
 
@@ -596,7 +597,7 @@ class AIBusinessAgentService:
                 elif cache_key in result_cache:
                     tool_result = result_cache[cache_key]
                     logger.info("AI_TOOL_RESULT request_id=%s name=%s rows=%s cached=true", request_id, tool_name, _row_count(tool_result))
-                elif total_tool_calls >= MAX_TOOL_CALLS:
+                elif total_tool_calls >= tool_call_budget:
                     tool_result = {
                         "status": "tool_budget_exhausted",
                         "message": "Достигнут лимит business tool calls. Сформируйте вывод по уже полученным данным.",
