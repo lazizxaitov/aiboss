@@ -68,6 +68,20 @@ def test_structured_parser_requires_query_or_final_action():
     assert error == "Поле action должно быть query или final."
 
 
+def test_structured_parser_accepts_sql_research_request():
+    action, error = _parse_structured_action(
+        '{"sql":"SELECT sales_rep_external_id, SUM(total_amount) FROM ai_sales GROUP BY sales_rep_external_id"}',
+        {"query_business_data"},
+    )
+    assert error is None
+    assert action == {
+        "action": "tool",
+        "tool": "query_business_data",
+        "arguments": {"sql": "SELECT sales_rep_external_id, SUM(total_amount) FROM ai_sales GROUP BY sales_rep_external_id"},
+        "approved": True,
+    }
+
+
 def _run(text, responses, tool_result=None):
     async def execute():
         with patch("app.api.routes.ai_chat._hermes_request", new_callable=AsyncMock) as request:

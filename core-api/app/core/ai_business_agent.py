@@ -131,6 +131,20 @@ def _parse_json_object(content: object) -> dict[str, object] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _raw_select(content: object) -> str | None:
+    """Accept a provider's plain SQL response without exposing it to users."""
+
+    if not isinstance(content, str):
+        return None
+    text = content.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    return text if text.lower().startswith("select") else None
+
+
 def _is_analytics_result(payload: dict[str, object] | None) -> bool:
     """Recognize the analytics result contract without requiring chat actions."""
 
@@ -270,7 +284,7 @@ class AIBusinessAgentService:
                     "source": "AI Business OS canonical/analytics services",
                     "authoritative": True,
                     "unavailable": True,
-                    "message": "Базовый контекст временно недоступен; проверьте нужные business tools.",
+                    "message": "Базовый контекст временно недоступен; выполните разрешённый SQL research-запрос.",
                 }
         messages: list[dict[str, object]] = [
             {"role": "system", "content": system_prompt},
@@ -342,6 +356,7 @@ class AIBusinessAgentService:
         total_tool_calls = 0
         rounds = 0
         evidence_retry_used = False
+        business_evidence_verified = False
         # Business requests start in the internal structured protocol. This
         # prevents a provider's own web/API discovery tools from becoming the
         # execution path; the model still selects the approved tool/query.
@@ -558,10 +573,17 @@ class AIBusinessAgentService:
                             final_text=final_text, messages=messages, runtime=runtime,
                             rounds=rounds, tool_calls=total_tool_calls,
                         )
-                structured_action, parse_error = _parse_structured_action(
-                    assistant_message.get("content"),
-                    tool_names,
-                )
+                structured_action, parse_error = _parse_structured_action(assistant_message.get("content"), tool_names)
+                if structured_action is None:
+                    sql = _raw_select(assistant_message.get("content"))
+                    if sql is not None:
+                        structured_action = {
+                            "action": "tool",
+                            "tool": "query_business_data",
+                            "arguments": {"sql": sql},
+                            "approved": True,
+                        }
+                        parse_error = None
                 if structured_action is None:
                     if not structured_repair_used:
                         structured_repair_used = True
@@ -581,7 +603,7 @@ class AIBusinessAgentService:
                         if response.status_code >= 400:
                             raise ValueError("AI provider вернул ошибку при исправлении structured action.")
                         continue
-                    if business_request and total_tool_calls == 0:
+                    if business_request and not business_evidence_verified:
                         raise ValueError("AI не выполнил обязательную проверку бизнес-данных.")
                     raise ValueError("AI не вернул корректное structured business action.")
                 logger.info(
@@ -592,7 +614,7 @@ class AIBusinessAgentService:
                     structured_action.get("tool"),
                 )
                 if structured_action.get("action") == "final":
-                    if business_request and total_tool_calls == 0:
+                    if business_request and not business_evidence_verified:
                         raise ValueError("AI не выполнил обязательную проверку бизнес-данных.")
                     final_text = str(structured_action["answer"])
                     logger.info(
@@ -636,10 +658,9 @@ class AIBusinessAgentService:
                     messages.append({
                         "role": "system",
                         "content": (
-                            "The previous response attempted to answer without inspecting AI Business OS tools. "
-                            "This is a factual business-data request. Re-evaluate the user's request, determine "
-                            "which available tool or tools can provide the required evidence, and call them now. "
-                            "Do not answer that data is unavailable until the relevant tools have been checked."
+                            "The previous response attempted to answer without inspecting the AI Business OS database. "
+                            "This is a factual business-data request. Generate and execute a relevant SELECT from the "
+                            "approved ai_* views now. Do not answer that data is unavailable before checking the database."
                         ),
                     })
                     logger.info(
@@ -666,9 +687,9 @@ class AIBusinessAgentService:
                         round_number=rounds + 1,
                     )
                     if response.status_code >= 400:
-                        raise ValueError("AI provider вернул ошибку при повторной проверке business tools.")
+                        raise ValueError("AI provider вернул ошибку при повторной проверке бизнес-данных.")
                     continue
-                if business_request and evidence_retry_used and total_tool_calls == 0:
+                if business_request and evidence_retry_used and not business_evidence_verified:
                     raise ValueError("AI не выполнил обязательную проверку бизнес-данных.")
                 logger.info(
                     "AI_AGENT_FINAL request_id=%s rounds=%s tool_calls=%s provider=%s model=%s elapsed_ms=%.2f preview=%s",
@@ -771,6 +792,16 @@ class AIBusinessAgentService:
                             router,
                         )
                     query_executed = tool_name == "query_business_data"
+                    if tool_name == "query_business_data" and isinstance(arguments.get("sql"), str):
+                        business_evidence_verified = (
+                            isinstance(tool_result, dict)
+                            and tool_result.get("available") is True
+                            and "error" not in tool_result
+                        )
+                    elif query_executed:
+                        # Legacy compatibility for already persisted structured
+                        # conversations; new requests use the SQL branch above.
+                        business_evidence_verified = True
                     result_cache[cache_key] = tool_result
                     logger.info("AI_TOOL_RESULT request_id=%s name=%s rows=%s", request_id, tool_name, _row_count(tool_result))
                     if tool_name in {"query_business_data", "aggregate_sales", "query_inventory", "query_products", "query_customers", "query_returns", "query_visits", "query_finance"}:

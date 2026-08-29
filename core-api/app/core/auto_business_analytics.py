@@ -28,6 +28,54 @@ _AUTO_ANALYTICS_RUN_LOCK = Lock()
 logger = getLogger(__name__)
 
 
+def _normalize_ai_result_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize provider JSON to the persisted analytics contract only."""
+
+    status = payload.get("status")
+    if status not in {"normal", "attention", "critical"}:
+        payload["status"] = "critical" if any(
+            isinstance(item, dict) and item.get("type") == "critical"
+            for item in (payload.get("risks") or [])
+        ) else "attention" if payload.get("risks") or payload.get("warnings") else "normal"
+
+    def normalize_items(key: str, *, default_type: str | None = None) -> None:
+        items = payload.get(key)
+        if not isinstance(items, list):
+            payload[key] = []
+            return
+        normalized: list[dict[str, Any]] = []
+        for item in items:
+            item = {"title": item, "description": item} if isinstance(item, str) else dict(item) if isinstance(item, dict) else {}
+            item.setdefault("title", "Вывод AI")
+            item.setdefault("description", item["title"])
+            if default_type is not None and item.get("type") not in {"positive", "warning", "critical", "info"}:
+                item["type"] = default_type
+            evidence = item.get("evidence")
+            item["evidence"] = evidence if isinstance(evidence, list) else ([{"detail": evidence}] if evidence else [])
+            normalized.append(item)
+        payload[key] = normalized
+
+    normalize_items("insights", default_type="info")
+    normalize_items("risks", default_type="warning")
+    normalize_items("opportunities", default_type="positive")
+    normalize_items("findings", default_type=None)
+
+    recommendations = payload.get("recommendations")
+    if not isinstance(recommendations, list):
+        payload["recommendations"] = []
+    else:
+        normalized_recommendations: list[dict[str, Any]] = []
+        for item in recommendations:
+            item = {"title": item, "description": item} if isinstance(item, str) else dict(item) if isinstance(item, dict) else {}
+            item.setdefault("title", "Рекомендация AI")
+            item.setdefault("description", item["title"])
+            evidence = item.get("evidence")
+            item["evidence"] = evidence if isinstance(evidence, list) else ([{"detail": evidence}] if evidence else [])
+            normalized_recommendations.append(item)
+        payload["recommendations"] = normalized_recommendations
+    return payload
+
+
 class AutoAnalyticsInsight(BaseModel):
     type: Literal["positive", "warning", "critical", "info"]
     title: str
@@ -288,14 +336,14 @@ class AutoBusinessAnalyticsService:
             self._save_status(AutoAnalyticsStatus(status="retry_wait", last_started_at=started_at, last_error=run.error, next_retry_at=datetime.now(UTC) + timedelta(minutes=5)))
             return self._save(run)
         instruction = (
-            f"Проведи {'лёгкий widget-анализ' if mode == 'widget' else 'короткий ежедневный обзор' if mode == 'daily' else 'глубокий автоматический анализ'} AI Business OS через доступные read-only business tools. "
+            f"Проведи {'лёгкий widget-анализ' if mode == 'widget' else 'короткий ежедневный обзор' if mode == 'daily' else 'глубокий автоматический анализ'} AI Business OS через разрешённые read-only SQL research views. "
             + ("Ограничься несколькими ключевыми агрегатами и не углубляйся без необходимости. " if mode != "deep" else "")
             + ""
             "Сам выбери первый query из универсального AI-safe schema/catalog, затем сам выбери дополнительные queries, "
             "если они нужны для проверки причин, продавцов, товаров, клиентов, организаций, возвратов, визитов, "
             "склада или финансов. Не используй заранее заданную последовательность и не повторяй ненужные запросы. "
-            "Используй текущую организацию и период контекста, а при необходимости указывай их в query. "
-            "Никаких RAW/SQL и выдуманных чисел. После получения достаточного evidence верни финальный ответ строго JSON "
+            "Используй текущую организацию и период контекста в SQL WHERE. SQL research выполняет backend, не показывай SQL пользователю. "
+            "После получения достаточного evidence верни финальный ответ строго JSON "
             "по схеме summary,status,kpis,insights,recommendations,anomalies,top_opportunities,risks,dashboard_plan. "
             "Каждый важный вывод обязан содержать evidence, priority, reason, affected_entity и affected_metric. "
             "Не выдавай корреляцию за доказанную причину. dashboard_plan.widgets использует только существующие Widget Registry types."
@@ -328,7 +376,9 @@ class AutoBusinessAnalyticsService:
                 memory_prompt="",
                 system_prompt=(
                     "You are the business analytics agent for AI Business OS. "
-                    "Investigate facts through approved read-only tools; do not rely on precomputed narrative."
+                    "Investigate facts through approved read-only SQL research views; do not rely on precomputed narrative. "
+                    "Use status only normal, attention, or critical. Findings, risks, opportunities and recommendations "
+                    "must be arrays of objects with title, description, type where required, and evidence as an array."
                     + previous_metadata
                 ),
                 provider_id=None,
@@ -340,12 +390,8 @@ class AutoBusinessAnalyticsService:
             if raw.startswith("```"):
                 raw = "\n".join(raw.splitlines()[1:-1]).strip()
             payload = json.loads(raw)
-            if isinstance(payload, dict) and isinstance(payload.get("findings"), list):
-                payload["findings"] = [
-                    {"title": item, "description": item}
-                    if isinstance(item, str) else item
-                    for item in payload["findings"]
-                ]
+            if isinstance(payload, dict):
+                payload = _normalize_ai_result_payload(payload)
             result = AutoAnalyticsResult.model_validate(payload)
             result.provider_id = str(agent_result.runtime.get("provider_id"))
             result.model_id = str(agent_result.runtime.get("model_id"))
