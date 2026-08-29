@@ -246,6 +246,7 @@ def test_chat_passes_actual_query_rows_to_next_model_request():
         "Кто продал больше всех за неделю?",
         [
             _response({"content": query}),
+            _response({"content": query}),
             _response({"content": "Seller A — 500000."}),
         ],
         tool_result=[
@@ -261,6 +262,7 @@ def test_chat_passes_actual_query_rows_to_next_model_request():
     assert "500000" in serialized
     assert "Seller B" in serialized
     assert "300000" in serialized
+    assert query not in result.final_text
 
 
 def test_business_analytics_accepts_structured_result_without_chat_answer_action():

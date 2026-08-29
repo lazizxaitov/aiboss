@@ -615,6 +615,13 @@ class AIBusinessAgentService:
                 structured_mode = False
                 logger.info("AI_AGENT_MODE request_id=%s mode=native", request_id)
             if not tool_calls:
+                if not structured_mode and total_tool_calls:
+                    repeated_action = _parse_json_object(assistant_message.get("content"))
+                    if isinstance(repeated_action, dict) and repeated_action.get("action") == "query":
+                        # A provider can repeat the internal control message
+                        # after the chat has already received the evidence.
+                        # Never expose that protocol JSON to the user.
+                        return await final_synthesis(round_number=rounds + 1)
                 final_text = str(assistant_message.get("content") or "")
                 if business_request and rounds == 1 and not evidence_retry_used:
                     evidence_retry_used = True
