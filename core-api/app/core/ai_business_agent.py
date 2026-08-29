@@ -272,6 +272,15 @@ class AIBusinessAgentService:
             "communications",
         }
         tools = _tool_definitions()
+        if business_request or task_type == "business_analytics":
+            # Business analysis uses one model-facing query contract. The
+            # domain-specific helpers remain execution details behind it.
+            tools = [
+                item for item in tools
+                if isinstance(item, dict)
+                and isinstance(item.get("function"), dict)
+                and item["function"].get("name") == "query_business_data"
+            ]
         if business_request:
             # Native tool schemas are not equally visible to every Hermes provider.
             # Keep the same backend-approved catalog in the prompt as an explicit
@@ -282,12 +291,13 @@ class AIBusinessAgentService:
                     "role": "system",
                     "content": (
                         "INTERNAL AI BUSINESS OS DATA ACCESS IS CONNECTED.\n"
-                        "For factual questions about the owner's business, use the approved read-only "
-                        "business tools below. Do not use internet or external search, and do not claim "
+                        "For factual questions about the owner's business, use the universal approved "
+                        "read-only query interface below. Do not use internet or external search, and do not claim "
                         "that the database or tools are unavailable before attempting a relevant tool. "
                         "Choose the dataset, dimensions, metrics, period, filters, sort and limit yourself "
-                        "from the catalog. The backend validates and executes the selected query.\n"
-                        "Approved BusinessDataQueryService catalog:\n"
+                        "from the schema catalog. The backend validates and executes the selected query through "
+                        "existing Canonical/Core analytics services.\n"
+                        "Approved AI-safe analytical schema/catalog:\n"
                         + json.dumps(_tool_catalog(tools), ensure_ascii=False, default=str)
                     ),
                 },

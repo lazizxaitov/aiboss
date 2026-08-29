@@ -91,14 +91,14 @@ def _run(text, responses, tool_result=None):
 
 
 def test_seller_question_uses_manager_aggregation():
-    tool_call = {"id": "1", "function": {"name": "aggregate_sales", "arguments": '{"group_by":"manager"}'}}
+    tool_call = {"id": "1", "function": {"name": "query_business_data", "arguments": '{"dataset":"sales","dimensions":["manager"],"metrics":["revenue"]}'}}
     result, resolve, _ = _run(
         "Кто из продавцов сделал больше продаж на этой неделе?",
         [_response({"content": None, "tool_calls": [tool_call]}), _response({"content": "Bekzod"})],
     )
     assert result.final_text == "Bekzod"
-    assert resolve.await_args.args[0] == "aggregate_sales"
-    assert resolve.await_args.args[1]["group_by"] == "manager"
+    assert resolve.await_args.args[0] == "query_business_data"
+    assert resolve.await_args.args[1]["dimensions"] == ["manager"]
 
 
 def test_internal_database_question_receives_business_data_capability():
@@ -214,17 +214,17 @@ def test_required_evidence_round_without_tool_returns_controlled_error():
 
 
 def test_product_question_uses_product_aggregation():
-    tool_call = {"id": "1", "function": {"name": "aggregate_sales", "arguments": '{"group_by":"product"}'}}
+    tool_call = {"id": "1", "function": {"name": "query_business_data", "arguments": '{"dataset":"sales","dimensions":["product"],"metrics":["revenue"]}'}}
     result, resolve, _ = _run(
         "Какой товар продавался лучше всего?",
         [_response({"content": None, "tool_calls": [tool_call]}), _response({"content": "Product A"})],
     )
     assert result.final_text == "Product A"
-    assert resolve.await_args.args[1]["group_by"] == "product"
+    assert resolve.await_args.args[1]["dimensions"] == ["product"]
 
 
 def test_multi_step_analysis_and_duplicate_tool_call_are_bounded():
-    tool_call = {"id": "1", "function": {"name": "compare_periods", "arguments": '{"period":"this_week"}'}}
+    tool_call = {"id": "1", "function": {"name": "query_business_data", "arguments": '{"dataset":"sales","period":"this_week","metrics":["revenue"]}'}}
     result, resolve, request = _run(
         "Почему продажи упали?",
         [
@@ -256,7 +256,7 @@ def test_repeated_structured_query_uses_cached_evidence_and_synthesizes_final():
 
 
 def test_step_limit_uses_evidence_only_final_synthesis():
-    tool_call = {"id": "1", "function": {"name": "aggregate_sales", "arguments": '{"group_by":"manager"}'}}
+    tool_call = {"id": "1", "function": {"name": "query_business_data", "arguments": '{"dataset":"sales","dimensions":["manager"],"metrics":["revenue"]}'}}
     result, resolve, request = _run(
         "Почему продажи упали?",
         [
@@ -271,8 +271,8 @@ def test_step_limit_uses_evidence_only_final_synthesis():
 
 
 def test_broad_analysis_can_execute_multiple_distinct_tools():
-    first = {"id": "1", "function": {"name": "compare_periods", "arguments": "{}"}}
-    second = {"id": "2", "function": {"name": "detect_anomalies", "arguments": "{}"}}
+    first = {"id": "1", "function": {"name": "query_business_data", "arguments": '{"dataset":"sales","metrics":["revenue"]}'}}
+    second = {"id": "2", "function": {"name": "query_business_data", "arguments": '{"dataset":"inventory","metrics":["current_stock"]}'}}
     result, resolve, _ = _run(
         "Проанализируй бизнес и скажи, на что обратить внимание",
         [
@@ -286,7 +286,7 @@ def test_broad_analysis_can_execute_multiple_distinct_tools():
 
 
 def test_missing_data_after_tool_check_is_available_to_final_answer():
-    tool_call = {"id": "1", "function": {"name": "query_inventory", "arguments": "{}"}}
+    tool_call = {"id": "1", "function": {"name": "query_business_data", "arguments": '{"dataset":"inventory","metrics":["current_stock"]}'}}
     result, resolve, _ = _run(
         "Проверь склад",
         [_response({"content": None, "tool_calls": [tool_call]}), _response({"content": "Остатки отсутствуют в данных"})],
@@ -335,7 +335,7 @@ def test_web_and_telegram_routes_use_the_same_agent_service():
 
 
 def test_agent_emits_request_model_query_and_final_diagnostics(caplog):
-    tool_call = {"id": "1", "function": {"name": "aggregate_sales", "arguments": '{"group_by":"manager"}'}}
+    tool_call = {"id": "1", "function": {"name": "query_business_data", "arguments": '{"dataset":"sales","dimensions":["manager"],"metrics":["revenue"]}'}}
     with caplog.at_level(logging.INFO, logger="app.core.ai_business_agent"):
         result, _, _ = _run(
             "Проверь продажи",
