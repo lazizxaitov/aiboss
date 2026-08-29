@@ -265,6 +265,38 @@ def test_chat_passes_actual_query_rows_to_next_model_request():
     assert query not in result.final_text
 
 
+def test_exact_sales_lookup_executes_internal_query_and_returns_normal_text():
+    query = (
+        '{"action":"query","query":{"dataset":"sales","period":"this_week",'
+        '"dimensions":["manager"],"metrics":["revenue"],"filters":{},'
+        '"sort":[{"field":"revenue","direction":"desc"}],"limit":1}}'
+    )
+    result, resolve, request = _run(
+        "Кто продал больше всех по сумме за эту неделю? Покажи имя и сумму.",
+        [
+            _response({"content": query}),
+            _response({"content": "Больше всех продал Seller A — 500 000."}),
+        ],
+        tool_result=[{"manager": "Seller A", "revenue": 500000}],
+    )
+    assert resolve.await_args.args[0] == "query_business_data"
+    assert resolve.await_args.args[1] == {
+        "dataset": "sales",
+        "period": "this_week",
+        "dimensions": ["manager"],
+        "metrics": ["revenue"],
+        "filters": {},
+        "sort": [{"field": "revenue", "direction": "desc"}],
+        "limit": 1,
+    }
+    second_messages = request.await_args_list[1].kwargs["messages"]
+    serialized = "\n".join(str(message.get("content")) for message in second_messages)
+    assert "Seller A" in serialized
+    assert "500000" in serialized
+    assert result.final_text == "Больше всех продал Seller A — 500 000."
+    assert query not in result.final_text
+
+
 def test_business_analytics_accepts_structured_result_without_chat_answer_action():
     async def execute():
         with patch("app.api.routes.ai_chat._hermes_request", new_callable=AsyncMock) as request:
