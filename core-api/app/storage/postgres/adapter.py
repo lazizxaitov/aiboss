@@ -90,6 +90,7 @@ from app.integrations.smartup.models import (
     SyncCheckpoint,
 )
 from app.storage.postgres.ddl import render_core_data_layer_ddl
+from app.core.ai_readonly_sql import AI_ANALYTICAL_VIEW_DDL
 
 Row = dict[str, Any]
 ModelT = TypeVar("ModelT")
@@ -163,6 +164,7 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
         self._ensure_smartup_raw_record_compatibility()
         self._ensure_normalized_entity_compatibility()
         self._execute_many(render_core_data_layer_ddl())
+        self._execute_many(list(AI_ANALYTICAL_VIEW_DDL))
 
     def _ensure_smartup_organization_compatibility(self) -> None:
         """Backfill columns needed by the current SmartUp organization model."""
@@ -3314,6 +3316,35 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
             description = getattr(cursor, "description", None) or ()
             columns = [column[0] for column in description]
         return [dict(zip(columns, row, strict=False)) for row in rows]
+
+    def execute_ai_readonly_sql(
+        self,
+        sql: str,
+        params: tuple[Any, ...] = (),
+        *,
+        statement_timeout_ms: int,
+    ) -> list[Row]:
+        """Execute a previously validated AI query in a read-only transaction."""
+
+        connection = self.connection_factory()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SET TRANSACTION READ ONLY")
+                cursor.execute("SET LOCAL statement_timeout = %s", (statement_timeout_ms,))
+                cursor.execute(sql, params)
+                rows = cursor.fetchall()
+                if not rows:
+                    return []
+                if isinstance(rows[0], Mapping):
+                    result = [dict(row) for row in rows]
+                else:
+                    description = getattr(cursor, "description", None) or ()
+                    result = [dict(zip([column[0] for column in description], row, strict=False)) for row in rows]
+            connection.rollback()
+            return result
+        except Exception:
+            connection.rollback()
+            raise
 
     def _execute_many(self, statements: list[str]) -> None:
         connection = self.connection_factory()

@@ -12,6 +12,7 @@ from uuid import uuid4
 from app.core.ai_conversation import AIConversationService, AIConversationState
 from app.core.ai_routing import AITaskRouter, TaskType
 from app.core.analytics.widget_builder import WidgetBuilderService
+from app.core.ai_readonly_sql import AIReadOnlyQueryError, AIReadOnlySQLService
 from app.core.data_layer.contracts import CoreDataStore
 from app.core.hermes_tools import HermesBusinessTools
 
@@ -44,13 +45,13 @@ def _structured_protocol_prompt(tools: list[dict[str, object]], *, repair: bool 
     repair_text = "The previous output was invalid. Return one valid JSON object only.\n" if repair else ""
     return (
         "You are operating in AI Business OS agent mode.\n"
-        "Select your next action using only the supplied approved tool catalog.\n"
-        "Return exactly one JSON object with one of two actions: query or final.\n"
-        "For business data, return: {\"action\":\"query\",\"query\":{\"dataset\":\"sales\",\"period\":\"this_week\",\"dimensions\":[\"manager\"],\"metrics\":[\"revenue\"],\"filters\":{},\"sort\":[{\"field\":\"revenue\",\"direction\":\"desc\"}],\"limit\":5}}.\n"
-        "After verified evidence is supplied, return: {\"action\":\"final\",\"answer\":\"...\",\"evidence\":[]}.\n"
+        "Select your next research step using only the supplied approved schema.\n"
+        "For business data return exactly one JSON object {\"sql\":\"SELECT ... FROM ai_sales ...\"}. Only SELECT from ai_* views is allowed.\n"
+        "After verified evidence is supplied, return an ordinary answer (or the requested structured analysis JSON).\n"
         "Do not query for the sake of querying. Once sufficient evidence exists to answer the task, you MUST return final.\n"
         "Do not claim that business data or tools are unavailable before attempting a relevant tool.\n"
-        "The backend validates the selected tool and arguments; never select a provider or access SQL, RAW, files, or secrets.\n"
+        "The backend validates and executes the SQL; never access RAW, files, credentials, secrets, or other tables.\n"
+        "Use the current organization scope. Keep queries compact and include a useful LIMIT.\n"
         + repair_text
         + "Approved tool catalog:\n"
         + json.dumps(_tool_catalog(tools), ensure_ascii=False, default=str)
@@ -94,6 +95,9 @@ def _parse_structured_action(
             "arguments": query,
             "approved": True,
         }, None
+    sql = payload.get("sql")
+    if isinstance(sql, str) and sql.strip():
+        return {"action": "tool", "tool": "query_business_data", "arguments": {"sql": sql}, "approved": True}, None
     return None, "Поле action должно быть query или final."
 
 
@@ -142,6 +146,9 @@ def _validate_tool_arguments(
     tools: list[dict[str, object]],
 ) -> str | None:
     """Apply the catalog's top-level required/property contract before execution."""
+
+    if tool_name == "query_business_data" and isinstance(arguments.get("sql"), str):
+        return None
 
     definition = next(
         (
@@ -240,6 +247,7 @@ class AIBusinessAgentService:
         if not candidates:
             raise ValueError("Для этой задачи нет доступного provider/model.")
         runtime = candidates[0]
+        sql_service = AIReadOnlySQLService(self.store)
         logger.info(
             "AI_AGENT_START request_id=%s provider=%s model=%s organization=%s period=%s source=%s",
             request_id,
@@ -322,11 +330,10 @@ class AIBusinessAgentService:
                         "For factual questions about the owner's business, use the universal approved "
                         "read-only query interface below. Do not use internet or external search, and do not claim "
                         "that the database or tools are unavailable before attempting a relevant tool. "
-                        "Choose the dataset, dimensions, metrics, period, filters, sort and limit yourself "
-                        "from the schema catalog. The backend validates and executes the selected query through "
-                        "existing Canonical/Core analytics services.\n"
+                        "Choose the view, columns, filters, grouping, ordering and limit yourself from this schema. "
+                        "The backend validates and executes only read-only SELECT statements.\n"
                         "Approved AI-safe analytical schema/catalog:\n"
-                        + json.dumps(_tool_catalog(tools), ensure_ascii=False, default=str)
+                        + json.dumps(sql_service.catalog(), ensure_ascii=False, default=str)
                     ),
                 },
             )
@@ -747,13 +754,22 @@ class AIBusinessAgentService:
                             arguments.get("metrics"),
                         )
                         query_started = monotonic()
-                    tool_result = await _resolve_tool_result(
-                        tool_name,
-                        arguments,
-                        tools_service,
-                        widget_builder,
-                        router,
-                    )
+                    if tool_name == "query_business_data" and isinstance(arguments.get("sql"), str):
+                        try:
+                            tool_result = sql_service.execute(
+                                str(arguments["sql"]),
+                                organization_id=conversation.organization_id,
+                            )
+                        except AIReadOnlyQueryError as error:
+                            tool_result = {"available": False, "status": "invalid_query", "message": str(error)}
+                    else:
+                        tool_result = await _resolve_tool_result(
+                            tool_name,
+                            arguments,
+                            tools_service,
+                            widget_builder,
+                            router,
+                        )
                     query_executed = tool_name == "query_business_data"
                     result_cache[cache_key] = tool_result
                     logger.info("AI_TOOL_RESULT request_id=%s name=%s rows=%s", request_id, tool_name, _row_count(tool_result))
