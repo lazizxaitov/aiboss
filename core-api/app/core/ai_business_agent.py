@@ -209,7 +209,9 @@ class AIBusinessAgentService:
         system_prompt: str,
         provider_id: str | None = None,
         model_id: str | None = None,
-        build_baseline: bool = True,
+        # Business data must be selected by the model through the universal
+        # validated query contract, not preloaded as a backend-picked baseline.
+        build_baseline: bool = False,
         request_id: str | None = None,
         tool_call_budget: int = MAX_TOOL_CALLS,
     ) -> AIBusinessAgentResult:
