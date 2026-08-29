@@ -5,7 +5,10 @@ import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from app.core.ai_business_agent import AIBusinessAgentService
+from app.core.ai_business_agent import (
+    AIBusinessAgentService,
+    _parse_structured_action,
+)
 from app.core.ai_conversation import (
     AIConversationChannel,
     AIConversationMessage,
@@ -40,6 +43,29 @@ def _conversation(text: str) -> AIConversationState:
     return AIConversationState(messages=[AIConversationMessage(
         role="user", content=text, source_channel=AIConversationChannel.WEB,
     )])
+
+
+def test_structured_parser_accepts_clean_fenced_and_surrounded_json():
+    tool_names = {"query_business_data"}
+    query = '{"action":"query","query":{"dataset":"sales","metrics":["revenue"]}}'
+    for content in (query, f"```json\n{query}\n```", f"Проверяю данные. {query} Готово."):
+        action, error = _parse_structured_action(content, tool_names)
+        assert error is None
+        assert action == {
+            "action": "tool",
+            "tool": "query_business_data",
+            "arguments": {"dataset": "sales", "metrics": ["revenue"]},
+            "approved": True,
+        }
+
+
+def test_structured_parser_requires_query_or_final_action():
+    action, error = _parse_structured_action(
+        '{"action":"tool","tool":"query_business_data","arguments":{}}',
+        {"query_business_data"},
+    )
+    assert action is None
+    assert error == "Поле action должно быть query или final."
 
 
 def _run(text, responses, tool_result=None):
@@ -92,12 +118,11 @@ def test_internal_database_question_receives_business_data_capability():
 
 
 def test_business_text_without_tools_gets_generic_evidence_retry():
-    tool_call = {"id": "1", "function": {"name": "aggregate_sales", "arguments": '{"group_by":"manager"}'}}
     result, resolve, request = _run(
         "Какой менеджер продал на самую большую сумму за эту неделю? Покажи топ-5 менеджеров.",
         [
             _response({"content": "В baseline нет разбивки по менеджерам."}),
-            _response({"content": '{"action":"tool","tool":"aggregate_sales","arguments":{"group_by":"manager"}}'}),
+            _response({"content": '{"action":"query","query":{"dataset":"sales","dimensions":["manager"],"metrics":["revenue"],"limit":5}}'}),
             _response({"content": '{"action":"final","answer":"Ответ подтвержден строками менеджеров"}'}),
         ],
     )
@@ -112,29 +137,29 @@ def test_structured_multi_step_agent_lets_model_choose_each_tool():
         "Почему продажи упали?",
         [
             _response({"content": "Сначала проверю данные."}),
-            _response({"content": '{"action":"tool","tool":"compare_periods","arguments":{}}'}),
-            _response({"content": '{"action":"tool","tool":"aggregate_sales","arguments":{"group_by":"manager"}}'}),
+            _response({"content": '{"action":"query","query":{"dataset":"sales","dimensions":["date"],"metrics":["revenue"]}}'}),
+            _response({"content": '{"action":"query","query":{"dataset":"sales","dimensions":["manager"],"metrics":["revenue"]}}'}),
             _response({"content": '{"action":"final","answer":"Падение подтверждено."}'}),
         ],
     )
     assert result.final_text == "Падение подтверждено."
     assert resolve.await_count == 2
-    assert [call.args[0] for call in resolve.await_args_list] == ["compare_periods", "aggregate_sales"]
+    assert all(call.args[0] == "query_business_data" for call in resolve.await_args_list)
     assert all(call.kwargs["tool_choice"] == "none" for call in request.await_args_list)
 
 
-def test_structured_unknown_tool_is_rejected_without_execution():
+def test_structured_invalid_dataset_is_rejected_without_execution():
     result, resolve, _ = _run(
         "Проверь продажи",
         [
             _response({"content": "Проверю данные."}),
-            _response({"content": '{"action":"tool","tool":"read_database","arguments":{}}'}),
-            _response({"content": '{"action":"tool","tool":"aggregate_sales","arguments":{"group_by":"manager"}}'}),
-            _response({"content": '{"action":"final","answer":"Инструмент не разрешён."}'}),
+            _response({"content": '{"action":"query","query":{"dataset":"not_approved","metrics":["revenue"]}}'}),
+            _response({"content": '{"action":"query","query":{"dataset":"sales","metrics":["revenue"]}}'}),
+            _response({"content": '{"action":"final","answer":"Проверка завершена."}'}),
         ],
     )
-    assert result.final_text == "Инструмент не разрешён."
-    assert all(call.args[0] != "read_database" for call in resolve.await_args_list)
+    assert result.final_text == "Проверка завершена."
+    assert resolve.await_args.args[0] == "query_business_data"
 
 
 def test_structured_malformed_json_gets_one_repair_retry():
@@ -142,7 +167,7 @@ def test_structured_malformed_json_gets_one_repair_retry():
         "Проверь склад",
         [
             _response({"content": "не json"}),
-            _response({"content": '{"action":"tool","tool":"query_inventory","arguments":{}}'}),
+            _response({"content": '{"action":"query","query":{"dataset":"inventory","metrics":["current_stock"]}}'}),
             _response({"content": '{"action":"final","answer":"Склад проверен."}'}),
         ],
     )

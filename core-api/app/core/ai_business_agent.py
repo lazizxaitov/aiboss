@@ -38,14 +38,13 @@ def _tool_catalog(tools: list[dict[str, object]]) -> list[dict[str, object]]:
 
 
 def _structured_protocol_prompt(tools: list[dict[str, object]], *, repair: bool = False) -> str:
-    repair_text = "The previous output was invalid. Return valid JSON only.\n" if repair else ""
+    repair_text = "The previous output was invalid. Return one valid JSON object only.\n" if repair else ""
     return (
         "You are operating in AI Business OS agent mode.\n"
         "Select your next action using only the supplied approved tool catalog.\n"
-        "Return ONLY valid JSON, without Markdown or explanation.\n"
-        "To inspect business data, return: {\"action\":\"query\",\"query\":{\"dataset\":\"sales\",\"dimensions\":[],\"metrics\":[],\"limit\":10}}.\n"
-        "A provider may also use action=tool with a name from the catalog.\n"
-        "When sufficient verified evidence has been collected, return: {\"action\":\"final\",\"analysis\":{...}}.\n"
+        "Return exactly one JSON object with one of two actions: query or final.\n"
+        "For business data, return: {\"action\":\"query\",\"query\":{\"dataset\":\"sales\",\"period\":\"this_week\",\"dimensions\":[\"manager\"],\"metrics\":[\"revenue\"],\"filters\":{},\"sort\":[{\"field\":\"revenue\",\"direction\":\"desc\"}],\"limit\":5}}.\n"
+        "After verified evidence is supplied, return: {\"action\":\"final\",\"answer\":\"...\",\"evidence\":[]}.\n"
         "Do not claim that business data or tools are unavailable before attempting a relevant tool.\n"
         "The backend validates the selected tool and arguments; never select a provider or access SQL, RAW, files, or secrets.\n"
         + repair_text
@@ -73,17 +72,30 @@ def _parse_structured_action(
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
-        return None, "Ответ structured agent не является корректным JSON."
+        # Providers occasionally add a short preamble or trailing explanation
+        # despite JSON mode. Accept an unambiguous JSON object and validate it
+        # exactly like a clean response.
+        decoder = json.JSONDecoder()
+        payload = None
+        for index, character in enumerate(text):
+            if character != "{":
+                continue
+            try:
+                candidate, end = decoder.raw_decode(text[index:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict) and not text[index + end :].lstrip().startswith("{"):
+                payload = candidate
+                break
+        if payload is None:
+            return None, "Ответ structured agent не является корректным JSON."
     if not isinstance(payload, dict):
         return None, "Structured action должен быть JSON-объектом."
     action = payload.get("action")
     if action == "final":
         answer = payload.get("answer")
-        analysis = payload.get("analysis")
-        if isinstance(analysis, dict):
-            answer = json.dumps(analysis, ensure_ascii=False)
         if not isinstance(answer, str) or not answer.strip():
-            return None, "Final action должен содержать непустое поле answer или analysis."
+            return None, "Final action должен содержать непустое поле answer."
         return {"action": "final", "answer": answer}, None
     if action == "query":
         query = payload.get("query")
@@ -95,22 +107,7 @@ def _parse_structured_action(
             "arguments": query,
             "approved": True,
         }, None
-    if action != "tool":
-        return None, "Поле action должно быть query, tool или final."
-    tool_name = payload.get("tool")
-    arguments = payload.get("arguments", {})
-    if not isinstance(tool_name, str) or not tool_name:
-        return None, "Tool action должен содержать имя инструмента."
-    if not isinstance(arguments, dict):
-        return None, "Поле arguments должно быть JSON-объектом."
-    if tool_name not in tool_names:
-        return {
-            "action": "tool",
-            "tool": tool_name,
-            "arguments": arguments,
-            "approved": False,
-        }, None
-    return {"action": "tool", "tool": tool_name, "arguments": arguments, "approved": True}, None
+    return None, "Поле action должно быть query или final."
 
 
 def _validate_tool_arguments(
@@ -140,6 +137,13 @@ def _validate_tool_arguments(
         unknown = sorted(set(arguments) - set(properties))
         if unknown:
             return "Инструмент получил неизвестные аргументы: " + ", ".join(unknown)
+        for name, value in arguments.items():
+            schema = properties.get(name)
+            if not isinstance(schema, dict):
+                continue
+            allowed = schema.get("enum")
+            if isinstance(allowed, list) and value not in allowed:
+                return f"Недопустимое значение аргумента {name}."
     required = parameters.get("required")
     if isinstance(required, list):
         missing = [name for name in required if isinstance(name, str) and name not in arguments]
