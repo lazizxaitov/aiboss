@@ -28,7 +28,8 @@ def test_sql_research_is_scoped_limited_and_read_only():
     assert result["rows"] == [{"sales_rep_external_id": "seller-1", "revenue": 125}]
     sql, params, timeout = store.calls[0]
     assert "ai_sales" in sql
-    assert "organization_id IN (%s)" in sql
+    assert "FROM (SELECT * FROM ai_sales WHERE organization_id IN (%s))" in sql
+    assert "WHERE organization_id IN (%s)" in sql
     assert params == ("org-1",)
     assert timeout == 20_000
     assert "LIMIT 100" in sql

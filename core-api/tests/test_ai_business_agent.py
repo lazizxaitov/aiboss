@@ -128,7 +128,8 @@ def test_internal_database_question_receives_business_data_capability():
     first_messages = request.await_args_list[0].kwargs["messages"]
     capability = "\n".join(str(message.get("content")) for message in first_messages)
     assert "INTERNAL AI BUSINESS OS DATA ACCESS IS CONNECTED" in capability
-    assert "query_business_data" in capability
+    assert "ai_sales" in capability
+    assert "query_business_data" not in capability
 
 
 def test_business_text_without_tools_gets_generic_evidence_retry():

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from logging import getLogger
@@ -53,8 +54,8 @@ def _structured_protocol_prompt(tools: list[dict[str, object]], *, repair: bool 
         "The backend validates and executes the SQL; never access RAW, files, credentials, secrets, or other tables.\n"
         "Use the current organization scope. Keep queries compact and include a useful LIMIT.\n"
         + repair_text
-        + "Approved tool catalog:\n"
-        + json.dumps(_tool_catalog(tools), ensure_ascii=False, default=str)
+        + "Approved SQL schema/catalog:\n"
+        + json.dumps(AIReadOnlySQLService.catalog(), ensure_ascii=False, default=str)
     )
 
 
@@ -142,7 +143,12 @@ def _raw_select(content: object) -> str | None:
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
         text = "\n".join(lines).strip()
-    return text if text.lower().startswith("select") else None
+    if not text.lower().startswith("select"):
+        match = re.search(r"\bselect\b", text, re.IGNORECASE)
+        if match is None:
+            return None
+        text = text[match.start():]
+    return text.rstrip("` \n")
 
 
 def _is_analytics_result(payload: dict[str, object] | None) -> bool:
@@ -306,8 +312,8 @@ class AIBusinessAgentService:
                 {
                     "role": "system",
                     "content": (
-                        "Business tools listed in this request ARE connected and available. "
-                        "Never tell the user that a tool is not connected merely because you have not called it yet."
+                        "The approved AI Business OS database views listed in this request ARE connected and available. "
+                        "Never tell the user that business data is unavailable merely because you have not queried it yet."
                     ),
                 },
             )
@@ -323,8 +329,8 @@ class AIBusinessAgentService:
         }
         tools = _tool_definitions()
         if business_request or task_type == "business_analytics":
-            # Business analysis uses one model-facing query contract. The
-            # domain-specific helpers remain execution details behind it.
+            # Business analysis uses one model-facing SQL research contract.
+            # Domain-specific helpers remain backend execution details.
             tools = [
                 item for item in tools
                 if isinstance(item, dict)

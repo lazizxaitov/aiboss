@@ -90,15 +90,38 @@ class AIReadOnlySQLService:
         scope = [str(item) for item in (organization_ids or []) if item]
         if organization_id:
             scope = [str(organization_id)]
+        if not scope and view != "ai_organizations":
+            # Global dashboard context means all configured canonical
+            # organizations, not an unscoped database request.
+            list_organizations = getattr(self.store, "list_canonical_organizations", None)
+            if callable(list_organizations):
+                scope = [
+                    str(getattr(item, "organization_id", getattr(item, "id", "")))
+                    for item in list_organizations()
+                    if getattr(item, "organization_id", getattr(item, "id", None))
+                ]
         # Every business view except the organization directory is scoped. The
-        # scope predicate is added outside model SQL and remains parameterized.
+        # predicate must be applied to the source view before the model query is
+        # aggregated: an aggregate SELECT is not required to return
+        # organization_id itself.
         params: tuple[Any, ...] = ()
         if view != "ai_organizations":
             if not scope:
                 raise AIReadOnlyQueryError("Для бизнес-данных требуется organization scope.")
             placeholders = ", ".join(["%s"] * len(scope))
-            inner_query = re.sub(r"\s+LIMIT\s+\d+\s*$", "", query, flags=re.IGNORECASE)
-            query = f"SELECT * FROM ({inner_query}) AS ai_scope WHERE organization_id IN ({placeholders}) LIMIT {MAX_ROWS}"
+            scoped_source = (
+                f"(SELECT * FROM {view} "
+                f"WHERE organization_id IN ({placeholders})) AS ai_scoped_{view}"
+            )
+            query, replacements = re.subn(
+                rf"\bFROM\s+{re.escape(view)}\b",
+                f"FROM {scoped_source}",
+                query,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+            if replacements != 1:
+                raise AIReadOnlyQueryError("Не удалось применить organization scope к запросу.")
             params = tuple(scope)
         rows = self.store.execute_ai_readonly_sql(
             query,
