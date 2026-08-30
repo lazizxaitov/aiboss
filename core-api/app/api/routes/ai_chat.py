@@ -15,7 +15,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, BaseModel, Field
 
 from app.api.routes.auth import _session, _token_from_request
-from app.core.ai_business_agent import AIBusinessAgentService, _looks_business_related
+from app.core.ai_business_agent import AIBusinessAgentService
 from app.core.ai_conversation import (
     AIConversationChannel,
     AIConversationService,
@@ -845,14 +845,6 @@ async def chat(
             target_channel=resolved_target_channel,
         )
         last_user_text = _message_text(last_user_message.content) if last_user_message is not None else ""
-        delegated = request.task_type != "ai_chat" or _looks_business_related(last_user_text)
-        logger.info(
-            "AI_CHAT_ANALYTICS_DELEGATION request_id=%s delegated=%s role=%s",
-            request_id,
-            delegated,
-            "business_analytics" if delegated else "none",
-        )
-        logger.info("AI business request: question_length=%s period=%s organization_id=%s", len(last_user_text), request.period, request.organization_id)
         shared_memory.remember(
             conversation.user_id or effective_user_id or "owner",
             last_user_text,

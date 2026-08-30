@@ -318,7 +318,7 @@ class AIBusinessAgentService:
             source_channel,
         )
         baseline = None
-        if build_baseline and _looks_business_related(user_text):
+        if build_baseline:
             try:
                 baseline = tools_service.build_business_context(
                     user_text,
@@ -364,63 +364,37 @@ class AIBusinessAgentService:
                     ),
                 },
             )
-        business_request = _looks_business_related(user_text) or any(
-            _looks_business_related(message.content)
-            for message in conversation.messages
-            if message.role == "user" and message.content != user_text
-        )
-        internal_business = business_request or task_type in {
-            "business_analytics",
-            "system_action",
-            "communications",
-        }
         tools = _tool_definitions()
-        if business_request or task_type == "business_analytics":
-            # Business analysis uses one model-facing SQL research contract.
-            # Domain-specific helpers remain backend execution details.
-            tools = [
-                item for item in tools
-                if isinstance(item, dict)
-                and isinstance(item.get("function"), dict)
-                and item["function"].get("name") == "query_business_data"
-            ]
-        if business_request:
-            # Native tool schemas are not equally visible to every Hermes provider.
-            # Keep the same backend-approved catalog in the prompt as an explicit
-            # capability contract; the model still chooses the tool and arguments.
-            messages.insert(
-                3,
-                {
-                    "role": "system",
-                    "content": (
-                        "INTERNAL AI BUSINESS OS DATA ACCESS IS CONNECTED.\n"
-                        "For factual questions about the owner's business, use the universal approved "
-                        "read-only query interface below. Do not use internet or external search, and do not claim "
-                        "that the database or tools are unavailable before attempting a relevant tool. "
-                        "Choose the view, columns, filters, grouping, ordering and limit yourself from this schema. "
-                        "The backend validates and executes only read-only SELECT statements.\n"
-                        "Approved AI-safe analytical schema/catalog:\n"
-                        + json.dumps(sql_service.database_schema(), ensure_ascii=False, default=str)
-                    ),
-                },
-            )
+        messages.insert(
+            3,
+            {
+                "role": "system",
+                "content": (
+                    "You are the primary reasoning intelligence inside AI Business OS.\n"
+                    "Understand the user's intent from conversation and system context yourself. "
+                    "Answer directly when no external fact is needed. When authoritative business facts are needed, "
+                    "independently use business.query before making factual claims. Do not query merely because "
+                    "business terminology appears. Never invent business facts.\n"
+                    "For business.query return only this internal envelope: "
+                    '{"capability":"business.query","arguments":{"sql":"SELECT ..."}}. '
+                    "This envelope is never a user-facing answer.\n"
+                    "AI Business OS capability: business.query (read-only approved analytical views).\n"
+                    "Exact database schema:\n"
+                    + json.dumps(sql_service.database_schema(), ensure_ascii=False, default=str)
+                ),
+            },
+        )
         result_cache: dict[str, object] = {}
         duplicate_query_keys: set[str] = set()
         total_tool_calls = 0
         rounds = 0
-        evidence_retry_used = False
-        # Single source of truth for the evidence guard. It is incremented
-        # only after the approved business query executor returns successfully.
-        successful_business_queries = 0
-        # Business requests start in the internal structured protocol. This
-        # prevents a provider's own web/API discovery tools from becoming the
-        # execution path; the model still selects the approved tool/query.
-        structured_mode = business_request
-        chat_lookup = task_type == "ai_chat" and not _looks_analytical_request(user_text)
-        structured_repair_used = False
+        # Chat and analytics use the provider-independent capability protocol.
+        # This is selected by the agent role, never by inspecting user text.
+        capability_only = task_type in {"ai_chat", "business_analytics"}
+        structured_mode = False
         tool_choice_for_round = "auto"
         max_rounds = MAX_ROUNDS
-        if task_type == "ai_chat" and business_request:
+        if task_type == "ai_chat":
             max_rounds = CHAT_MAX_ROUNDS
             tool_call_budget = min(tool_call_budget, CHAT_TOOL_CALLS)
         elif task_type == "business_analytics" and tool_call_budget <= 4:
@@ -430,13 +404,7 @@ class AIBusinessAgentService:
             for item in tools
             if isinstance(item, dict) and isinstance(item.get("function"), dict)
         }
-        logger.info("AI_AGENT_MODE request_id=%s mode=native", request_id)
-        if structured_mode:
-            messages.append({
-                "role": "system",
-                "content": _structured_protocol_prompt(tools, database_schema=sql_service.database_schema()),
-            })
-            logger.info("AI_AGENT_MODE request_id=%s mode=structured", request_id)
+        logger.info("AI_AGENT_MODE request_id=%s mode=capability", request_id)
 
         async def model_request(
             *,
@@ -470,9 +438,9 @@ class AIBusinessAgentService:
                     # Internal requests use Hermes as an inference gateway only.
                     # The model selects JSON actions from the prompt catalog;
                     # backend code validates and executes every business tool.
-                    tools=[] if internal_business else tools,
+                    tools=[] if capability_only else tools,
                     stream=False,
-                    tool_choice="none" if internal_business else tool_choice,
+                    tool_choice="none" if capability_only else tool_choice,
                     model=model,
                     provider=provider,
                     response_format=(
@@ -603,6 +571,31 @@ class AIBusinessAgentService:
                 raise ValueError("AI не вернул корректный ответ.")
             tool_calls = _parse_tool_calls(assistant_message)
             structured_action: dict[str, object] | None = None
+            if capability_only and tool_calls and isinstance(tools_service, HermesBusinessTools):
+                raise ValueError("AI вернул native tool call вместо capability business.query.")
+            if capability_only and not tool_calls:
+                # Capability envelopes are internal control messages and are
+                # recognized on every round, without an intent classifier.
+                structured_action = _parse_capability_request(assistant_message.get("content"))
+                if structured_action is None:
+                    shorthand_action, _ = _parse_structured_action(
+                        assistant_message.get("content"),
+                        {"query_business_data"},
+                    )
+                    if shorthand_action and shorthand_action.get("action") == "capability":
+                        structured_action = shorthand_action
+                if structured_action is not None:
+                    structured_tool_id = f"capability-{request_id}-{rounds}"
+                    tool_calls = [{
+                        "id": structured_tool_id,
+                        "function": {
+                            "name": str(structured_action["capability"]),
+                            "arguments": json.dumps(
+                                structured_action.get("arguments") or {},
+                                ensure_ascii=False,
+                            ),
+                        },
+                    }]
             if structured_mode and not tool_calls:
                 if task_type != "business_analytics" and total_tool_calls:
                     payload = _parse_json_object(assistant_message.get("content"))
@@ -668,8 +661,6 @@ class AIBusinessAgentService:
                         if response.status_code >= 400:
                             raise ValueError("AI provider вернул ошибку при исправлении structured action.")
                         continue
-                    if business_request and successful_business_queries == 0:
-                        raise ValueError("AI не выполнил обязательную проверку бизнес-данных.")
                     raise ValueError("AI не вернул корректное structured business action.")
                 logger.info(
                     "AI_AGENT_ACTION request_id=%s round=%s action=%s tool=%s",
@@ -679,8 +670,6 @@ class AIBusinessAgentService:
                     structured_action.get("tool"),
                 )
                 if structured_action.get("action") == "final":
-                    if business_request and successful_business_queries == 0:
-                        raise ValueError("AI не выполнил обязательную проверку бизнес-данных.")
                     final_text = str(structured_action["answer"])
                     logger.info(
                         "AI_AGENT_FINAL request_id=%s rounds=%s tool_calls=%s provider=%s model=%s elapsed_ms=%.2f preview=%s",
@@ -752,45 +741,6 @@ class AIBusinessAgentService:
                         # Never expose that protocol JSON to the user.
                         return await final_synthesis(round_number=rounds + 1)
                 final_text = str(assistant_message.get("content") or "")
-                if business_request and rounds == 1 and not evidence_retry_used:
-                    evidence_retry_used = True
-                    messages.append({"role": "assistant", "content": final_text})
-                    messages.append({
-                        "role": "system",
-                        "content": (
-                            "The previous response attempted to answer without inspecting the AI Business OS database. "
-                            "This is a factual business-data request. Generate and execute a relevant SELECT from the "
-                            "approved ai_* views now. Do not answer that data is unavailable before checking the database."
-                        ),
-                    })
-                    logger.info(
-                        "AI_AGENT_NO_TOOL_RETRY request_id=%s round=%s provider=%s model=%s",
-                        request_id,
-                        rounds,
-                        runtime.get("provider_id"),
-                        runtime.get("model_id"),
-                    )
-                    structured_mode = True
-                    structured_repair_used = False
-                    logger.info("AI_AGENT_MODE request_id=%s mode=structured", request_id)
-                    messages.append({
-                        "role": "system",
-                        "content": _structured_protocol_prompt(tools, database_schema=sql_service.database_schema()),
-                    })
-                    response = await model_request(
-                        messages=messages,
-                        # Hermes Codex accepts this request but ignores required.
-                        # Structured JSON is the provider-independent enforcement layer.
-                        tool_choice="auto",
-                        model=str(runtime["model_id"]),
-                        provider=str(runtime["provider_id"]),
-                        round_number=rounds + 1,
-                    )
-                    if response.status_code >= 400:
-                        raise ValueError("AI provider вернул ошибку при повторной проверке бизнес-данных.")
-                    continue
-                if business_request and evidence_retry_used and successful_business_queries == 0:
-                    raise ValueError("AI не выполнил обязательную проверку бизнес-данных.")
                 logger.info(
                     "AI_AGENT_FINAL request_id=%s rounds=%s tool_calls=%s provider=%s model=%s elapsed_ms=%.2f preview=%s",
                     request_id,
@@ -909,16 +859,6 @@ class AIBusinessAgentService:
                             router,
                         )
                     query_executed = tool_name in {"query_business_data", BUSINESS_QUERY_CAPABILITY}
-                    if (
-                        tool_name in {"query_business_data", BUSINESS_QUERY_CAPABILITY}
-                        and isinstance(arguments.get("sql"), str)
-                        and isinstance(tool_result, dict)
-                        and tool_result.get("available") is True
-                        and "error" not in tool_result
-                    ):
-                        # Do not mark evidence from the model's envelope. This
-                        # happens only after the read-only executor succeeded.
-                        successful_business_queries += 1
                     result_cache[cache_key] = tool_result
                     logger.info("AI_TOOL_RESULT request_id=%s name=%s rows=%s", request_id, tool_name, _row_count(tool_result))
                     if tool_name in {"query_business_data", "aggregate_sales", "query_inventory", "query_products", "query_customers", "query_returns", "query_visits", "query_finance"}:
@@ -974,16 +914,6 @@ class AIBusinessAgentService:
                     )
                 if repeated_query:
                     return await final_synthesis(round_number=rounds + 1)
-                if task_type != "business_analytics" and query_executed and chat_lookup:
-                    structured_mode = False
-                    messages.append({
-                        "role": "system",
-                        "content": (
-                            "The query result above contains the actual returned business rows. "
-                            "Answer the original user question in ordinary natural language now. "
-                            "Do not return another query action and do not say that the result was not passed."
-                        ),
-                    })
             if rounds >= max_rounds:
                 return await final_synthesis(round_number=rounds + 1)
             tool_choice_for_round = "auto"

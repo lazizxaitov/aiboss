@@ -95,7 +95,7 @@ def test_business_query_capability_is_intercepted_and_rows_are_sent_to_model():
     async def execute():
         store = SQLStore()
         responses = [
-            _response({"content": '{"sql":"SELECT sales_rep_external_id, SUM(total_amount) AS total_sales_amount FROM ai_sales GROUP BY sales_rep_external_id ORDER BY total_sales_amount DESC LIMIT 1}'}),
+            _response({"content": '{"sql":"SELECT sales_rep_external_id, SUM(total_amount) AS total_sales_amount FROM ai_sales GROUP BY sales_rep_external_id ORDER BY total_sales_amount DESC LIMIT 1"}'}),
             _response({"content": "Иван — 500 000 сум."}),
         ]
         with patch("app.api.routes.ai_chat._hermes_request", new_callable=AsyncMock) as request:
