@@ -20,11 +20,18 @@ class AISystemContextService:
         self,
         *,
         role: str,
+        provider: str | None = None,
+        model: str | None = None,
         organization_id: object | None = None,
         period: str | None = None,
         ui_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         context: dict[str, Any] = {
+            "ai": {
+                "role": role,
+                "provider": provider,
+                "model": model,
+            },
             "role": role,
             "capabilities": self.registry.describe(role),
             "permissions": {
@@ -39,7 +46,7 @@ class AISystemContextService:
                 "period": period,
             },
         }
-        if role in {"business_analytics", "ai_chat", "system_action", "communications"}:
+        if any(capability.name == "business.query" for capability in self.registry.for_role(role)):
             context["database"] = {
                 "kind": "published_read_only_views",
                 "schema": AIReadOnlySQLService(self.store).database_schema(),

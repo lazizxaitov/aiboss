@@ -11,7 +11,7 @@ from time import monotonic
 from uuid import uuid4
 
 from app.core.ai_conversation import AIConversationService, AIConversationState
-from app.core.ai_capabilities import BUSINESS_QUERY_CAPABILITY
+from app.core.ai_capabilities import BUSINESS_QUERY_CAPABILITY, ai_capability_registry
 from app.core.ai_system_context import AISystemContextService
 from app.core.ai_routing import AITaskRouter, TaskType
 from app.core.analytics.widget_builder import WidgetBuilderService
@@ -314,10 +314,16 @@ class AIBusinessAgentService:
         sql_service = AIReadOnlySQLService(self.store)
         system_context = AISystemContextService(self.store).build(
             role=task_type,
+            provider=str(runtime.get("provider_id") or "") or None,
+            model=str(runtime.get("model_id") or "") or None,
             organization_id=conversation.organization_id,
             period=conversation.period,
             ui_context=ui_context,
         )
+        allowed_capabilities = {
+            capability.name for capability in ai_capability_registry.for_role(task_type)
+        }
+        capability_only = BUSINESS_QUERY_CAPABILITY in allowed_capabilities
         logger.info(
             "AI_AGENT_START request_id=%s provider=%s model=%s organization=%s period=%s source=%s",
             request_id,
@@ -328,7 +334,7 @@ class AIBusinessAgentService:
             source_channel,
         )
         baseline = None
-        if build_baseline:
+        if build_baseline and capability_only:
             try:
                 baseline = tools_service.build_business_context(
                     user_text,
@@ -384,18 +390,27 @@ class AIBusinessAgentService:
                     "You are the primary reasoning intelligence inside AI Business OS.\n"
                     "Understand the user's intent from conversation and system context yourself. "
                     "Answer directly when no external fact is needed. When authoritative business facts are needed, "
-                    "independently use business.query before making factual claims. Do not query merely because "
+                    + (
+                        "independently use business.query before making factual claims. "
+                        if capability_only
+                        else "do not access business data because this role is not granted business.query. "
+                    )
+                    + "Do not query merely because "
                     "business terminology appears. Never invent business facts.\n"
                     "Return exactly one JSON object per turn. For a final response use: "
                     '{"type":"final","content":"..."}. '
-                    "For business.query return this internal envelope: "
-                    '{"capability":"business.query","arguments":{"sql":"SELECT ..."}}. '
-                    "The capability envelope is never a user-facing answer.\n"
+                    "To execute a listed capability, return an internal object with its exact name and arguments, "
+                    '{"capability":"<name>","arguments":{...}}. '
+                    "Capability objects are never user-facing answers.\n"
                     "AVAILABLE BUSINESS OS CAPABILITIES (executable):\n"
                     + json.dumps(available_capabilities, ensure_ascii=False, default=str)
                     + "\nFor a listed capability, emit its documented internal request format; do not tell the user to run it.\n"
                     "Exact database schema:\n"
-                    + json.dumps(sql_service.database_schema(), ensure_ascii=False, default=str)
+                    + (
+                        json.dumps(sql_service.database_schema(), ensure_ascii=False, default=str)
+                        if capability_only
+                        else "Business analytical schema is not available to this role."
+                    )
                 ),
             },
         )
@@ -403,9 +418,8 @@ class AIBusinessAgentService:
         duplicate_query_keys: set[str] = set()
         total_tool_calls = 0
         rounds = 0
-        # Chat and analytics use the provider-independent capability protocol.
-        # This is selected by the agent role, never by inspecting user text.
-        capability_only = task_type in {"ai_chat", "business_analytics"}
+        # Capability transport is selected by role permissions, never by model
+        # name or by inspecting user text.
         structured_mode = False
         tool_choice_for_round = "auto"
         max_rounds = MAX_ROUNDS
