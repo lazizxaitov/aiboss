@@ -135,6 +135,16 @@ def _parse_capability_request(content: object) -> dict[str, object] | None:
     return None
 
 
+def _parse_final_request(content: object) -> str | None:
+    """Unwrap the provider-independent final branch of the agent protocol."""
+
+    payload = _parse_json_object(content)
+    if not isinstance(payload, dict) or payload.get("type") != "final":
+        return None
+    final_content = payload.get("content")
+    return final_content.strip() if isinstance(final_content, str) and final_content.strip() else None
+
+
 def _parse_json_object(content: object) -> dict[str, object] | None:
     """Parse a provider JSON object while tolerating a short text wrapper."""
 
@@ -376,9 +386,11 @@ class AIBusinessAgentService:
                     "Answer directly when no external fact is needed. When authoritative business facts are needed, "
                     "independently use business.query before making factual claims. Do not query merely because "
                     "business terminology appears. Never invent business facts.\n"
-                    "For business.query return only this internal envelope: "
+                    "Return exactly one JSON object per turn. For a final response use: "
+                    '{"type":"final","content":"..."}. '
+                    "For business.query return this internal envelope: "
                     '{"capability":"business.query","arguments":{"sql":"SELECT ..."}}. '
-                    "This envelope is never a user-facing answer.\n"
+                    "The capability envelope is never a user-facing answer.\n"
                     "AVAILABLE BUSINESS OS CAPABILITIES (executable):\n"
                     + json.dumps(available_capabilities, ensure_ascii=False, default=str)
                     + "\nFor a listed capability, emit its documented internal request format; do not tell the user to run it.\n"
@@ -446,11 +458,9 @@ class AIBusinessAgentService:
                     tool_choice="none" if capability_only else tool_choice,
                     model=model,
                     provider=provider,
-                    response_format=(
-                        {"type": "json_object"}
-                        if structured_mode
-                        else None
-                    ),
+                    # Chat and analytics share one machine-actionable protocol:
+                    # the model returns either a capability request or final.
+                    response_format={"type": "json_object"} if capability_only else None,
                 )
             except Exception:
                 logger.info(
@@ -599,6 +609,10 @@ class AIBusinessAgentService:
                             ),
                         },
                     }]
+                else:
+                    final_request = _parse_final_request(assistant_message.get("content"))
+                    if final_request is not None:
+                        assistant_message = {**assistant_message, "content": final_request}
             if structured_mode and not tool_calls:
                 if task_type != "business_analytics" and total_tool_calls:
                     payload = _parse_json_object(assistant_message.get("content"))
