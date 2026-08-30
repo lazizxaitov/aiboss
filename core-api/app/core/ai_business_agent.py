@@ -353,7 +353,7 @@ class AIBusinessAgentService:
                         "Choose the view, columns, filters, grouping, ordering and limit yourself from this schema. "
                         "The backend validates and executes only read-only SELECT statements.\n"
                         "Approved AI-safe analytical schema/catalog:\n"
-                        + json.dumps(sql_service.catalog(), ensure_ascii=False, default=str)
+                        + json.dumps(sql_service.database_schema(), ensure_ascii=False, default=str)
                     ),
                 },
             )
@@ -788,7 +788,24 @@ class AIBusinessAgentService:
                                 organization_id=conversation.organization_id,
                             )
                         except AIReadOnlyQueryError as error:
-                            tool_result = {"available": False, "status": "invalid_query", "message": str(error)}
+                            tool_result = {
+                                "available": False,
+                                "status": "invalid_query",
+                                "message": str(error),
+                                "database_schema": sql_service.database_schema(),
+                            }
+                        except Exception as error:  # noqa: BLE001 - feed DB errors back to the researcher
+                            logger.info(
+                                "AI_BUSINESS_QUERY_ERROR request_id=%s error_type=%s",
+                                request_id,
+                                type(error).__name__,
+                            )
+                            tool_result = {
+                                "available": False,
+                                "status": "invalid_query",
+                                "message": str(error),
+                                "database_schema": sql_service.database_schema(),
+                            }
                     else:
                         tool_result = await _resolve_tool_result(
                             tool_name,
@@ -829,6 +846,14 @@ class AIBusinessAgentService:
                     "content": "AUTHORITATIVE AI BUSINESS OS TOOL RESULT. Use these returned values as factual business evidence.\n"
                     + json.dumps(tool_result, ensure_ascii=False, default=str),
                 })
+                if tool_name == "query_business_data" and isinstance(arguments.get("sql"), str) and isinstance(tool_result, dict) and tool_result.get("available") is False:
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "SQL research failed internally. Use the exact DATABASE SCHEMA above and correct the query. "
+                            "Do not expose the database error or SQL to the user."
+                        ),
+                    })
                 if cached_query:
                     messages.append({
                         "role": "system",

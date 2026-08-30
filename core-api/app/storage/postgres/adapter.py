@@ -89,8 +89,8 @@ from app.integrations.smartup.models import (
     SmartUpRawRecord,
     SyncCheckpoint,
 )
-from app.storage.postgres.ddl import render_core_data_layer_ddl
 from app.core.ai_readonly_sql import AI_ANALYTICAL_VIEW_DDL
+from app.storage.postgres.ddl import render_core_data_layer_ddl
 
 Row = dict[str, Any]
 ModelT = TypeVar("ModelT")
@@ -3351,6 +3351,32 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
         except Exception:
             connection.rollback()
             raise
+
+    def describe_ai_views(self) -> dict[str, Any]:
+        """Read the exact published analytical view schema from PostgreSQL."""
+
+        rows = self._fetch_rows(
+            """
+            SELECT table_name, column_name, data_type, udt_name, is_nullable
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = ANY(%s)
+            ORDER BY table_name, ordinal_position
+            """,
+            (["ai_sales", "ai_sale_items", "ai_orders", "ai_products", "ai_customers", "ai_returns", "ai_visits", "ai_inventory", "ai_finance", "ai_organizations"],),
+        )
+        schema: dict[str, Any] = {}
+        for row in rows:
+            view = str(row.get("table_name") or "")
+            column = str(row.get("column_name") or "")
+            if not view or not column:
+                continue
+            schema.setdefault(view, {"columns": []})["columns"].append({
+                "name": column,
+                "type": str(row.get("data_type") or row.get("udt_name") or "unknown"),
+                "nullable": str(row.get("is_nullable") or "YES") == "YES",
+            })
+        return schema
 
     def _execute_many(self, statements: list[str]) -> None:
         connection = self.connection_factory()

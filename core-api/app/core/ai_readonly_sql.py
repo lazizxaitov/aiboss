@@ -53,6 +53,36 @@ class AIReadOnlySQLService:
     def catalog() -> dict[str, str]:
         return dict(ALLOWED_VIEWS)
 
+    def database_schema(self) -> dict[str, object]:
+        """Return the live published view schema for model grounding.
+
+        The storage adapter reads this from the database after schema setup. A
+        DDL-derived fallback keeps the prompt useful for lightweight adapters,
+        while production PostgreSQL always publishes its actual column types.
+        """
+
+        describe = getattr(self.store, "describe_ai_views", None)
+        if callable(describe):
+            try:
+                schema = describe()
+                if isinstance(schema, dict) and schema:
+                    for view, description in ALLOWED_VIEWS.items():
+                        if isinstance(schema.get(view), dict):
+                            schema[view].setdefault("description", description)
+                    return schema
+            except Exception:  # noqa: BLE001 - schema discovery must not block chat
+                pass
+        return {
+            view: {
+                "columns": [
+                    {"name": column, "type": "published"}
+                    for column in definition.split("SELECT ", 1)[1].split(" FROM ", 1)[0].split(", ")
+                ],
+                "description": ALLOWED_VIEWS[view],
+            }
+            for view, definition in _AI_VIEW_DEFINITIONS.items()
+        }
+
     def validate(self, sql: str) -> tuple[str, str, tuple[Any, ...]]:
         if not isinstance(sql, str) or not sql.strip():
             raise AIReadOnlyQueryError("AI не передал SQL-запрос.")
@@ -139,17 +169,21 @@ class AIReadOnlySQLService:
         }
 
 
-_AI_VIEW_SELECTS = (
-    "ai_sales AS SELECT organization_id, sale_at, sales_rep_id, sales_rep_external_id, customer_id, customer_external_id, customer_name, total_amount, sold_quantity, returned_quantity, order_id, deal_id, currency_code FROM canonical_sales",
-    "ai_sale_items AS SELECT organization_id, sale_id, sale_external_id, product_id, product_external_id, product_code, product_name, warehouse_id, warehouse_external_id, sold_quantity, returned_quantity, unit_price, amount, margin_amount, currency_code FROM canonical_sale_items",
-    "ai_orders AS SELECT organization_id, order_at, sales_rep_id, sales_rep_external_id, customer_id, customer_external_id, customer_name, total_amount, ordered_quantity, sold_quantity, normalized_status, order_id, deal_id, currency_code FROM canonical_orders",
-    "ai_products AS SELECT organization_id, id, product_id, code, name, short_name, state, source_kind, measure_code FROM canonical_products",
-    "ai_customers AS SELECT organization_id, id, person_id, code, name, short_name, state, customer_kind FROM canonical_customers",
-    "ai_returns AS SELECT organization_id, return_at, sales_rep_id, sales_rep_external_id, customer_id, customer_external_id, customer_name, total_amount, returned_quantity, normalized_status, linked_sale_id, deal_id, currency_code FROM canonical_customer_returns",
-    "ai_visits AS SELECT organization_id, visit_date, visited_at, sales_rep_id, sales_rep_external_id, sales_rep_name, customer_id, customer_external_id, customer_name, working_zone_id, working_zone_external_id FROM canonical_visits",
-    "ai_inventory AS SELECT organization_id, snapshot_date, warehouse_id, warehouse_external_id, product_id, product_external_id, product_code, product_name, quantity, available_quantity, reserved_quantity, valuation_amount, currency_code, inventory_kind FROM canonical_inventory_balances",
-    "ai_finance AS SELECT organization_id, operation_at, normalized_operation_type, direction, amount, currency_code, counterparty_external_id, posted FROM canonical_financial_operations",
-    "ai_organizations AS SELECT organization_id, name, company_id, filial_id, filial_code, project_code, is_active FROM canonical_organizations",
+_AI_VIEW_DEFINITIONS = {
+    "ai_sales": "SELECT organization_id, sale_at, sales_rep_id, sales_rep_external_id, customer_id, customer_external_id, customer_name, total_amount, sold_quantity, returned_quantity, order_id, deal_id, currency_code FROM canonical_sales",
+    "ai_sale_items": "SELECT organization_id, sale_id, sale_external_id, product_id, product_external_id, product_code, product_name, warehouse_id, warehouse_external_id, sold_quantity, returned_quantity, unit_price, amount, margin_amount, currency_code FROM canonical_sale_items",
+    "ai_orders": "SELECT organization_id, order_at, sales_rep_id, sales_rep_external_id, customer_id, customer_external_id, customer_name, total_amount, ordered_quantity, sold_quantity, normalized_status, order_id, deal_id, currency_code FROM canonical_orders",
+    "ai_products": "SELECT organization_id, id, product_id, code, name, short_name, state, source_kind, measure_code FROM canonical_products",
+    "ai_customers": "SELECT organization_id, id, person_id, code, name, short_name, state, customer_kind FROM canonical_customers",
+    "ai_returns": "SELECT organization_id, return_at, sales_rep_id, sales_rep_external_id, customer_id, customer_external_id, customer_name, total_amount, returned_quantity, normalized_status, linked_sale_id, deal_id, currency_code FROM canonical_customer_returns",
+    "ai_visits": "SELECT organization_id, visit_date, visited_at, sales_rep_id, sales_rep_external_id, sales_rep_name, customer_id, customer_external_id, customer_name, working_zone_id, working_zone_external_id FROM canonical_visits",
+    "ai_inventory": "SELECT organization_id, snapshot_date, warehouse_id, warehouse_external_id, product_id, product_external_id, product_code, product_name, quantity, available_quantity, reserved_quantity, valuation_amount, currency_code, inventory_kind FROM canonical_inventory_balances",
+    "ai_finance": "SELECT organization_id, operation_at, normalized_operation_type, direction, amount, currency_code, counterparty_external_id, posted FROM canonical_financial_operations",
+    "ai_organizations": "SELECT organization_id, name, company_id, filial_id, filial_code, project_code, is_active FROM canonical_organizations",
+}
+
+_AI_VIEW_SELECTS = tuple(
+    f"{view} AS {definition}" for view, definition in _AI_VIEW_DEFINITIONS.items()
 )
 
 # PostgreSQL has no CREATE VIEW IF NOT EXISTS; OR REPLACE is idempotent.

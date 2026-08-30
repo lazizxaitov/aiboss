@@ -13,10 +13,10 @@ from enum import Enum
 from typing import Any, Protocol
 from uuid import UUID
 
+from app.core.ai_readonly_sql import AI_ANALYTICAL_VIEW_SQLITE_DDL
 from app.core.data_layer.schema import CORE_DATA_LAYER_SCHEMA_V2
 from app.storage.postgres.adapter import PostgresCoreStore, Row
 from app.storage.sqlite.ddl import render_core_data_layer_ddl
-from app.core.ai_readonly_sql import AI_ANALYTICAL_VIEW_SQLITE_DDL
 
 
 class SQLiteCursor(Protocol):
@@ -136,6 +136,27 @@ class SQLiteCoreStore(PostgresCoreStore):
         """Run validated research SQL for local/test SQLite stores."""
 
         return self._fetch_rows(sql, params)
+
+    def describe_ai_views(self) -> dict[str, Any]:
+        """Read the exact published analytical view schema from SQLite."""
+
+        from app.core.ai_readonly_sql import ALLOWED_VIEWS
+
+        schema: dict[str, Any] = {}
+        connection = self.connection_factory()
+        with connection.cursor() as cursor:
+            for view in ALLOWED_VIEWS:
+                cursor.execute(f"PRAGMA table_info({view})")
+                columns = []
+                for row in cursor.fetchall():
+                    columns.append({
+                        "name": str(row.get("name") or ""),
+                        "type": str(row.get("type") or "unknown"),
+                        "nullable": not bool(row.get("notnull")),
+                    })
+                if columns:
+                    schema[view] = {"columns": columns}
+        return schema
 
 
 def _adapt_sql(sql: str) -> str:
