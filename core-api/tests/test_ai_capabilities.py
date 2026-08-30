@@ -30,9 +30,11 @@ def test_system_context_contains_exact_published_schema_and_permissions():
     assert context["permissions"]["raw_data"] is False
     assert context["ai"] == {"role": "ai_chat", "provider": "provider-b", "model": "model-b"}
     assert context["database"]["schema"]["ai_sales"]["columns"]
-    assert "seller_name" not in {
+    assert "sales_rep_name" in {
         column["name"] for column in context["database"]["schema"]["ai_sales"]["columns"]
     }
+    assert context["database"]["semantic_environment"]["datasets"]
+    assert context["database"]["semantic_environment"]["datasets"][0]["grain"]
     assert context["current_ui"] == {"current_page": "/"}
 
 

@@ -47,9 +47,11 @@ class AISystemContextService:
             },
         }
         if any(capability.name == "business.query" for capability in self.registry.for_role(role)):
+            sql_service = AIReadOnlySQLService(self.store)
             context["database"] = {
                 "kind": "published_read_only_views",
-                "schema": AIReadOnlySQLService(self.store).database_schema(),
+                "schema": sql_service.database_schema(),
+                "semantic_environment": sql_service.semantic_environment(),
             }
         if ui_context:
             context["current_ui"] = ui_context

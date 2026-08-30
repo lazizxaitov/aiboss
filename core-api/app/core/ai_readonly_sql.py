@@ -76,11 +76,49 @@ class AIReadOnlySQLService:
             view: {
                 "columns": [
                     {"name": column, "type": "published"}
-                    for column in definition.split("SELECT ", 1)[1].split(" FROM ", 1)[0].split(", ")
+                    for column in _AI_PUBLISHED_COLUMNS[view]
                 ],
                 "description": ALLOWED_VIEWS[view],
             }
             for view, definition in _AI_VIEW_DEFINITIONS.items()
+        }
+
+    def semantic_environment(self) -> dict[str, object]:
+        """Describe the published business data environment without inventing fields."""
+
+        schema = self.database_schema()
+        datasets: list[dict[str, object]] = []
+        for view, meaning in ALLOWED_VIEWS.items():
+            published = schema.get(view)
+            columns = published.get("columns", []) if isinstance(published, dict) else []
+            names = {
+                item.get("name")
+                for item in columns
+                if isinstance(item, dict) and isinstance(item.get("name"), str)
+            }
+            fields = {
+                name: _AI_COLUMN_SEMANTICS.get(view, {}).get(name, _generic_column_semantics(name))
+                for name in names
+                if isinstance(name, str)
+            }
+            datasets.append({
+                "name": view,
+                "meaning": meaning,
+                "grain": _AI_VIEW_GRAINS.get(view),
+                "columns": fields,
+            })
+        relationships = [
+            relationship for relationship in _AI_RELATIONSHIPS
+            if _relationship_is_published(relationship, schema)
+        ]
+        return {
+            "datasets": datasets,
+            "relationships": relationships,
+            "rules": [
+                "Use only the exact dataset and column names published above.",
+                "Keep organization_id in every relationship and filter within the same organization.",
+                "A sale is a realized sale fact; sale items are line-level facts.",
+            ],
         }
 
     def validate(self, sql: str) -> tuple[str, str, tuple[Any, ...]]:
@@ -170,22 +208,135 @@ class AIReadOnlySQLService:
 
 
 _AI_VIEW_DEFINITIONS = {
-    "ai_sales": "SELECT organization_id, sale_at, sales_rep_id, sales_rep_external_id, customer_id, customer_external_id, customer_name, total_amount, sold_quantity, returned_quantity, order_id, deal_id, currency_code FROM canonical_sales",
-    "ai_sale_items": "SELECT organization_id, sale_id, sale_external_id, product_id, product_external_id, product_code, product_name, warehouse_id, warehouse_external_id, sold_quantity, returned_quantity, unit_price, amount, margin_amount, currency_code FROM canonical_sale_items",
-    "ai_orders": "SELECT organization_id, order_at, sales_rep_id, sales_rep_external_id, customer_id, customer_external_id, customer_name, total_amount, ordered_quantity, sold_quantity, normalized_status, order_id, deal_id, currency_code FROM canonical_orders",
-    "ai_products": "SELECT organization_id, id, product_id, code, name, short_name, state, source_kind, measure_code FROM canonical_products",
-    "ai_customers": "SELECT organization_id, id, person_id, code, name, short_name, state, customer_kind FROM canonical_customers",
-    "ai_returns": "SELECT organization_id, return_at, sales_rep_id, sales_rep_external_id, customer_id, customer_external_id, customer_name, total_amount, returned_quantity, normalized_status, linked_sale_id, deal_id, currency_code FROM canonical_customer_returns",
-    "ai_visits": "SELECT organization_id, visit_date, visited_at, sales_rep_id, sales_rep_external_id, sales_rep_name, customer_id, customer_external_id, customer_name, working_zone_id, working_zone_external_id FROM canonical_visits",
-    "ai_inventory": "SELECT organization_id, snapshot_date, warehouse_id, warehouse_external_id, product_id, product_external_id, product_code, product_name, quantity, available_quantity, reserved_quantity, valuation_amount, currency_code, inventory_kind FROM canonical_inventory_balances",
-    "ai_finance": "SELECT organization_id, operation_at, normalized_operation_type, direction, amount, currency_code, counterparty_external_id, posted FROM canonical_financial_operations",
-    "ai_organizations": "SELECT organization_id, name, company_id, filial_id, filial_code, project_code, is_active FROM canonical_organizations",
+    "ai_sales": "SELECT s.organization_id, s.sale_id, s.sale_at, s.closed_at, s.sales_rep_id, s.sales_rep_external_id, COALESCE((SELECT r.sales_manager_name FROM canonical_sales_reps r WHERE r.organization_id = s.organization_id AND (r.id = s.sales_rep_id OR r.sales_manager_id = s.sales_rep_external_id OR r.sales_manager_code = s.sales_rep_external_id) ORDER BY CASE WHEN r.sales_manager_id = s.sales_rep_external_id THEN 0 ELSE 1 END LIMIT 1), NULL) AS sales_rep_name, s.customer_id, s.customer_external_id, s.customer_name, s.total_amount, s.sold_quantity, s.returned_quantity, s.order_id, s.deal_id, s.normalized_status, s.currency_code FROM canonical_sales s",
+    "ai_sale_items": "SELECT organization_id, sale_id, sale_external_id, order_id, order_external_id, product_id, product_external_id, product_code, product_name, warehouse_id, warehouse_external_id, warehouse_code, sold_quantity, returned_quantity, unit_price, amount, margin_amount, currency_code FROM canonical_sale_items",
+    "ai_orders": "SELECT organization_id, id, order_id, deal_id, order_at, delivery_date, sales_rep_id, sales_rep_external_id, customer_id, customer_external_id, customer_name, total_amount, ordered_quantity, sold_quantity, item_count, normalized_status, currency_code FROM canonical_orders",
+    "ai_products": "SELECT organization_id, id, product_id, code, name, short_name, article_code, producer_code, state, source_kind, measure_code, gtin, ikpu FROM canonical_products",
+    "ai_customers": "SELECT organization_id, id, person_id, code, name, short_name, main_phone, email, state, customer_kind, tin FROM canonical_customers",
+    "ai_returns": "SELECT organization_id, return_id, return_at, booked_at, sales_rep_id, sales_rep_external_id, customer_id, customer_external_id, customer_name, total_amount, returned_quantity, normalized_status, linked_order_id, linked_order_external_id, deal_id, currency_code FROM canonical_customer_returns",
+    "ai_visits": "SELECT organization_id, id, visit_id, visit_date, visited_at, sales_rep_id, sales_rep_external_id, sales_rep_name, customer_id, customer_external_id, customer_name, working_zone_id, working_zone_external_id, normalized_status, display_status FROM canonical_visits",
+    "ai_inventory": "SELECT organization_id, id, snapshot_date, warehouse_id, warehouse_external_id, warehouse_code, product_id, product_external_id, product_code, product_name, quantity, available_quantity, reserved_quantity, valuation_amount, currency_code, inventory_kind, measure_code FROM canonical_inventory_balances",
+    "ai_finance": "SELECT organization_id, id, operation_id, operation_at, operation_date, normalized_operation_type, direction, amount, currency_code, counterparty_external_id, counterparty_name, posted FROM canonical_financial_operations",
+    "ai_organizations": "SELECT organization_id, name, company_id, filial_id, filial_code, project_code, is_active, sort_order FROM canonical_organizations",
 }
+
+_AI_PUBLISHED_COLUMNS = {
+    "ai_sales": ("organization_id", "sale_id", "sale_at", "closed_at", "sales_rep_id", "sales_rep_external_id", "sales_rep_name", "customer_id", "customer_external_id", "customer_name", "total_amount", "sold_quantity", "returned_quantity", "order_id", "deal_id", "normalized_status", "currency_code"),
+    "ai_sale_items": ("organization_id", "sale_id", "sale_external_id", "order_id", "order_external_id", "product_id", "product_external_id", "product_code", "product_name", "warehouse_id", "warehouse_external_id", "warehouse_code", "sold_quantity", "returned_quantity", "unit_price", "amount", "margin_amount", "currency_code"),
+    "ai_orders": ("organization_id", "id", "order_id", "deal_id", "order_at", "delivery_date", "sales_rep_id", "sales_rep_external_id", "customer_id", "customer_external_id", "customer_name", "total_amount", "ordered_quantity", "sold_quantity", "item_count", "normalized_status", "currency_code"),
+    "ai_products": ("organization_id", "id", "product_id", "code", "name", "short_name", "article_code", "producer_code", "state", "source_kind", "measure_code", "gtin", "ikpu"),
+    "ai_customers": ("organization_id", "id", "person_id", "code", "name", "short_name", "main_phone", "email", "state", "customer_kind", "tin"),
+    "ai_returns": ("organization_id", "return_id", "return_at", "booked_at", "sales_rep_id", "sales_rep_external_id", "customer_id", "customer_external_id", "customer_name", "total_amount", "returned_quantity", "normalized_status", "linked_order_id", "linked_order_external_id", "deal_id", "currency_code"),
+    "ai_visits": ("organization_id", "id", "visit_id", "visit_date", "visited_at", "sales_rep_id", "sales_rep_external_id", "sales_rep_name", "customer_id", "customer_external_id", "customer_name", "working_zone_id", "working_zone_external_id", "normalized_status", "display_status"),
+    "ai_inventory": ("organization_id", "id", "snapshot_date", "warehouse_id", "warehouse_external_id", "warehouse_code", "product_id", "product_external_id", "product_code", "product_name", "quantity", "available_quantity", "reserved_quantity", "valuation_amount", "currency_code", "inventory_kind", "measure_code"),
+    "ai_finance": ("organization_id", "id", "operation_id", "operation_at", "operation_date", "normalized_operation_type", "direction", "amount", "currency_code", "counterparty_external_id", "counterparty_name", "posted"),
+    "ai_organizations": ("organization_id", "name", "company_id", "filial_id", "filial_code", "project_code", "is_active", "sort_order"),
+}
+
+_AI_VIEW_GRAINS = {
+    "ai_sales": "one realized sale fact",
+    "ai_sale_items": "one sale line item",
+    "ai_orders": "one order document",
+    "ai_products": "one canonical product",
+    "ai_customers": "one canonical customer",
+    "ai_returns": "one customer return document",
+    "ai_visits": "one field visit",
+    "ai_inventory": "one inventory balance snapshot per organization, warehouse and product",
+    "ai_finance": "one financial operation",
+    "ai_organizations": "one organization/filial",
+}
+
+_AI_COLUMN_SEMANTICS = {
+    "ai_sales": {
+        "organization_id": {"kind": "identifier", "meaning": "Canonical organization scope."},
+        "sale_id": {"kind": "identifier", "meaning": "Canonical realized sale identifier."},
+        "sale_at": {"kind": "date", "meaning": "Sale realization timestamp."},
+        "closed_at": {"kind": "date", "meaning": "Sale closing timestamp when available."},
+        "sales_rep_id": {"kind": "identifier", "meaning": "Canonical sales representative identifier."},
+        "sales_rep_external_id": {"kind": "identifier", "meaning": "Source sales representative identifier."},
+        "sales_rep_name": {"kind": "label", "meaning": "Sales representative name resolved from canonical sales reps."},
+        "customer_external_id": {"kind": "identifier", "meaning": "Source customer identifier."},
+        "customer_name": {"kind": "label", "meaning": "Customer name captured on the sale."},
+        "total_amount": {"kind": "measure", "meaning": "Realized sale amount."},
+        "sold_quantity": {"kind": "measure", "meaning": "Realized quantity."},
+        "returned_quantity": {"kind": "measure", "meaning": "Quantity returned against the sale."},
+        "order_id": {"kind": "identifier", "meaning": "Canonical order identifier when linked."},
+        "deal_id": {"kind": "identifier", "meaning": "Source deal identifier."},
+        "normalized_status": {"kind": "dimension", "meaning": "Canonical sale status."},
+        "currency_code": {"kind": "dimension", "meaning": "Currency of the amount."},
+    },
+    "ai_sale_items": {
+        "organization_id": {"kind": "identifier", "meaning": "Canonical organization scope."},
+        "sale_id": {"kind": "identifier", "meaning": "Canonical sale identifier."},
+        "product_id": {"kind": "identifier", "meaning": "Canonical product identifier."},
+        "product_external_id": {"kind": "identifier", "meaning": "Source product identifier."},
+        "product_code": {"kind": "dimension", "meaning": "Product code."},
+        "product_name": {"kind": "label", "meaning": "Product name captured on the line."},
+        "warehouse_id": {"kind": "identifier", "meaning": "Canonical warehouse identifier."},
+        "warehouse_external_id": {"kind": "identifier", "meaning": "Source warehouse identifier."},
+        "sold_quantity": {"kind": "measure", "meaning": "Realized line quantity."},
+        "returned_quantity": {"kind": "measure", "meaning": "Returned line quantity."},
+        "unit_price": {"kind": "measure", "meaning": "Line unit price."},
+        "amount": {"kind": "measure", "meaning": "Line amount."},
+        "margin_amount": {"kind": "measure", "meaning": "Margin when populated by source data."},
+        "currency_code": {"kind": "dimension", "meaning": "Currency of line amounts."},
+    },
+}
+
+
+def _generic_column_semantics(name: str) -> dict[str, str]:
+    if name.endswith("_id") or name in {"id", "code", "filial_code", "project_code"}:
+        kind = "identifier"
+    elif name.endswith("_at") or name.endswith("_date"):
+        kind = "date"
+    elif any(token in name for token in ("amount", "quantity", "price", "margin", "count")):
+        kind = "measure"
+    elif name.endswith("_name") or name in {"name", "short_name"}:
+        kind = "label"
+    else:
+        kind = "dimension"
+    return {"kind": kind, "meaning": name.replace("_", " ") + " from the canonical source."}
+
+_AI_RELATIONSHIPS = (
+    {"from": "ai_sales.organization_id", "to": "ai_organizations.organization_id", "scope": "same organization"},
+    {"from": "ai_sales.(organization_id,sales_rep_external_id)", "to": "canonical_sales_reps.(organization_id,sales_manager_id|sales_manager_code)", "scope": "same organization; name is resolved in ai_sales"},
+    {"from": "ai_sale_items.(organization_id,sale_id)", "to": "ai_sales.(organization_id,sale_id)", "scope": "same organization"},
+    {"from": "ai_sale_items.(organization_id,product_id)", "to": "ai_products.(organization_id,id)", "scope": "same organization when product_id is populated"},
+)
+
+
+def _relationship_is_published(relationship: dict[str, object], schema: dict[str, object]) -> bool:
+    endpoints = [relationship.get("from"), relationship.get("to")]
+    for endpoint in endpoints:
+        if not isinstance(endpoint, str) or "." not in endpoint:
+            return False
+        view, fields = endpoint.split(".", 1)
+        if view == "canonical_sales_reps":
+            continue
+        published = schema.get(view)
+        names = {
+            item.get("name") for item in (published.get("columns", []) if isinstance(published, dict) else [])
+            if isinstance(item, dict)
+        }
+        for field in fields.strip("()").split(","):
+            if "|" in field:
+                if not any(option in names for option in field.split("|")):
+                    return False
+            elif field not in names:
+                return False
+    return True
 
 _AI_VIEW_SELECTS = tuple(
     f"{view} AS {definition}" for view, definition in _AI_VIEW_DEFINITIONS.items()
 )
 
-# PostgreSQL has no CREATE VIEW IF NOT EXISTS; OR REPLACE is idempotent.
-AI_ANALYTICAL_VIEW_DDL = tuple(f"CREATE OR REPLACE VIEW {definition}" for definition in _AI_VIEW_SELECTS)
-AI_ANALYTICAL_VIEW_SQLITE_DDL = tuple(f"CREATE VIEW IF NOT EXISTS {definition}" for definition in _AI_VIEW_SELECTS)
+# PostgreSQL view columns can change only after the old view is removed. This
+# drops views only, then recreates the published read-only projections.
+AI_ANALYTICAL_VIEW_DDL = (
+    "DROP VIEW IF EXISTS " + ", ".join(_AI_VIEW_DEFINITIONS),
+    *tuple(f"CREATE VIEW {definition}" for definition in _AI_VIEW_SELECTS),
+)
+AI_ANALYTICAL_VIEW_SQLITE_DDL = (
+    *tuple(f"DROP VIEW IF EXISTS {view}" for view in _AI_VIEW_DEFINITIONS),
+    *tuple(f"CREATE VIEW {definition}" for definition in _AI_VIEW_SELECTS),
+)

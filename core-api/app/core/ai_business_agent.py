@@ -62,6 +62,7 @@ def _structured_protocol_prompt(
         "Do not claim that business data or tools are unavailable before attempting a relevant tool.\n"
         "The backend validates and executes the SQL; never access RAW, files, credentials, secrets, or other tables.\n"
         "Use the current organization scope. Keep queries compact and include a useful LIMIT.\n"
+        "Use the semantic environment to understand grain and relationships, but only exact published columns.\n"
         + repair_text
         + "Approved SQL schema/catalog:\n"
         + json.dumps(database_schema or AIReadOnlySQLService.catalog(), ensure_ascii=False, default=str)
@@ -405,9 +406,16 @@ class AIBusinessAgentService:
                     "AVAILABLE BUSINESS OS CAPABILITIES (executable):\n"
                     + json.dumps(available_capabilities, ensure_ascii=False, default=str)
                     + "\nFor a listed capability, emit its documented internal request format; do not tell the user to run it.\n"
-                    "Exact database schema:\n"
+                    "Exact database schema and semantic environment:\n"
                     + (
-                        json.dumps(sql_service.database_schema(), ensure_ascii=False, default=str)
+                        json.dumps(
+                            {
+                                "schema": sql_service.database_schema(),
+                                "semantic_environment": sql_service.semantic_environment(),
+                            },
+                            ensure_ascii=False,
+                            default=str,
+                        )
                         if capability_only
                         else "Business analytical schema is not available to this role."
                     )

@@ -38,9 +38,12 @@ def test_sql_research_is_scoped_limited_and_read_only():
 
 
 def test_database_specific_view_ddl_is_idempotent():
-    assert len(AI_ANALYTICAL_VIEW_DDL) == 10
-    assert all(statement.startswith("CREATE OR REPLACE VIEW ai_") for statement in AI_ANALYTICAL_VIEW_DDL)
-    assert all(statement.startswith("CREATE VIEW IF NOT EXISTS ai_") for statement in AI_ANALYTICAL_VIEW_SQLITE_DDL)
+    assert len(AI_ANALYTICAL_VIEW_DDL) == 11
+    assert AI_ANALYTICAL_VIEW_DDL[0].startswith("DROP VIEW IF EXISTS ai_")
+    assert all(statement.startswith("CREATE VIEW ai_") for statement in AI_ANALYTICAL_VIEW_DDL[1:])
+    assert len(AI_ANALYTICAL_VIEW_SQLITE_DDL) == 20
+    assert all(statement.startswith("DROP VIEW IF EXISTS ai_") for statement in AI_ANALYTICAL_VIEW_SQLITE_DDL[:10])
+    assert all(statement.startswith("CREATE VIEW ai_") for statement in AI_ANALYTICAL_VIEW_SQLITE_DDL[10:])
 
 
 def test_sql_research_uses_the_published_sqlite_view_schema():
@@ -51,11 +54,58 @@ def test_sql_research_uses_the_published_sqlite_view_schema():
 
     assert schema["ai_sales"]["columns"]
     assert {column["name"] for column in schema["ai_sales"]["columns"]} == {
-        "organization_id", "sale_at", "sales_rep_id", "sales_rep_external_id",
-        "customer_id", "customer_external_id", "customer_name", "total_amount",
-        "sold_quantity", "returned_quantity", "order_id", "deal_id", "currency_code",
+        "organization_id", "sale_id", "sale_at", "closed_at", "sales_rep_id",
+        "sales_rep_external_id", "sales_rep_name", "customer_id", "customer_external_id",
+        "customer_name", "total_amount", "sold_quantity", "returned_quantity", "order_id",
+        "deal_id", "normalized_status", "currency_code",
     }
-    assert "seller_name" not in {column["name"] for column in schema["ai_sales"]["columns"]}
+
+
+def test_semantic_environment_is_grounded_in_published_columns():
+    class SchemaStore:
+        def describe_ai_views(self):
+            return {"ai_sales": {"columns": [{"name": "organization_id"}, {"name": "total_amount"}]}}
+
+    environment = AIReadOnlySQLService(SchemaStore()).semantic_environment()
+    sales = next(item for item in environment["datasets"] if item["name"] == "ai_sales")
+
+    assert sales["grain"] == "one realized sale fact"
+    assert set(sales["columns"]) == {"organization_id", "total_amount"}
+    assert sales["columns"]["total_amount"]["kind"] == "measure"
+    assert environment["relationships"] == []
+
+
+def test_sales_view_resolves_rep_name_within_organization_scope():
+    connection = sqlite3.connect(":memory:")
+    connection.executescript(
+        """
+        CREATE TABLE canonical_sales (
+            organization_id TEXT, sale_id TEXT, sale_at TEXT, closed_at TEXT,
+            sales_rep_id TEXT, sales_rep_external_id TEXT, customer_id TEXT,
+            customer_external_id TEXT, customer_name TEXT, total_amount REAL,
+            sold_quantity REAL, returned_quantity REAL, order_id TEXT, deal_id TEXT,
+            normalized_status TEXT, currency_code TEXT
+        );
+        CREATE TABLE canonical_sales_reps (
+            id TEXT, organization_id TEXT, sales_manager_id TEXT,
+            sales_manager_code TEXT, sales_manager_name TEXT
+        );
+        INSERT INTO canonical_sales_reps VALUES
+            ('rep-a', 'org-a', 'seller-1', NULL, 'Seller A'),
+            ('rep-b', 'org-b', 'seller-1', NULL, 'Seller B');
+        INSERT INTO canonical_sales VALUES
+            ('org-a', 'sale-a', '2026-08-30', NULL, NULL, 'seller-1', NULL, NULL, NULL, 100, 1, 0, NULL, NULL, 'realized', 'UZS'),
+            ('org-b', 'sale-b', '2026-08-30', NULL, NULL, 'seller-1', NULL, NULL, NULL, 200, 1, 0, NULL, NULL, 'realized', 'UZS');
+        """
+    )
+    sales_view = next(statement for statement in AI_ANALYTICAL_VIEW_SQLITE_DDL if "CREATE VIEW ai_sales AS" in statement)
+    connection.execute(sales_view)
+
+    rows = connection.execute(
+        "SELECT organization_id, sales_rep_name FROM ai_sales WHERE organization_id = 'org-a'"
+    ).fetchall()
+
+    assert rows == [("org-a", "Seller A")]
 
 
 @pytest.mark.parametrize("query", [
