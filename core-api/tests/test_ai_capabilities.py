@@ -11,6 +11,9 @@ def test_business_roles_receive_read_only_business_query_capability():
         "business.query", "system.inspect", "ui.inspect",
     }
     assert all(item["access"] == "read" for item in capabilities)
+    business_query = next(item for item in capabilities if item["name"] == "business.query")
+    assert business_query["arguments"]["required"] == ["sql"]
+    assert business_query["arguments"]["properties"]["sql"]["type"] == "string"
 
 
 def test_system_context_contains_exact_published_schema_and_permissions():

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Literal
 
 CapabilityName = Literal[
@@ -22,10 +22,26 @@ class AICapability:
     name: CapabilityName
     description: str
     access: Literal["read", "write"]
+    arguments: dict[str, object] = field(default_factory=dict)
 
 
 _CAPABILITIES: tuple[AICapability, ...] = (
-    AICapability("business.query", "Read-only queries over approved AI Business OS analytical views.", "read"),
+    AICapability(
+        "business.query",
+        "Execute a safe read-only query against approved AI Business OS analytical views.",
+        "read",
+        arguments={
+            "type": "object",
+            "properties": {
+                "sql": {
+                    "type": "string",
+                    "description": "One SELECT statement over the published ai_* analytical views.",
+                },
+            },
+            "required": ["sql"],
+            "additionalProperties": False,
+        },
+    ),
     AICapability("system.inspect", "Inspect approved AI Business OS system state and service metadata.", "read"),
     AICapability("ui.inspect", "Inspect the current page, widget and visible UI context when supplied.", "read"),
     AICapability("code.search", "Search approved project source locations.", "read"),
@@ -53,7 +69,7 @@ class AICapabilityRegistry:
         allowed = set(_ROLE_CAPABILITIES.get(role, ()))
         return [capability for capability in _CAPABILITIES if capability.name in allowed]
 
-    def describe(self, role: str) -> list[dict[str, str]]:
+    def describe(self, role: str) -> list[dict[str, object]]:
         return [asdict(capability) for capability in self.for_role(role)]
 
 

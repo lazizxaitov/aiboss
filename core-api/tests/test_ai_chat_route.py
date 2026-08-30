@@ -62,6 +62,10 @@ def test_web_chat_sse_only_contains_final_answer_after_business_query():
     assert len(store.sql_calls) == 1
     assert model_request.await_count == 2
     assert legacy_tool_flow.await_count == 0
+    first_turn = model_request.await_args_list[0].kwargs["messages"]
+    first_context = "\n".join(str(message.get("content")) for message in first_turn)
+    assert "business.query" in first_context
+    assert '"required": ["sql"]' in first_context
     second_turn = model_request.await_args_list[1].kwargs["messages"]
     assert "64742600" in "\n".join(str(message.get("content")) for message in second_turn)
     assert "Лидер продаж — Иван, 64 742 600 сум." in body

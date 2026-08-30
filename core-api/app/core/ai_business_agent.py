@@ -365,6 +365,7 @@ class AIBusinessAgentService:
                 },
             )
         tools = _tool_definitions()
+        available_capabilities = system_context.get("capabilities", [])
         messages.insert(
             3,
             {
@@ -378,7 +379,9 @@ class AIBusinessAgentService:
                     "For business.query return only this internal envelope: "
                     '{"capability":"business.query","arguments":{"sql":"SELECT ..."}}. '
                     "This envelope is never a user-facing answer.\n"
-                    "AI Business OS capability: business.query (read-only approved analytical views).\n"
+                    "AVAILABLE BUSINESS OS CAPABILITIES (executable):\n"
+                    + json.dumps(available_capabilities, ensure_ascii=False, default=str)
+                    + "\nFor a listed capability, emit its documented internal request format; do not tell the user to run it.\n"
                     "Exact database schema:\n"
                     + json.dumps(sql_service.database_schema(), ensure_ascii=False, default=str)
                 ),
