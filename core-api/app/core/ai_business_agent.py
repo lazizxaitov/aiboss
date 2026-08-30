@@ -409,7 +409,9 @@ class AIBusinessAgentService:
         total_tool_calls = 0
         rounds = 0
         evidence_retry_used = False
-        business_evidence_verified = False
+        # Single source of truth for the evidence guard. It is incremented
+        # only after the approved business query executor returns successfully.
+        successful_business_queries = 0
         # Business requests start in the internal structured protocol. This
         # prevents a provider's own web/API discovery tools from becoming the
         # execution path; the model still selects the approved tool/query.
@@ -666,7 +668,7 @@ class AIBusinessAgentService:
                         if response.status_code >= 400:
                             raise ValueError("AI provider вернул ошибку при исправлении structured action.")
                         continue
-                    if business_request and not business_evidence_verified:
+                    if business_request and successful_business_queries == 0:
                         raise ValueError("AI не выполнил обязательную проверку бизнес-данных.")
                     raise ValueError("AI не вернул корректное structured business action.")
                 logger.info(
@@ -677,7 +679,7 @@ class AIBusinessAgentService:
                     structured_action.get("tool"),
                 )
                 if structured_action.get("action") == "final":
-                    if business_request and not business_evidence_verified:
+                    if business_request and successful_business_queries == 0:
                         raise ValueError("AI не выполнил обязательную проверку бизнес-данных.")
                     final_text = str(structured_action["answer"])
                     logger.info(
@@ -787,7 +789,7 @@ class AIBusinessAgentService:
                     if response.status_code >= 400:
                         raise ValueError("AI provider вернул ошибку при повторной проверке бизнес-данных.")
                     continue
-                if business_request and evidence_retry_used and not business_evidence_verified:
+                if business_request and evidence_retry_used and successful_business_queries == 0:
                     raise ValueError("AI не выполнил обязательную проверку бизнес-данных.")
                 logger.info(
                     "AI_AGENT_FINAL request_id=%s rounds=%s tool_calls=%s provider=%s model=%s elapsed_ms=%.2f preview=%s",
@@ -907,16 +909,16 @@ class AIBusinessAgentService:
                             router,
                         )
                     query_executed = tool_name in {"query_business_data", BUSINESS_QUERY_CAPABILITY}
-                    if tool_name in {"query_business_data", BUSINESS_QUERY_CAPABILITY} and isinstance(arguments.get("sql"), str):
-                        business_evidence_verified = (
-                            isinstance(tool_result, dict)
-                            and tool_result.get("available") is True
-                            and "error" not in tool_result
-                        )
-                    elif query_executed:
-                        # Legacy compatibility for already persisted structured
-                        # conversations; new requests use the SQL branch above.
-                        business_evidence_verified = True
+                    if (
+                        tool_name in {"query_business_data", BUSINESS_QUERY_CAPABILITY}
+                        and isinstance(arguments.get("sql"), str)
+                        and isinstance(tool_result, dict)
+                        and tool_result.get("available") is True
+                        and "error" not in tool_result
+                    ):
+                        # Do not mark evidence from the model's envelope. This
+                        # happens only after the read-only executor succeeded.
+                        successful_business_queries += 1
                     result_cache[cache_key] = tool_result
                     logger.info("AI_TOOL_RESULT request_id=%s name=%s rows=%s", request_id, tool_name, _row_count(tool_result))
                     if tool_name in {"query_business_data", "aggregate_sales", "query_inventory", "query_products", "query_customers", "query_returns", "query_visits", "query_finance"}:

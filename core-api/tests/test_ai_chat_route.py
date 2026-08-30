@@ -16,7 +16,7 @@ class RouteSQLStore(InMemoryCoreDataLayer):
 
     def execute_ai_readonly_sql(self, sql, params, *, statement_timeout_ms):
         self.sql_calls.append((sql, params, statement_timeout_ms))
-        return [{"sales_rep_external_id": "123", "total_sales": 500000}]
+        return [{"sales_rep_external_id": "123", "total_sales_amount": 64742600}]
 
 
 def test_web_chat_sse_only_contains_final_answer_after_business_query():
@@ -35,7 +35,7 @@ def test_web_chat_sse_only_contains_final_answer_after_business_query():
             ),
             SimpleNamespace(
                 status_code=200,
-                json=lambda: {"choices": [{"message": {"content": "Больше всех продал Иван — 500 000 сум."}}]},
+                json=lambda: {"choices": [{"message": {"content": "Лидер продаж — Иван, 64 742 600 сум."}}]},
             ),
         ])
         request = ChatRequest(
@@ -62,6 +62,8 @@ def test_web_chat_sse_only_contains_final_answer_after_business_query():
     assert len(store.sql_calls) == 1
     assert model_request.await_count == 2
     assert legacy_tool_flow.await_count == 0
-    assert "Больше всех продал Иван — 500 000 сум." in body
+    second_turn = model_request.await_args_list[1].kwargs["messages"]
+    assert "64742600" in "\n".join(str(message.get("content")) for message in second_turn)
+    assert "Лидер продаж — Иван, 64 742 600 сум." in body
     assert "business.query" not in body
     assert "SELECT" not in body
