@@ -54,7 +54,7 @@ def test_sql_research_uses_the_published_sqlite_view_schema():
 
     assert schema["ai_sales"]["columns"]
     assert {column["name"] for column in schema["ai_sales"]["columns"]} == {
-        "organization_id", "sale_id", "sale_at", "closed_at", "sales_rep_id",
+        "organization_id", "id", "sale_id", "sale_at", "closed_at", "sales_rep_id",
         "sales_rep_external_id", "sales_rep_name", "customer_id", "customer_external_id",
         "customer_name", "total_amount", "sold_quantity", "returned_quantity", "order_id",
         "deal_id", "normalized_status", "currency_code",
@@ -75,12 +75,35 @@ def test_semantic_environment_is_grounded_in_published_columns():
     assert environment["relationships"] == []
 
 
+def test_semantic_environment_publishes_confirmed_cross_domain_links_and_visit_date():
+    class SchemaStore:
+        def describe_ai_views(self):
+            return {
+                "ai_sales": {"columns": [{"name": "organization_id"}, {"name": "id"}]},
+                "ai_sale_items": {"columns": [{"name": "organization_id"}, {"name": "sale_id"}]},
+                "ai_products": {"columns": [{"name": "organization_id"}, {"name": "id"}]},
+                "ai_organizations": {"columns": [{"name": "organization_id"}]},
+                "ai_visits": {"columns": [{"name": "organization_id"}, {"name": "visit_date"}]},
+            }
+
+    environment = AIReadOnlySQLService(SchemaStore()).semantic_environment()
+    assert {
+        (item["from"], item["to"])
+        for item in environment["relationships"]
+    } == {
+        ("ai_sales.organization_id", "ai_organizations.organization_id"),
+        ("ai_sales.(organization_id,id)", "ai_sale_items.(organization_id,sale_id)"),
+    }
+    visits = next(item for item in environment["datasets"] if item["name"] == "ai_visits")
+    assert visits["date_semantics"]["event_date_column"] == "visit_date"
+
+
 def test_sales_view_resolves_rep_name_within_organization_scope():
     connection = sqlite3.connect(":memory:")
     connection.executescript(
         """
         CREATE TABLE canonical_sales (
-            organization_id TEXT, sale_id TEXT, sale_at TEXT, closed_at TEXT,
+            organization_id TEXT, id TEXT, sale_id TEXT, sale_at TEXT, closed_at TEXT,
             sales_rep_id TEXT, sales_rep_external_id TEXT, customer_id TEXT,
             customer_external_id TEXT, customer_name TEXT, total_amount REAL,
             sold_quantity REAL, returned_quantity REAL, order_id TEXT, deal_id TEXT,
@@ -94,8 +117,8 @@ def test_sales_view_resolves_rep_name_within_organization_scope():
             ('rep-a', 'org-a', 'seller-1', NULL, 'Seller A'),
             ('rep-b', 'org-b', 'seller-1', NULL, 'Seller B');
         INSERT INTO canonical_sales VALUES
-            ('org-a', 'sale-a', '2026-08-30', NULL, NULL, 'seller-1', NULL, NULL, NULL, 100, 1, 0, NULL, NULL, 'realized', 'UZS'),
-            ('org-b', 'sale-b', '2026-08-30', NULL, NULL, 'seller-1', NULL, NULL, NULL, 200, 1, 0, NULL, NULL, 'realized', 'UZS');
+            ('org-a', 'sale-row-a', 'sale-a', '2026-08-30', NULL, NULL, 'seller-1', NULL, NULL, NULL, 100, 1, 0, NULL, NULL, 'realized', 'UZS'),
+            ('org-b', 'sale-row-b', 'sale-b', '2026-08-30', NULL, NULL, 'seller-1', NULL, NULL, NULL, 200, 1, 0, NULL, NULL, 'realized', 'UZS');
         """
     )
     sales_view = next(statement for statement in AI_ANALYTICAL_VIEW_SQLITE_DDL if "CREATE VIEW ai_sales AS" in statement)

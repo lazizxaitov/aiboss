@@ -386,6 +386,8 @@ class AutoBusinessAnalyticsService:
                 build_baseline=False,
                 tool_call_budget={"widget": 4, "daily": 6, "deep": 12}[mode],
             )
+            if int(agent_result.runtime.get("successful_business_queries") or 0) < 1:
+                raise ValueError("Business Analytics не получила подтверждённые данные из business.query.")
             raw = agent_result.final_text.strip()
             if raw.startswith("```"):
                 raw = "\n".join(raw.splitlines()[1:-1]).strip()

@@ -888,6 +888,7 @@ async def chat(
                     "fallback_used": result.runtime.get("fallback_used", False),
                     "agent_rounds": result.rounds,
                     "tool_calls": result.tool_calls,
+                    "business_entities": result.runtime.get("business_entities", []),
                 },
             )
             if assistant_text:

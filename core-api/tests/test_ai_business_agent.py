@@ -8,6 +8,7 @@ from uuid import UUID
 
 from app.core.ai_business_agent import (
     AIBusinessAgentService,
+    _parse_capability_request,
     _parse_structured_action,
 )
 from app.core.ai_conversation import (
@@ -81,6 +82,47 @@ def test_structured_parser_accepts_sql_research_request():
         "arguments": {"sql": "SELECT sales_rep_external_id, SUM(total_amount) FROM ai_sales GROUP BY sales_rep_external_id"},
         "approved": True,
     }
+
+
+def test_capability_parser_accepts_type_capability_envelope():
+    action = _parse_capability_request(
+        '{"type":"capability","capability":"business.query","arguments":{"sql":"SELECT 1 FROM ai_sales"}}'
+    )
+
+    assert action["capability"] == "business.query"
+    assert action["arguments"]["sql"] == "SELECT 1 FROM ai_sales"
+
+
+def test_capability_envelope_is_executed_and_never_returned_as_final_text():
+    class SQLStore:
+        def execute_ai_readonly_sql(self, sql, params, *, statement_timeout_ms):
+            return [{"sales_rep_external_id": "123", "total_amount": 64742600}]
+
+    async def execute():
+        with patch("app.api.routes.ai_chat._hermes_request", new_callable=AsyncMock) as request:
+            request.side_effect = [
+                _response({"content": '{"type":"capability","capability":"business.query","arguments":{"sql":"SELECT total_amount FROM ai_sales"}}'}),
+                _response({"content": '{"type":"final","content":"Лидер продаж — 64 742 600 сум."}'}),
+            ]
+            result = await AIBusinessAgentService(SQLStore()).run(
+                conversation=AIConversationState(
+                    organization_id=UUID("11111111-1111-1111-1111-111111111111"),
+                    messages=[AIConversationMessage(
+                        role="user", content="Кто продал больше всех?", source_channel=AIConversationChannel.WEB,
+                    )],
+                ),
+                user_text="Кто продал больше всех?", source_channel="web", task_type="ai_chat",
+                router=FakeRouter(), tools_service=FakeTools(), widget_builder=object(),
+                memory_prompt="", system_prompt="agent",
+            )
+            return result, request
+
+    result, request = asyncio.run(execute())
+    assert result.final_text == "Лидер продаж — 64 742 600 сум."
+    assert result.tool_calls == 1
+    assert "capability" not in result.final_text
+    assert "SELECT" not in result.final_text
+    assert "64742600" in "\n".join(str(item.get("content")) for item in request.await_args_list[1].kwargs["messages"])
 
 
 def test_business_query_capability_is_intercepted_and_rows_are_sent_to_model():

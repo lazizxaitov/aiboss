@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -325,6 +326,18 @@ class AIConversationService:
                     f"{item.get('type')}={item.get('id')} ({item.get('display_name')})"
                     for item in conversation.resolved_entities[-10:]
                 )
+                + ".\n"
+            )
+        prior_evidence = [
+            message.metadata.get("business_entities")
+            for message in conversation.messages
+            if message.role == "assistant" and isinstance(message.metadata.get("business_entities"), list)
+        ]
+        prior_evidence = [item for group in prior_evidence for item in group if isinstance(item, dict)][-30:]
+        if prior_evidence:
+            entity_context += (
+                "Compact identities from previous verified business evidence (reuse stable IDs for follow-up queries): "
+                + json.dumps(prior_evidence, ensure_ascii=False, default=str)
                 + ".\n"
             )
         return (

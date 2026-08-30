@@ -124,7 +124,10 @@ def _parse_capability_request(content: object) -> dict[str, object] | None:
     if not isinstance(payload, dict):
         return None
     arguments = payload.get("arguments")
-    if payload.get("capability") == BUSINESS_QUERY_CAPABILITY and isinstance(arguments, dict):
+    capability = payload.get("capability") or payload.get("name")
+    if payload.get("type") == "capability" or payload.get("action") == "capability":
+        capability = capability or payload.get("tool")
+    if capability == BUSINESS_QUERY_CAPABILITY and isinstance(arguments, dict):
         sql = arguments.get("sql")
         if isinstance(sql, str) and sql.strip():
             return {
@@ -134,6 +137,14 @@ def _parse_capability_request(content: object) -> dict[str, object] | None:
                 "approved": True,
             }
     return None
+
+
+def _looks_like_internal_capability(content: object) -> bool:
+    """Detect malformed internal protocol instead of exposing it to a user."""
+
+    return isinstance(content, str) and any(
+        marker in content for marker in ('"capability"', '"business.query"', 'BUSINESS_OS_CAPABILITY_RESULT')
+    )
 
 
 def _parse_final_request(content: object) -> str | None:
@@ -312,6 +323,8 @@ class AIBusinessAgentService:
         if not candidates:
             raise ValueError("Для этой задачи нет доступного provider/model.")
         runtime = candidates[0]
+        runtime["successful_business_queries"] = 0
+        runtime["business_entities"] = []
         sql_service = AIReadOnlySQLService(self.store)
         system_context = AISystemContextService(self.store).build(
             role=task_type,
@@ -398,6 +411,7 @@ class AIBusinessAgentService:
                     )
                     + "Do not query merely because "
                     "business terminology appears. Never invent business facts.\n"
+                    "For absence claims, verify the dataset's authoritative event_date_column, business period, and organization scope before concluding that no records exist.\n"
                     "Return exactly one JSON object per turn. For a final response use: "
                     '{"type":"final","content":"..."}. '
                     "To execute a listed capability, return an internal object with its exact name and arguments, "
@@ -568,6 +582,8 @@ class AIBusinessAgentService:
             assistant = _extract_assistant_message(synthesis_response.json())
             if assistant is None or _parse_tool_calls(assistant):
                 raise ValueError("AI не смог сформировать финальный ответ по полученным данным.")
+            if _parse_capability_request(assistant.get("content")) or _looks_like_internal_capability(assistant.get("content")):
+                raise ValueError("AI вернул незавершённый внутренний capability-запрос.")
             if structured_mode:
                 action, error = _parse_structured_action(assistant.get("content"), tool_names)
                 if action is None or action.get("action") != "final":
@@ -635,6 +651,20 @@ class AIBusinessAgentService:
                     final_request = _parse_final_request(assistant_message.get("content"))
                     if final_request is not None:
                         assistant_message = {**assistant_message, "content": final_request}
+                    elif _raw_select(assistant_message.get("content")) is not None:
+                        structured_action = {
+                            "action": "capability",
+                            "capability": BUSINESS_QUERY_CAPABILITY,
+                            "arguments": {"sql": _raw_select(assistant_message.get("content"))},
+                            "approved": True,
+                        }
+                        tool_calls = [{
+                            "id": f"capability-{request_id}-{rounds}",
+                            "function": {
+                                "name": BUSINESS_QUERY_CAPABILITY,
+                                "arguments": json.dumps(structured_action["arguments"], ensure_ascii=False),
+                            },
+                        }]
             if structured_mode and not tool_calls:
                 if task_type != "business_analytics" and total_tool_calls:
                     payload = _parse_json_object(assistant_message.get("content"))
@@ -772,6 +802,8 @@ class AIBusinessAgentService:
                         raise ValueError("AI provider вернул ошибку при исправлении business capability.")
                     continue
             if not tool_calls:
+                if capability_only and _looks_like_internal_capability(assistant_message.get("content")):
+                    raise ValueError("AI вернул незавершённый внутренний capability-запрос.")
                 if not structured_mode and total_tool_calls:
                     repeated_action = _parse_json_object(assistant_message.get("content"))
                     if isinstance(repeated_action, dict) and repeated_action.get("action") == "query":
@@ -898,6 +930,12 @@ class AIBusinessAgentService:
                             router,
                         )
                     query_executed = tool_name in {"query_business_data", BUSINESS_QUERY_CAPABILITY}
+                    if query_executed and isinstance(tool_result, dict) and tool_result.get("available") is not False:
+                        runtime["successful_business_queries"] = int(runtime.get("successful_business_queries") or 0) + 1
+                        entities = runtime.setdefault("business_entities", [])
+                        if isinstance(entities, list):
+                            entities.extend(_compact_business_entities(tool_result.get("rows")))
+                            runtime["business_entities"] = entities[-30:]
                     result_cache[cache_key] = tool_result
                     logger.info("AI_TOOL_RESULT request_id=%s name=%s rows=%s", request_id, tool_name, _row_count(tool_result))
                     if tool_name in {"query_business_data", "aggregate_sales", "query_inventory", "query_products", "query_customers", "query_returns", "query_visits", "query_finance"}:
@@ -1002,6 +1040,28 @@ def _sanitized_args(arguments: dict[str, object]) -> dict[str, object]:
         key: "[redacted]" if any(part in key.lower() for part in blocked) else value
         for key, value in arguments.items()
     }
+
+
+def _compact_business_entities(rows: object) -> list[dict[str, object]]:
+    """Keep only safe identity/value hints for a later conversation turn."""
+
+    if not isinstance(rows, list):
+        return []
+    result: list[dict[str, object]] = []
+    for row in rows[:20]:
+        if not isinstance(row, dict):
+            continue
+        compact = {
+            str(key): value
+            for key, value in row.items()
+            if isinstance(key, str)
+            and (key == "id" or key.endswith("_id") or key.endswith("_external_id")
+                 or key.endswith("_name") or key in {"name", "code"})
+            and isinstance(value, (str, int, float))
+        }
+        if compact:
+            result.append(compact)
+    return result
 
 
 def _preview(text: str) -> str:

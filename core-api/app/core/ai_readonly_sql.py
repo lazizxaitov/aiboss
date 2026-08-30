@@ -106,6 +106,7 @@ class AIReadOnlySQLService:
                 "meaning": meaning,
                 "grain": _AI_VIEW_GRAINS.get(view),
                 "columns": fields,
+                "date_semantics": _AI_DATE_SEMANTICS.get(view, {}),
             })
         relationships = [
             relationship for relationship in _AI_RELATIONSHIPS
@@ -208,7 +209,7 @@ class AIReadOnlySQLService:
 
 
 _AI_VIEW_DEFINITIONS = {
-    "ai_sales": "SELECT s.organization_id, s.sale_id, s.sale_at, s.closed_at, s.sales_rep_id, s.sales_rep_external_id, COALESCE((SELECT r.sales_manager_name FROM canonical_sales_reps r WHERE r.organization_id = s.organization_id AND (r.id = s.sales_rep_id OR r.sales_manager_id = s.sales_rep_external_id OR r.sales_manager_code = s.sales_rep_external_id) ORDER BY CASE WHEN r.sales_manager_id = s.sales_rep_external_id THEN 0 ELSE 1 END LIMIT 1), NULL) AS sales_rep_name, s.customer_id, s.customer_external_id, s.customer_name, s.total_amount, s.sold_quantity, s.returned_quantity, s.order_id, s.deal_id, s.normalized_status, s.currency_code FROM canonical_sales s",
+    "ai_sales": "SELECT s.organization_id, s.id, s.sale_id, s.sale_at, s.closed_at, s.sales_rep_id, s.sales_rep_external_id, COALESCE((SELECT r.sales_manager_name FROM canonical_sales_reps r WHERE r.organization_id = s.organization_id AND (r.id = s.sales_rep_id OR r.sales_manager_id = s.sales_rep_external_id OR r.sales_manager_code = s.sales_rep_external_id) ORDER BY CASE WHEN r.sales_manager_id = s.sales_rep_external_id THEN 0 ELSE 1 END LIMIT 1), NULL) AS sales_rep_name, s.customer_id, s.customer_external_id, s.customer_name, s.total_amount, s.sold_quantity, s.returned_quantity, s.order_id, s.deal_id, s.normalized_status, s.currency_code FROM canonical_sales s",
     "ai_sale_items": "SELECT organization_id, sale_id, sale_external_id, order_id, order_external_id, product_id, product_external_id, product_code, product_name, warehouse_id, warehouse_external_id, warehouse_code, sold_quantity, returned_quantity, unit_price, amount, margin_amount, currency_code FROM canonical_sale_items",
     "ai_orders": "SELECT organization_id, id, order_id, deal_id, order_at, delivery_date, sales_rep_id, sales_rep_external_id, customer_id, customer_external_id, customer_name, total_amount, ordered_quantity, sold_quantity, item_count, normalized_status, currency_code FROM canonical_orders",
     "ai_products": "SELECT organization_id, id, product_id, code, name, short_name, article_code, producer_code, state, source_kind, measure_code, gtin, ikpu FROM canonical_products",
@@ -221,7 +222,7 @@ _AI_VIEW_DEFINITIONS = {
 }
 
 _AI_PUBLISHED_COLUMNS = {
-    "ai_sales": ("organization_id", "sale_id", "sale_at", "closed_at", "sales_rep_id", "sales_rep_external_id", "sales_rep_name", "customer_id", "customer_external_id", "customer_name", "total_amount", "sold_quantity", "returned_quantity", "order_id", "deal_id", "normalized_status", "currency_code"),
+    "ai_sales": ("organization_id", "id", "sale_id", "sale_at", "closed_at", "sales_rep_id", "sales_rep_external_id", "sales_rep_name", "customer_id", "customer_external_id", "customer_name", "total_amount", "sold_quantity", "returned_quantity", "order_id", "deal_id", "normalized_status", "currency_code"),
     "ai_sale_items": ("organization_id", "sale_id", "sale_external_id", "order_id", "order_external_id", "product_id", "product_external_id", "product_code", "product_name", "warehouse_id", "warehouse_external_id", "warehouse_code", "sold_quantity", "returned_quantity", "unit_price", "amount", "margin_amount", "currency_code"),
     "ai_orders": ("organization_id", "id", "order_id", "deal_id", "order_at", "delivery_date", "sales_rep_id", "sales_rep_external_id", "customer_id", "customer_external_id", "customer_name", "total_amount", "ordered_quantity", "sold_quantity", "item_count", "normalized_status", "currency_code"),
     "ai_products": ("organization_id", "id", "product_id", "code", "name", "short_name", "article_code", "producer_code", "state", "source_kind", "measure_code", "gtin", "ikpu"),
@@ -246,9 +247,19 @@ _AI_VIEW_GRAINS = {
     "ai_organizations": "one organization/filial",
 }
 
+_AI_DATE_SEMANTICS = {
+    "ai_sales": {"event_date_column": "sale_at", "meaning": "Realization event time; filter by the supplied business period."},
+    "ai_orders": {"event_date_column": "order_at", "meaning": "Order creation/business event time."},
+    "ai_returns": {"event_date_column": "return_at", "meaning": "Return event time."},
+    "ai_visits": {"event_date_column": "visit_date", "meaning": "Authoritative business visit date; timestamptz interpreted in the system/business timezone."},
+    "ai_inventory": {"event_date_column": "snapshot_date", "meaning": "Inventory snapshot timestamp, not a movement event."},
+    "ai_finance": {"event_date_column": "operation_at", "meaning": "Financial operation event time."},
+}
+
 _AI_COLUMN_SEMANTICS = {
     "ai_sales": {
         "organization_id": {"kind": "identifier", "meaning": "Canonical organization scope."},
+        "id": {"kind": "identifier", "meaning": "Canonical sale row identifier; joins to ai_sale_items.sale_id."},
         "sale_id": {"kind": "identifier", "meaning": "Canonical realized sale identifier."},
         "sale_at": {"kind": "date", "meaning": "Sale realization timestamp."},
         "closed_at": {"kind": "date", "meaning": "Sale closing timestamp when available."},
@@ -281,6 +292,19 @@ _AI_COLUMN_SEMANTICS = {
         "margin_amount": {"kind": "measure", "meaning": "Margin when populated by source data."},
         "currency_code": {"kind": "dimension", "meaning": "Currency of line amounts."},
     },
+    "ai_visits": {
+        "organization_id": {"kind": "identifier", "meaning": "Canonical organization scope."},
+        "visit_date": {"kind": "date", "meaning": "Authoritative business date for visit period filtering; stored as timestamptz."},
+        "visited_at": {"kind": "date", "meaning": "Visit event timestamp when available."},
+        "sales_rep_external_id": {"kind": "identifier", "meaning": "Source representative identifier."},
+        "sales_rep_name": {"kind": "label", "meaning": "Human-readable representative name."},
+        "normalized_status": {"kind": "dimension", "meaning": "Canonical visit completion/status."},
+    },
+    "ai_products": {
+        "id": {"kind": "identifier", "meaning": "Canonical product identifier; target of ai_sale_items.product_id."},
+        "product_id": {"kind": "identifier", "meaning": "Source product identifier."},
+        "name": {"kind": "label", "meaning": "Canonical product name."},
+    },
 }
 
 
@@ -299,8 +323,8 @@ def _generic_column_semantics(name: str) -> dict[str, str]:
 
 _AI_RELATIONSHIPS = (
     {"from": "ai_sales.organization_id", "to": "ai_organizations.organization_id", "scope": "same organization"},
+    {"from": "ai_sales.(organization_id,id)", "to": "ai_sale_items.(organization_id,sale_id)", "scope": "same organization; sale line items"},
     {"from": "ai_sales.(organization_id,sales_rep_external_id)", "to": "canonical_sales_reps.(organization_id,sales_manager_id|sales_manager_code)", "scope": "same organization; name is resolved in ai_sales"},
-    {"from": "ai_sale_items.(organization_id,sale_id)", "to": "ai_sales.(organization_id,sale_id)", "scope": "same organization"},
     {"from": "ai_sale_items.(organization_id,product_id)", "to": "ai_products.(organization_id,id)", "scope": "same organization when product_id is populated"},
 )
 
