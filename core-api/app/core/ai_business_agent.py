@@ -11,6 +11,7 @@ from time import monotonic
 from uuid import uuid4
 
 from app.core.ai_conversation import AIConversationService, AIConversationState
+from app.core.ai_system_context import AISystemContextService
 from app.core.ai_routing import AITaskRouter, TaskType
 from app.core.analytics.widget_builder import WidgetBuilderService
 from app.core.ai_readonly_sql import AIReadOnlyQueryError, AIReadOnlySQLService
@@ -241,6 +242,7 @@ class AIBusinessAgentService:
         build_baseline: bool = False,
         request_id: str | None = None,
         tool_call_budget: int = MAX_TOOL_CALLS,
+        ui_context: dict[str, object] | None = None,
     ) -> AIBusinessAgentResult:
         """Resolve a target, execute tools, and stop at the first final answer."""
 
@@ -268,6 +270,12 @@ class AIBusinessAgentService:
             raise ValueError("Для этой задачи нет доступного provider/model.")
         runtime = candidates[0]
         sql_service = AIReadOnlySQLService(self.store)
+        system_context = AISystemContextService(self.store).build(
+            role=task_type,
+            organization_id=conversation.organization_id,
+            period=conversation.period,
+            ui_context=ui_context,
+        )
         logger.info(
             "AI_AGENT_START request_id=%s provider=%s model=%s organization=%s period=%s source=%s",
             request_id,
@@ -296,6 +304,13 @@ class AIBusinessAgentService:
             {"role": "system", "content": system_prompt},
             {"role": "system", "content": memory_prompt},
             {"role": "system", "content": _routing_context(router)},
+            {
+                "role": "system",
+                "content": (
+                    "AI BUSINESS OS SYSTEM CONTEXT. Use only the capabilities and exact database schema listed here.\n"
+                    + json.dumps(system_context, ensure_ascii=False, default=str)
+                ),
+            },
             *[{"role": message.role, "content": message.content} for message in conversation.messages],
         ]
         if baseline is not None:

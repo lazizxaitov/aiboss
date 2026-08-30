@@ -57,6 +57,7 @@ class ChatRequest(BaseModel):
     task_type: TaskType = "ai_chat"
     provider: str | None = Field(default=None, validation_alias=AliasChoices("provider", "provider_id"))
     model: str | None = Field(default=None, validation_alias=AliasChoices("model", "model_id"))
+    ui_context: dict[str, object] | None = None
 
 
 def _event(payload: dict[str, str], event: str | None = None) -> str:
@@ -878,6 +879,7 @@ async def chat(
                 # separate baseline flow.
                 build_baseline=False,
                 request_id=request_id,
+                ui_context=request.ui_context,
             )
             assistant_text = result.final_text
             if not assistant_text.strip():

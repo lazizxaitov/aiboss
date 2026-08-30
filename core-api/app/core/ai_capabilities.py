@@ -1,0 +1,58 @@
+"""AI Business OS capability boundary exposed to the selected model."""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from typing import Literal
+
+CapabilityName = Literal[
+    "business.query",
+    "system.inspect",
+    "ui.inspect",
+    "code.search",
+    "code.read",
+    "code.edit",
+    "tests.run",
+    "dashboard.configure",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class AICapability:
+    name: CapabilityName
+    description: str
+    access: Literal["read", "write"]
+
+
+_CAPABILITIES: tuple[AICapability, ...] = (
+    AICapability("business.query", "Read-only queries over approved AI Business OS analytical views.", "read"),
+    AICapability("system.inspect", "Inspect approved AI Business OS system state and service metadata.", "read"),
+    AICapability("ui.inspect", "Inspect the current page, widget and visible UI context when supplied.", "read"),
+    AICapability("code.search", "Search approved project source locations.", "read"),
+    AICapability("code.read", "Read approved project source files.", "read"),
+    AICapability("code.edit", "Edit project files only through a future explicit approval flow.", "write"),
+    AICapability("tests.run", "Run project checks only through a future explicit approval flow.", "write"),
+    AICapability("dashboard.configure", "Change dashboard configuration only through an approved action.", "write"),
+)
+
+_ROLE_CAPABILITIES: dict[str, tuple[CapabilityName, ...]] = {
+    "business_analytics": ("business.query", "system.inspect", "ui.inspect"),
+    "ai_chat": ("business.query", "system.inspect", "ui.inspect"),
+    "system_action": ("business.query", "system.inspect", "ui.inspect", "dashboard.configure"),
+    "communications": ("business.query", "system.inspect"),
+    "system_developer": ("system.inspect", "ui.inspect", "code.search", "code.read"),
+}
+
+
+class AICapabilityRegistry:
+    """Single source of truth for model-visible AI BOS permissions."""
+
+    def for_role(self, role: str) -> list[AICapability]:
+        allowed = set(_ROLE_CAPABILITIES.get(role, ()))
+        return [capability for capability in _CAPABILITIES if capability.name in allowed]
+
+    def describe(self, role: str) -> list[dict[str, str]]:
+        return [asdict(capability) for capability in self.for_role(role)]
+
+
+ai_capability_registry = AICapabilityRegistry()
