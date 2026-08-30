@@ -44,7 +44,12 @@ def _tool_catalog(tools: list[dict[str, object]]) -> list[dict[str, object]]:
     return catalog
 
 
-def _structured_protocol_prompt(tools: list[dict[str, object]], *, repair: bool = False) -> str:
+def _structured_protocol_prompt(
+    tools: list[dict[str, object]],
+    *,
+    database_schema: dict[str, object] | None = None,
+    repair: bool = False,
+) -> str:
     repair_text = "The previous output was invalid. Return one valid JSON object only.\n" if repair else ""
     return (
         "You are operating in AI Business OS agent mode.\n"
@@ -59,7 +64,7 @@ def _structured_protocol_prompt(tools: list[dict[str, object]], *, repair: bool 
         "Use the current organization scope. Keep queries compact and include a useful LIMIT.\n"
         + repair_text
         + "Approved SQL schema/catalog:\n"
-        + json.dumps(AIReadOnlySQLService.catalog(), ensure_ascii=False, default=str)
+        + json.dumps(database_schema or AIReadOnlySQLService.catalog(), ensure_ascii=False, default=str)
     )
 
 
@@ -427,7 +432,7 @@ class AIBusinessAgentService:
         if structured_mode:
             messages.append({
                 "role": "system",
-                "content": _structured_protocol_prompt(tools),
+                "content": _structured_protocol_prompt(tools, database_schema=sql_service.database_schema()),
             })
             logger.info("AI_AGENT_MODE request_id=%s mode=structured", request_id)
 
@@ -644,7 +649,11 @@ class AIBusinessAgentService:
                         messages.append({"role": "assistant", "content": str(assistant_message.get("content") or "")})
                         messages.append({
                             "role": "system",
-                            "content": _structured_protocol_prompt(tools, repair=True)
+                            "content": _structured_protocol_prompt(
+                                tools,
+                                database_schema=sql_service.database_schema(),
+                                repair=True,
+                            )
                             + "\nValidation error: " + str(parse_error),
                         })
                         response = await model_request(
@@ -731,7 +740,7 @@ class AIBusinessAgentService:
                     logger.info("AI_AGENT_MODE request_id=%s mode=structured", request_id)
                     messages.append({
                         "role": "system",
-                        "content": _structured_protocol_prompt(tools),
+                        "content": _structured_protocol_prompt(tools, database_schema=sql_service.database_schema()),
                     })
                     response = await model_request(
                         messages=messages,
@@ -946,7 +955,7 @@ class AIBusinessAgentService:
             if structured_mode:
                 messages.append({
                     "role": "system",
-                    "content": _structured_protocol_prompt(tools),
+                    "content": _structured_protocol_prompt(tools, database_schema=sql_service.database_schema()),
                 })
             response = await model_request(
                 messages=messages,
