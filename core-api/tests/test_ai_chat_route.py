@@ -73,3 +73,36 @@ def test_web_chat_sse_only_contains_final_answer_after_business_query():
     assert "Лидер продаж — Иван, 64 742 600 сум." in body
     assert "business.query" not in body
     assert "SELECT" not in body
+
+
+def test_web_chat_meta_question_can_finish_without_business_query():
+    async def execute():
+        store = RouteSQLStore()
+        model_request = AsyncMock(return_value=SimpleNamespace(
+            status_code=200,
+            json=lambda: {"choices": [{"message": {"content": "Да, через безопасную capability Business OS."}}]},
+        ))
+        request = ChatRequest(
+            messages=[ChatMessage(role="user", content="У тебя есть доступ к нашей базе?")],
+        )
+        candidates = [{
+            "provider_id": "custom",
+            "provider_name": "Local / Custom",
+            "model_id": "local-model",
+            "fallback_used": False,
+        }]
+        with (
+            patch("app.api.routes.ai_chat._hermes_request", model_request),
+            patch("app.api.routes.ai_chat._resolve_tool_result", new=AsyncMock()) as legacy_tool_flow,
+            patch("app.core.hermes_model_registry.HermesModelRegistry.get_providers", new=AsyncMock(return_value=[])),
+            patch("app.api.routes.ai_chat.AITaskRouter.resolve_candidates", return_value=candidates),
+        ):
+            response = await chat(request, store, None)
+            chunks = [chunk async for chunk in response.body_iterator]
+            body = "".join(chunk.decode() if isinstance(chunk, bytes) else chunk for chunk in chunks)
+        return store, legacy_tool_flow, body
+
+    store, legacy_tool_flow, body = asyncio.run(execute())
+    assert store.sql_calls == []
+    assert legacy_tool_flow.await_count == 0
+    assert "Да, через безопасную capability Business OS." in body
