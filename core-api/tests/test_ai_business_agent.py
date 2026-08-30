@@ -4,6 +4,7 @@ import asyncio
 import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from uuid import UUID
 
 from app.core.ai_business_agent import (
     AIBusinessAgentService,
@@ -75,11 +76,52 @@ def test_structured_parser_accepts_sql_research_request():
     )
     assert error is None
     assert action == {
-        "action": "tool",
-        "tool": "query_business_data",
+        "action": "capability",
+        "capability": "business.query",
         "arguments": {"sql": "SELECT sales_rep_external_id, SUM(total_amount) FROM ai_sales GROUP BY sales_rep_external_id"},
         "approved": True,
     }
+
+
+def test_business_query_capability_is_intercepted_and_rows_are_sent_to_model():
+    class SQLStore:
+        def __init__(self):
+            self.calls = []
+
+        def execute_ai_readonly_sql(self, sql, params, *, statement_timeout_ms):
+            self.calls.append((sql, params, statement_timeout_ms))
+            return [{"sales_rep_external_id": "123", "total_sales_amount": 500000}]
+
+    async def execute():
+        store = SQLStore()
+        responses = [
+            _response({"content": '{"sql":"SELECT sales_rep_external_id, SUM(total_amount) AS total_sales_amount FROM ai_sales GROUP BY sales_rep_external_id ORDER BY total_sales_amount DESC LIMIT 1}'}),
+            _response({"content": "Иван — 500 000 сум."}),
+        ]
+        with patch("app.api.routes.ai_chat._hermes_request", new_callable=AsyncMock) as request:
+            request.side_effect = responses
+            result = await AIBusinessAgentService(store).run(
+                conversation=AIConversationState(
+                    organization_id=UUID("11111111-1111-1111-1111-111111111111"),
+                    messages=[],
+                ),
+                user_text="Кто продал больше всех по сумме за эту неделю?",
+                source_channel="web",
+                task_type="ai_chat",
+                router=FakeRouter(),
+                tools_service=FakeTools(),
+                widget_builder=object(),
+                memory_prompt="memory",
+                system_prompt="agent",
+            )
+            return store, request, result
+
+    store, request, result = asyncio.run(execute())
+    assert result.final_text == "Иван — 500 000 сум."
+    assert len(store.calls) == 1
+    second_request = request.await_args_list[1].kwargs["messages"]
+    assert "500000" in "\n".join(str(message.get("content")) for message in second_request)
+    assert '{"sql"' not in result.final_text
 
 
 def _run(text, responses, tool_result=None):

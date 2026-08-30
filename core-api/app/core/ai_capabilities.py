@@ -35,6 +35,8 @@ _CAPABILITIES: tuple[AICapability, ...] = (
     AICapability("dashboard.configure", "Change dashboard configuration only through an approved action.", "write"),
 )
 
+BUSINESS_QUERY_CAPABILITY = "business.query"
+
 _ROLE_CAPABILITIES: dict[str, tuple[CapabilityName, ...]] = {
     "business_analytics": ("business.query", "system.inspect", "ui.inspect"),
     "ai_chat": ("business.query", "system.inspect", "ui.inspect"),

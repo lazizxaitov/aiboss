@@ -11,6 +11,7 @@ from time import monotonic
 from uuid import uuid4
 
 from app.core.ai_conversation import AIConversationService, AIConversationState
+from app.core.ai_capabilities import BUSINESS_QUERY_CAPABILITY
 from app.core.ai_system_context import AISystemContextService
 from app.core.ai_routing import AITaskRouter, TaskType
 from app.core.analytics.widget_builder import WidgetBuilderService
@@ -23,7 +24,7 @@ logger = getLogger(__name__)
 MAX_ROUNDS = 12
 MAX_TOOL_CALLS = 12
 CHAT_MAX_ROUNDS = 4
-CHAT_TOOL_CALLS = 2
+CHAT_TOOL_CALLS = 3
 LIGHTWEIGHT_ANALYSIS_MAX_ROUNDS = 6
 
 
@@ -48,7 +49,9 @@ def _structured_protocol_prompt(tools: list[dict[str, object]], *, repair: bool 
     return (
         "You are operating in AI Business OS agent mode.\n"
         "Select your next research step using only the supplied approved schema.\n"
-        "For business data return exactly one JSON object {\"sql\":\"SELECT ... FROM ai_sales ...\"}. Only SELECT from ai_* views is allowed.\n"
+        "For business data return exactly one internal capability envelope "
+        "{\"capability\":\"business.query\",\"arguments\":{\"sql\":\"SELECT ... FROM ai_sales ...\"}}. "
+        "Only SELECT from ai_* views is allowed.\n"
         "After verified evidence is supplied, return an ordinary answer (or the requested structured analysis JSON).\n"
         "Do not query for the sake of querying. Once sufficient evidence exists to answer the task, you MUST return final.\n"
         "Do not claim that business data or tools are unavailable before attempting a relevant tool.\n"
@@ -99,8 +102,32 @@ def _parse_structured_action(
         }, None
     sql = payload.get("sql")
     if isinstance(sql, str) and sql.strip():
-        return {"action": "tool", "tool": "query_business_data", "arguments": {"sql": sql}, "approved": True}, None
+        return {
+            "action": "capability",
+            "capability": BUSINESS_QUERY_CAPABILITY,
+            "arguments": {"sql": sql},
+            "approved": True,
+        }, None
     return None, "Поле action должно быть query или final."
+
+
+def _parse_capability_request(content: object) -> dict[str, object] | None:
+    """Parse the provider-independent business.query envelope."""
+
+    payload = _parse_json_object(content)
+    if not isinstance(payload, dict):
+        return None
+    arguments = payload.get("arguments")
+    if payload.get("capability") == BUSINESS_QUERY_CAPABILITY and isinstance(arguments, dict):
+        sql = arguments.get("sql")
+        if isinstance(sql, str) and sql.strip():
+            return {
+                "action": "capability",
+                "capability": BUSINESS_QUERY_CAPABILITY,
+                "arguments": {"sql": sql},
+                "approved": True,
+            }
+    return None
 
 
 def _parse_json_object(content: object) -> dict[str, object] | None:
@@ -168,7 +195,7 @@ def _validate_tool_arguments(
 ) -> str | None:
     """Apply the catalog's top-level required/property contract before execution."""
 
-    if tool_name == "query_business_data" and isinstance(arguments.get("sql"), str):
+    if tool_name in {"query_business_data", BUSINESS_QUERY_CAPABILITY} and isinstance(arguments.get("sql"), str):
         return None
 
     definition = next(
@@ -572,7 +599,11 @@ class AIBusinessAgentService:
             if structured_mode and not tool_calls:
                 if task_type != "business_analytics" and total_tool_calls:
                     payload = _parse_json_object(assistant_message.get("content"))
-                    if not isinstance(payload, dict) or payload.get("action") != "query":
+                    is_query_request = (
+                        isinstance(payload, dict)
+                        and payload.get("action") == "query"
+                    ) or _parse_capability_request(assistant_message.get("content")) is not None
+                    if not is_query_request:
                         final_text = str(assistant_message.get("content") or "")
                         if isinstance(payload, dict) and payload.get("action") == "final":
                             final_text = str(payload.get("answer") or "")
@@ -596,11 +627,13 @@ class AIBusinessAgentService:
                         )
                 structured_action, parse_error = _parse_structured_action(assistant_message.get("content"), tool_names)
                 if structured_action is None:
+                    structured_action = _parse_capability_request(assistant_message.get("content"))
+                if structured_action is None:
                     sql = _raw_select(assistant_message.get("content"))
                     if sql is not None:
                         structured_action = {
-                            "action": "tool",
-                            "tool": "query_business_data",
+                            "action": "capability",
+                            "capability": BUSINESS_QUERY_CAPABILITY,
                             "arguments": {"sql": sql},
                             "approved": True,
                         }
@@ -647,7 +680,9 @@ class AIBusinessAgentService:
                         final_text=final_text, messages=messages, runtime=runtime,
                         rounds=rounds, tool_calls=total_tool_calls,
                     )
-                structured_tool_name = str(structured_action.get("tool") or "")
+                structured_tool_name = str(
+                    structured_action.get("capability") or structured_action.get("tool") or ""
+                )
                 structured_tool_id = f"structured-{request_id}-{rounds}"
                 tool_calls = [{
                     "id": structured_tool_id,
@@ -796,7 +831,7 @@ class AIBusinessAgentService:
                             arguments.get("metrics"),
                         )
                         query_started = monotonic()
-                    if tool_name == "query_business_data" and isinstance(arguments.get("sql"), str):
+                    if tool_name in {"query_business_data", BUSINESS_QUERY_CAPABILITY} and isinstance(arguments.get("sql"), str):
                         try:
                             tool_result = sql_service.execute(
                                 str(arguments["sql"]),
@@ -829,8 +864,8 @@ class AIBusinessAgentService:
                             widget_builder,
                             router,
                         )
-                    query_executed = tool_name == "query_business_data"
-                    if tool_name == "query_business_data" and isinstance(arguments.get("sql"), str):
+                    query_executed = tool_name in {"query_business_data", BUSINESS_QUERY_CAPABILITY}
+                    if tool_name in {"query_business_data", BUSINESS_QUERY_CAPABILITY} and isinstance(arguments.get("sql"), str):
                         business_evidence_verified = (
                             isinstance(tool_result, dict)
                             and tool_result.get("available") is True
@@ -861,7 +896,7 @@ class AIBusinessAgentService:
                     "content": "AUTHORITATIVE AI BUSINESS OS TOOL RESULT. Use these returned values as factual business evidence.\n"
                     + json.dumps(tool_result, ensure_ascii=False, default=str),
                 })
-                if tool_name == "query_business_data" and isinstance(arguments.get("sql"), str) and isinstance(tool_result, dict) and tool_result.get("available") is False:
+                if tool_name in {"query_business_data", BUSINESS_QUERY_CAPABILITY} and isinstance(arguments.get("sql"), str) and isinstance(tool_result, dict) and tool_result.get("available") is False:
                     messages.append({
                         "role": "system",
                         "content": (
