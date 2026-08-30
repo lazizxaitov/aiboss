@@ -50,16 +50,18 @@ def test_web_chat_sse_only_contains_final_answer_after_business_query():
         }]
         with (
             patch("app.api.routes.ai_chat._hermes_request", model_request),
+            patch("app.api.routes.ai_chat._resolve_tool_result", new=AsyncMock()) as legacy_tool_flow,
             patch("app.core.hermes_model_registry.HermesModelRegistry.get_providers", new=AsyncMock(return_value=[])),
             patch("app.api.routes.ai_chat.AITaskRouter.resolve_candidates", return_value=candidates),
         ):
             response = await chat(request, store, None)
             chunks = [chunk async for chunk in response.body_iterator]
-        return store, model_request, "".join(chunk.decode() if isinstance(chunk, bytes) else chunk for chunk in chunks)
+        return store, model_request, legacy_tool_flow, "".join(chunk.decode() if isinstance(chunk, bytes) else chunk for chunk in chunks)
 
-    store, model_request, body = asyncio.run(execute())
+    store, model_request, legacy_tool_flow, body = asyncio.run(execute())
     assert len(store.sql_calls) == 1
     assert model_request.await_count == 2
+    assert legacy_tool_flow.await_count == 0
     assert "Больше всех продал Иван — 500 000 сум." in body
     assert "business.query" not in body
     assert "SELECT" not in body

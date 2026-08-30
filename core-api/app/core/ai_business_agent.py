@@ -704,10 +704,43 @@ class AIBusinessAgentService:
                     },
                 }]
             elif structured_mode and tool_calls:
-                # A provider may recover native calling on the structured retry.
-                # From this point use its native protocol for the remaining loop.
-                structured_mode = False
-                logger.info("AI_AGENT_MODE request_id=%s mode=native", request_id)
+                # Internal business requests have one model-facing protocol.
+                # Never fall back to the legacy Hermes-native business tools,
+                # otherwise the route can bypass capability execution.
+                if isinstance(tools_service, HermesBusinessTools) and structured_repair_used:
+                    raise ValueError("AI вернул неподдерживаемый business tool call вместо business.query.")
+                if not isinstance(tools_service, HermesBusinessTools):
+                    # Keep direct service callers that still provide a custom
+                    # legacy executor compatible; the Web route always passes
+                    # HermesBusinessTools and therefore takes the strict path.
+                    structured_mode = False
+                    logger.info("AI_AGENT_MODE request_id=%s mode=native", request_id)
+                else:
+                    structured_repair_used = True
+                    messages.append({
+                        "role": "assistant",
+                        "content": assistant_message.get("content") or "",
+                        "tool_calls": tool_calls,
+                    })
+                    messages.append({
+                        "role": "system",
+                        "content": _structured_protocol_prompt(
+                            tools,
+                            database_schema=sql_service.database_schema(),
+                            repair=True,
+                        )
+                        + "\nDo not emit native tool_calls. Return the business.query capability envelope.",
+                    })
+                    response = await model_request(
+                        messages=messages,
+                        tool_choice="auto",
+                        model=str(runtime["model_id"]),
+                        provider=str(runtime["provider_id"]),
+                        round_number=rounds + 1,
+                    )
+                    if response.status_code >= 400:
+                        raise ValueError("AI provider вернул ошибку при исправлении business capability.")
+                    continue
             if not tool_calls:
                 if not structured_mode and total_tool_calls:
                     repeated_action = _parse_json_object(assistant_message.get("content"))
