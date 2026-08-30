@@ -552,7 +552,7 @@ class AIBusinessAgentService:
                     raise ValueError(error or "AI не смог сформировать финальный ответ по полученным данным.")
                 final_text = str(action["answer"])
             else:
-                final_text = str(assistant.get("content") or "")
+                final_text = _parse_final_request(assistant.get("content")) or str(assistant.get("content") or "")
             if not final_text.strip():
                 raise ValueError("AI не смог сформировать финальный ответ по полученным данным.")
             logger.info(
@@ -896,6 +896,27 @@ class AIBusinessAgentService:
                     "tool_call_id": str(tool_call.get("id")),
                     "content": "AUTHORITATIVE AI BUSINESS OS TOOL RESULT. Use these returned values as factual business evidence.\n"
                     + json.dumps(tool_result, ensure_ascii=False, default=str),
+                })
+                # Hermes deployments may discard role=tool messages when no
+                # native tool call was sent. Keep the same full result in a
+                # normal readable context message for provider-independent
+                # capability roundtrips.
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "BUSINESS_OS_CAPABILITY_RESULT\n"
+                        "The capability was executed by AI Business OS. The following returned values are "
+                        "authoritative evidence. Use the actual rows directly and do not ask the user to provide them.\n"
+                        + json.dumps(
+                            {
+                                "capability": tool_name,
+                                "status": "success" if not (isinstance(tool_result, dict) and tool_result.get("available") is False) else "error",
+                                "result": tool_result,
+                            },
+                            ensure_ascii=False,
+                            default=str,
+                        )
+                    ),
                 })
                 if tool_name in {"query_business_data", BUSINESS_QUERY_CAPABILITY} and isinstance(arguments.get("sql"), str) and isinstance(tool_result, dict) and tool_result.get("available") is False:
                     messages.append({

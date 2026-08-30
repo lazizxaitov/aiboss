@@ -35,7 +35,7 @@ def test_web_chat_sse_only_contains_final_answer_after_business_query():
             ),
             SimpleNamespace(
                 status_code=200,
-                json=lambda: {"choices": [{"message": {"content": "Лидер продаж — Иван, 64 742 600 сум."}}]},
+                json=lambda: {"choices": [{"message": {"content": '{"type":"final","content":"Лидер продаж — Иван, 64 742 600 сум."}'}}]},
             ),
         ])
         request = ChatRequest(
@@ -69,7 +69,9 @@ def test_web_chat_sse_only_contains_final_answer_after_business_query():
     assert model_request.await_args_list[0].kwargs["response_format"] == {"type": "json_object"}
     assert model_request.await_args_list[1].kwargs["response_format"] == {"type": "json_object"}
     second_turn = model_request.await_args_list[1].kwargs["messages"]
-    assert "64742600" in "\n".join(str(message.get("content")) for message in second_turn)
+    second_context = "\n".join(str(message.get("content")) for message in second_turn)
+    assert "BUSINESS_OS_CAPABILITY_RESULT" in second_context
+    assert "64742600" in second_context
     assert "Лидер продаж — Иван, 64 742 600 сум." in body
     assert "business.query" not in body
     assert "SELECT" not in body
