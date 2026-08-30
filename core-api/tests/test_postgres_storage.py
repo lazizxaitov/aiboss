@@ -58,6 +58,27 @@ class _FakeConnection:
         self.rolled_back = True
 
 
+def test_ai_readonly_sql_uses_postgres_timeout_literal() -> None:
+    statements: list[tuple[str, tuple[object, ...] | None]] = []
+    connection = _FakeConnection(
+        statements,
+        rows=[("seller-1", 125)],
+        description=(("seller", object, None, None, None, None, None), ("revenue", object, None, None, None, None, None)),
+    )
+    store = PostgresCoreStore(connection_factory=lambda: connection)
+
+    result = store.execute_ai_readonly_sql(
+        "SELECT seller, revenue FROM ai_sales LIMIT 1",
+        (),
+        statement_timeout_ms=20_000,
+    )
+
+    assert result == [{"seller": "seller-1", "revenue": 125}]
+    timeout_statement = statements[1]
+    assert timeout_statement == ("SET LOCAL statement_timeout = '20000ms'", None)
+    assert "$1" not in timeout_statement[0]
+
+
 def test_postgres_store_wraps_json_values_in_jsonb() -> None:
     statements: list[tuple[str, tuple[object, ...] | None]] = []
     connection = _FakeConnection(statements)

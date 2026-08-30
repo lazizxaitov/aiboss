@@ -3326,11 +3326,17 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
     ) -> list[Row]:
         """Execute a previously validated AI query in a read-only transaction."""
 
+        timeout_ms = int(statement_timeout_ms)
+        if timeout_ms < 0:
+            raise ValueError("statement_timeout_ms must be non-negative")
         connection = self.connection_factory()
         try:
             with connection.cursor() as cursor:
                 cursor.execute("SET TRANSACTION READ ONLY")
-                cursor.execute("SET LOCAL statement_timeout = %s", (statement_timeout_ms,))
+                # PostgreSQL does not accept a bind placeholder as the value of
+                # SET LOCAL. The value is validated as an integer first, then
+                # emitted as a duration literal with no user-controlled SQL.
+                cursor.execute(f"SET LOCAL statement_timeout = '{timeout_ms}ms'")
                 cursor.execute(sql, params)
                 rows = cursor.fetchall()
                 if not rows:
