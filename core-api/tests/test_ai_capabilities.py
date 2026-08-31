@@ -43,3 +43,16 @@ def test_role_without_business_query_does_not_receive_business_environment():
 
     assert "business.query" not in {item["name"] for item in context["capabilities"]}
     assert "database" not in context
+
+
+def test_business_context_publishes_explicit_local_week_boundaries():
+    context = AISystemContextService(SimpleNamespace()).build(
+        role="business_analytics",
+        period="current_week",
+    )
+
+    business = context["business_context"]
+    assert business["timezone"] == "Asia/Tashkent"
+    assert business["calendar_week"]["definition"].startswith("Monday")
+    assert business["calendar_week"]["start"].endswith("+05:00")
+    assert business["calendar_week"]["end_exclusive"].endswith("+05:00")

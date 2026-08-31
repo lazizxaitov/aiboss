@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
+from weakref import WeakKeyDictionary
 
 ALLOWED_VIEWS = {
     "ai_sales": "realized sales facts; one row per sale",
@@ -29,6 +31,8 @@ _FORBIDDEN = re.compile(
     r"\b(?:insert|update|delete|drop|alter|create|truncate|copy|call|execute|grant|revoke|merge|vacuum|analyze|pg_sleep|pg_read_file|current_setting|set_config|dblink|nextval|information_schema|pg_catalog)\b",
     re.IGNORECASE,
 )
+_SCHEMA_CACHE: WeakKeyDictionary[Any, dict[str, object]] = WeakKeyDictionary()
+_NON_WEAK_SCHEMA_CACHE: dict[tuple[type[Any], int], dict[str, object]] = {}
 
 
 class AIReadOnlyQueryError(ValueError):
@@ -61,6 +65,14 @@ class AIReadOnlySQLService:
         while production PostgreSQL always publishes its actual column types.
         """
 
+        try:
+            cache_key: Any = self.store
+            cached = _SCHEMA_CACHE.get(cache_key)
+        except TypeError:
+            cache_key = (type(self.store), id(self.store))
+            cached = _NON_WEAK_SCHEMA_CACHE.get(cache_key)
+        if cached is not None:
+            return deepcopy(cached)
         describe = getattr(self.store, "describe_ai_views", None)
         if callable(describe):
             try:
@@ -69,10 +81,14 @@ class AIReadOnlySQLService:
                     for view, description in ALLOWED_VIEWS.items():
                         if isinstance(schema.get(view), dict):
                             schema[view].setdefault("description", description)
-                    return schema
+                    try:
+                        _SCHEMA_CACHE[cache_key] = deepcopy(schema)
+                    except TypeError:
+                        _NON_WEAK_SCHEMA_CACHE[cache_key] = deepcopy(schema)
+                    return deepcopy(schema)
             except Exception:  # noqa: BLE001 - schema discovery must not block chat
                 pass
-        return {
+        schema = {
             view: {
                 "columns": [
                     {"name": column, "type": "published"}
@@ -82,11 +98,12 @@ class AIReadOnlySQLService:
             }
             for view, definition in _AI_VIEW_DEFINITIONS.items()
         }
+        return schema
 
-    def semantic_environment(self) -> dict[str, object]:
+    def semantic_environment(self, schema: dict[str, object] | None = None) -> dict[str, object]:
         """Describe the published business data environment without inventing fields."""
 
-        schema = self.database_schema()
+        schema = schema or self.database_schema()
         datasets: list[dict[str, object]] = []
         for view, meaning in ALLOWED_VIEWS.items():
             published = schema.get(view)

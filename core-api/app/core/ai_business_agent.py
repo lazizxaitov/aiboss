@@ -334,6 +334,12 @@ class AIBusinessAgentService:
             period=conversation.period,
             ui_context=ui_context,
         )
+        database_context = (
+            system_context.get("database")
+            if isinstance(system_context.get("database"), dict)
+            else {}
+        )
+        schema_for_prompt = database_context.get("schema") or sql_service.database_schema()
         allowed_capabilities = {
             capability.name for capability in ai_capability_registry.for_role(task_type)
         }
@@ -420,19 +426,9 @@ class AIBusinessAgentService:
                     "AVAILABLE BUSINESS OS CAPABILITIES (executable):\n"
                     + json.dumps(available_capabilities, ensure_ascii=False, default=str)
                     + "\nFor a listed capability, emit its documented internal request format; do not tell the user to run it.\n"
-                    "Exact database schema and semantic environment:\n"
-                    + (
-                        json.dumps(
-                            {
-                                "schema": sql_service.database_schema(),
-                                "semantic_environment": sql_service.semantic_environment(),
-                            },
-                            ensure_ascii=False,
-                            default=str,
-                        )
-                        if capability_only
-                        else "Business analytical schema is not available to this role."
-                    )
+                    "The exact database schema and semantic environment are in AI BUSINESS OS SYSTEM CONTEXT above; do not infer or recreate them."
+                    if capability_only
+                    else "Business analytical schema is not available to this role."
                 ),
             },
         )
@@ -715,7 +711,7 @@ class AIBusinessAgentService:
                             "role": "system",
                             "content": _structured_protocol_prompt(
                                 tools,
-                                database_schema=sql_service.database_schema(),
+                                database_schema=schema_for_prompt,
                                 repair=True,
                             )
                             + "\nValidation error: " + str(parse_error),
@@ -786,7 +782,7 @@ class AIBusinessAgentService:
                         "role": "system",
                         "content": _structured_protocol_prompt(
                             tools,
-                            database_schema=sql_service.database_schema(),
+                            database_schema=schema_for_prompt,
                             repair=True,
                         )
                         + "\nDo not emit native tool_calls. Return the business.query capability envelope.",
@@ -907,7 +903,7 @@ class AIBusinessAgentService:
                                 "available": False,
                                 "status": "invalid_query",
                                 "message": str(error),
-                                "database_schema": sql_service.database_schema(),
+                                "database_schema": schema_for_prompt,
                             }
                         except Exception as error:  # noqa: BLE001 - feed DB errors back to the researcher
                             logger.info(
@@ -919,7 +915,7 @@ class AIBusinessAgentService:
                                 "available": False,
                                 "status": "invalid_query",
                                 "message": str(error),
-                                "database_schema": sql_service.database_schema(),
+                                "database_schema": schema_for_prompt,
                             }
                     else:
                         tool_result = await _resolve_tool_result(
@@ -1018,7 +1014,7 @@ class AIBusinessAgentService:
             if structured_mode:
                 messages.append({
                     "role": "system",
-                    "content": _structured_protocol_prompt(tools, database_schema=sql_service.database_schema()),
+                    "content": _structured_protocol_prompt(tools, database_schema=schema_for_prompt),
                 })
             response = await model_request(
                 messages=messages,

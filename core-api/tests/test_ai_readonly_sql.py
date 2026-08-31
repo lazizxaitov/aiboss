@@ -75,6 +75,24 @@ def test_semantic_environment_is_grounded_in_published_columns():
     assert environment["relationships"] == []
 
 
+def test_schema_introspection_is_reused_for_one_store():
+    class SchemaStore:
+        def __init__(self):
+            self.calls = 0
+
+        def describe_ai_views(self):
+            self.calls += 1
+            return {"ai_sales": {"columns": [{"name": "organization_id"}]}}
+
+    store = SchemaStore()
+    service = AIReadOnlySQLService(store)
+    service.database_schema()
+    service.database_schema()
+    service.semantic_environment()
+
+    assert store.calls == 1
+
+
 def test_semantic_environment_publishes_confirmed_cross_domain_links_and_visit_date():
     class SchemaStore:
         def describe_ai_views(self):
