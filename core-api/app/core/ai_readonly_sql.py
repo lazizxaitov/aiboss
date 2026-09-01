@@ -173,31 +173,26 @@ class AIReadOnlySQLService:
         organization_ids: list[UUID | str] | None = None,
     ) -> dict[str, Any]:
         query, view, _ = self.validate(sql)
-        scope = [str(item) for item in (organization_ids or []) if item]
+        requested_scope = [str(item) for item in (organization_ids or []) if item]
         if organization_id:
-            scope = [str(organization_id)]
-        if not scope and view != "ai_organizations":
-            context_scope = None
-            if callable(getattr(self.store, "get_app_setting", None)):
-                from app.core.organization_context import OrganizationContextService
+            requested_scope = [str(organization_id)]
+        from app.core.organization_context import OrganizationContextService
 
-                context_scope = OrganizationContextService(self.store).resolve_organization_ids()
-            scope = [str(item) for item in (context_scope or []) if item]
-            list_organizations = getattr(self.store, "list_canonical_organizations", None)
-            if not scope and callable(list_organizations):
-                scope = [
-                    str(getattr(item, "organization_id", getattr(item, "id", "")))
-                    for item in list_organizations()
-                    if getattr(item, "organization_id", getattr(item, "id", None))
-                ]
-        # Every business view except the organization directory is scoped. The
+        accessible_scope = [
+            str(item)
+            for item in OrganizationContextService(self.store).resolve_accessible_organization_ids()
+        ]
+        if requested_scope and accessible_scope:
+            unauthorized = sorted(set(requested_scope) - set(accessible_scope))
+            if unauthorized:
+                raise AIReadOnlyQueryError("Запрошенная организация недоступна текущему пользователю.")
+        scope = requested_scope or accessible_scope
+        # Every business view is scoped. The
         # predicate must be applied to the source view before the model query is
         # aggregated: an aggregate SELECT is not required to return
         # organization_id itself.
         params: tuple[Any, ...] = ()
-        if view != "ai_organizations":
-            if not scope:
-                raise AIReadOnlyQueryError("Для бизнес-данных требуется organization scope.")
+        if scope:
             placeholders = ", ".join(["%s"] * len(scope))
             scoped_source = (
                 f"(SELECT * FROM {view} "
@@ -213,6 +208,8 @@ class AIReadOnlySQLService:
             if replacements != 1:
                 raise AIReadOnlyQueryError("Не удалось применить organization scope к запросу.")
             params = tuple(scope)
+        elif view != "ai_organizations":
+            raise AIReadOnlyQueryError("Для бизнес-данных требуется organization scope.")
         rows = self.store.execute_ai_readonly_sql(
             query,
             params,

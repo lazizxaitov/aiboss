@@ -66,9 +66,10 @@ class BusinessDataQueryService:
         )
         if dataset not in self.DATASETS:
             return self._unavailable(dataset, "Dataset is not available.")
-        context = OrganizationContextService(self.tools.store).get_context()
-        selected_organizations = set(context.organization_context.organization_ids)
-        if organization_id is not None and selected_organizations and organization_id not in selected_organizations:
+        accessible_organizations = set(
+            OrganizationContextService(self.tools.store).resolve_accessible_organization_ids()
+        )
+        if organization_id is not None and accessible_organizations and organization_id not in accessible_organizations:
             return self._unavailable(dataset, "Organization is outside the current AI Business OS scope.", str(organization_id))
         requested_dimensions = [str(item).lower() for item in (dimensions or [])]
         if len(requested_dimensions) > 1:

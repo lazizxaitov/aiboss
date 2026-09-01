@@ -214,7 +214,8 @@ class AIConversationService:
                     )
 
         context = OrganizationContextService(self.store).get_context()
-        resolved_organization_id = organization_id or self._context_organization_id(context)
+        # Dashboard selection is presentation state, not the AI default scope.
+        resolved_organization_id = organization_id
         resolved_period = period or self._context_period_value(context)
         conversation = AIConversationState(
             conversation_id=conversation_id or str(uuid4()),
@@ -490,6 +491,10 @@ class AIConversationService:
         period: str | None = None,
         user_id: str | None = None,
     ) -> AIConversationState:
+        if organization_id is None:
+            # A missing organization in the current request means all
+            # accessible organizations, not the previous dashboard selection.
+            conversation.organization_id = None
         return self.update_context(
             conversation,
             source_channel=source_channel,

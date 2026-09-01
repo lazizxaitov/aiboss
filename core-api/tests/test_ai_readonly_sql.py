@@ -37,6 +37,34 @@ def test_sql_research_is_scoped_limited_and_read_only():
     assert "LIMIT 100" in sql
 
 
+def test_sql_research_defaults_to_all_accessible_organizations():
+    class OrganizationStore(FakeStore):
+        def list_canonical_organizations(self):
+            return [
+                SimpleNamespace(organization_id="org-a"),
+                SimpleNamespace(organization_id="org-b"),
+            ]
+
+    store = OrganizationStore()
+    AIReadOnlySQLService(store).execute("SELECT organization_id FROM ai_sales")
+
+    sql, params, _ = store.calls[0]
+    assert "IN (%s, %s)" in sql
+    assert params == ("org-a", "org-b")
+
+
+def test_sql_research_rejects_organization_outside_accessible_scope():
+    class OrganizationStore(FakeStore):
+        def list_canonical_organizations(self):
+            return [SimpleNamespace(organization_id="org-a"), SimpleNamespace(organization_id="org-b")]
+
+    with pytest.raises(AIReadOnlyQueryError, match="недоступна"):
+        AIReadOnlySQLService(OrganizationStore()).execute(
+            "SELECT organization_id FROM ai_sales",
+            organization_id="org-c",
+        )
+
+
 def test_database_specific_view_ddl_is_idempotent():
     assert len(AI_ANALYTICAL_VIEW_DDL) == 11
     assert AI_ANALYTICAL_VIEW_DDL[0].startswith("DROP VIEW IF EXISTS ai_")

@@ -181,6 +181,21 @@ class OrganizationContextService:
             return None
         return list(context.organization_ids)
 
+    def resolve_accessible_organization_ids(self) -> list[UUID]:
+        """Return the canonical organizations available to the current owner."""
+
+        list_organizations = getattr(self.store, "list_canonical_organizations", None)
+        if not callable(list_organizations):
+            return []
+        organizations = list_organizations()
+        if not isinstance(organizations, (list, tuple)):
+            return []
+        return list(dict.fromkeys(
+            organization.organization_id
+            for organization in organizations
+            if getattr(organization, "organization_id", None) is not None
+        ))
+
     def _deserialize(self, setting: AppSetting) -> AnalyticsContextState:
         value = setting.setting_value or {}
         if not isinstance(value, dict):

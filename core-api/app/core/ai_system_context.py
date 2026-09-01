@@ -40,12 +40,23 @@ class AISystemContextService:
         context_service = OrganizationContextService(self.store)
         if callable(getattr(self.store, "get_app_setting", None)):
             selected_context = context_service.get_context()
-            selected_scope = context_service.resolve_organization_ids(
-                organization_id=organization_id if organization_id else None,
+            selected_scope = (
+                [organization_id]
+                if organization_id is not None
+                else context_service.resolve_accessible_organization_ids()
             )
         else:
             selected_context = AnalyticsContextState()
-            selected_scope = None
+            selected_scope = context_service.resolve_accessible_organization_ids()
+        list_organizations = getattr(self.store, "list_canonical_organizations", None)
+        organizations = list_organizations() if callable(list_organizations) else []
+        if not isinstance(organizations, (list, tuple)):
+            organizations = []
+        accessible_organizations = [
+            {"id": str(item.organization_id), "name": item.name}
+            for item in organizations
+            if getattr(item, "organization_id", None) is not None
+        ]
         selected_period = period or selected_context.period_context.preset.value
         selected_window: dict[str, str] = {}
         if selected_period in {"current_week", "this_week"}:
@@ -64,6 +75,15 @@ class AISystemContextService:
             "selected_period": selected_period,
             "selected_period_window": selected_window,
             "organization_ids": [str(item) for item in selected_scope] if selected_scope else None,
+            "organization_scope": {
+                "default_mode": "explicit" if organization_id is not None else "all_accessible",
+                "accessible_organizations": accessible_organizations,
+                "selected_organization_ids": (
+                    [str(item) for item in selected_scope]
+                    if organization_id is not None
+                    else None
+                ),
+            },
             "timezone": BUSINESS_TIMEZONE,
             "local_date": now.date().isoformat(),
             "local_now": now.isoformat(),

@@ -542,7 +542,9 @@ class HermesBusinessTools:
         date_to: date | None = None,
     ) -> AnalyticsQuery:
         context_service = OrganizationContextService(self.store)
-        organization_ids = context_service.resolve_organization_ids(organization_id=organization_id) or []
+        organization_ids = context_service.resolve_accessible_organization_ids()
+        if organization_id is not None:
+            organization_ids = [organization_id]
         resolved_organization_id = organization_id
         if resolved_organization_id is None and len(organization_ids) == 1:
             resolved_organization_id = organization_ids[0]
