@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import date
 from logging import getLogger
 from time import monotonic
@@ -505,15 +508,40 @@ async def _hermes_request(
     provider: str | None = None,
     response_format: dict[str, object] | None = None,
 ) -> httpx.Response:
+    body = _hermes_payload(
+        messages=messages,
+        tools=tools,
+        stream=stream,
+        tool_choice=tool_choice,
+        model=model,
+        provider=provider,
+        response_format=response_format,
+    )
     url = f"{settings.hermes_base_url.rstrip('/')}/chat/completions"
     headers = {"Authorization": f"Bearer {settings.hermes_api_key}"}
+    client = httpx.AsyncClient(timeout=None)
+    response = await client.post(url, headers=headers, json=body)
+    if not stream:
+        await client.aclose()
+    return response
+
+
+def _hermes_payload(
+    *,
+    messages: list[dict[str, object]],
+    tools: list[dict[str, object]] | None,
+    stream: bool,
+    tool_choice: str | dict[str, object] | None = None,
+    model: str | None = None,
+    provider: str | None = None,
+    response_format: dict[str, object] | None = None,
+) -> dict[str, object]:
     body: dict[str, object] = {
         "model": model or settings.hermes_model,
         "messages": messages,
         "stream": stream,
     }
     if provider:
-        # Hermes requires provider for direct provider/model requests.
         body["provider"] = "custom" if provider.startswith("custom:") else provider
     if tools is not None:
         body["tools"] = tools
@@ -521,12 +549,52 @@ async def _hermes_request(
         body["tool_choice"] = tool_choice
     if response_format is not None:
         body["response_format"] = response_format
+    return body
 
-    client = httpx.AsyncClient(timeout=None)
-    response = await client.post(url, headers=headers, json=body)
-    if not stream:
-        await client.aclose()
-    return response
+
+@asynccontextmanager
+async def _hermes_stream(
+    *,
+    messages: list[dict[str, object]],
+    tools: list[dict[str, object]] | None,
+    model: str | None = None,
+    provider: str | None = None,
+    tool_choice: str | dict[str, object] | None = None,
+    response_format: dict[str, object] | None = None,
+) -> AsyncIterator[httpx.Response]:
+    """Open the real provider stream; callers must consume it inside this context."""
+
+    url = f"{settings.hermes_base_url.rstrip('/')}/chat/completions"
+    headers = {"Authorization": f"Bearer {settings.hermes_api_key}"}
+    body = _hermes_payload(
+        messages=messages,
+        tools=tools,
+        stream=True,
+        tool_choice=tool_choice,
+        model=model,
+        provider=provider,
+        response_format=response_format,
+    )
+    async with httpx.AsyncClient(timeout=None) as client:
+        stream_context = client.stream("POST", url, headers=headers, json=body)
+        try:
+            response = await stream_context.__aenter__()
+        except Exception:
+            # A provider may expose completions but not streaming. The agent
+            # detects this sentinel and retries the same turn non-streaming.
+            # Cancellation is not swallowed because it inherits BaseException.
+            class _UnavailableStream:
+                status_code = 599
+
+                async def aread(self) -> bytes:
+                    return b""
+
+            yield _UnavailableStream()
+            return
+        try:
+            yield response
+        finally:
+            await stream_context.__aexit__(None, None, None)
 
 
 def _extract_assistant_message(payload: dict[str, object]) -> dict[str, object] | None:
@@ -851,28 +919,49 @@ async def chat(
             "dashboard",
         )
         try:
-            result = await AIBusinessAgentService(store).run(
-                conversation=conversation,
-                user_text=last_user_text,
-                source_channel=request.source_channel.value,
-                task_type=request.task_type,
-                router=router,
-                tools_service=tools_service,
-                widget_builder=widget_builder,
-                memory_prompt=shared_memory.prompt_context(conversation.user_id or effective_user_id or "owner"),
-                system_prompt=conversation_service.build_system_prompt(conversation),
-                # Chat selection is a per-message override only for the
-                # conversational role. Business analytics and system actions
-                # must always use their assignments from AI Routing settings.
-                provider_id=request.provider if request.task_type == "ai_chat" else None,
-                model_id=request.model if request.task_type == "ai_chat" else None,
-                # Interactive chat must let the model plan the relevant query
-                # from the approved catalog; deep automatic analytics owns its
-                # separate baseline flow.
-                build_baseline=False,
-                request_id=request_id,
-                ui_context=request.ui_context,
-            )
+            delta_queue: asyncio.Queue[str | None] = asyncio.Queue()
+            streamed_parts: list[str] = []
+
+            async def on_final_delta(content: str) -> None:
+                await delta_queue.put(content)
+
+            async def execute_agent():
+                try:
+                    return await AIBusinessAgentService(store).run(
+                        conversation=conversation,
+                        user_text=last_user_text,
+                        source_channel=request.source_channel.value,
+                        task_type=request.task_type,
+                        router=router,
+                        tools_service=tools_service,
+                        widget_builder=widget_builder,
+                        memory_prompt=shared_memory.prompt_context(conversation.user_id or effective_user_id or "owner"),
+                        system_prompt=conversation_service.build_system_prompt(conversation),
+                        # Chat selection is a per-message override only for the
+                        # conversational role. Business analytics and system actions
+                        # must always use their assignments from AI Routing settings.
+                        provider_id=request.provider if request.task_type == "ai_chat" else None,
+                        model_id=request.model if request.task_type == "ai_chat" else None,
+                        # Interactive chat must let the model plan the relevant query
+                        # from the approved catalog; deep automatic analytics owns its
+                        # separate baseline flow.
+                        build_baseline=False,
+                        request_id=request_id,
+                        ui_context=request.ui_context,
+                        on_final_delta=on_final_delta,
+                    )
+                finally:
+                    await delta_queue.put(None)
+
+            agent_task = asyncio.create_task(execute_agent())
+            while True:
+                delta = await delta_queue.get()
+                if delta is None:
+                    break
+                if delta:
+                    streamed_parts.append(delta)
+                    yield _event({"content": delta}, "delta")
+            result = await agent_task
             assistant_text = result.final_text
             if not assistant_text.strip():
                 raise ValueError("AI не вернул завершённый ответ.")
@@ -902,6 +991,15 @@ async def chat(
                         separators=(",", ":"),
                     ),
                 )
+                logger.info(
+                    "AI_CHAT_LATENCY_STREAM request_id=%s final_stream_started_ms=%s first_final_token_ms=%s "
+                    "final_stream_duration_ms=%s final_completion_ms=%s",
+                    request_id,
+                    timings.get("final_stream_started_ms"),
+                    timings.get("first_final_token_ms"),
+                    timings.get("final_stream_duration_ms"),
+                    timings.get("final_completion_ms"),
+                )
             conversation_service.append_message(
                 conversation,
                 role="assistant",
@@ -917,9 +1015,8 @@ async def chat(
                     "business_entities": result.runtime.get("business_entities", []),
                 },
             )
-            if assistant_text:
-                # Keep the existing SSE contract; the reusable agent may have
-                # completed several non-streaming tool rounds before this event.
+            if assistant_text and not streamed_parts:
+                # Non-stream providers retain the old complete-content event.
                 yield _event({"content": assistant_text})
             yield _event(
                 {
@@ -946,6 +1043,10 @@ async def chat(
                 request_id,
                 (monotonic() - request_started) * 1000,
             )
+        except asyncio.CancelledError:
+            if "agent_task" in locals() and not agent_task.done():
+                agent_task.cancel()
+            raise
         except Exception as error:  # noqa: BLE001 - SSE clients need a terminal error event
             logger.exception(
                 "AI_CHAT_RESPONSE request_id=%s status=error elapsed_ms=%.2f response_type=error",

@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from logging import getLogger
 from time import monotonic
+from types import SimpleNamespace
+from typing import Awaitable, Callable
 from uuid import uuid4
 
 from app.core.ai_conversation import AIConversationService, AIConversationState
@@ -327,6 +329,7 @@ class AIBusinessAgentService:
         request_id: str | None = None,
         tool_call_budget: int = MAX_TOOL_CALLS,
         ui_context: dict[str, object] | None = None,
+        on_final_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> AIBusinessAgentResult:
         """Resolve a target, execute tools, and stop at the first final answer."""
 
@@ -335,6 +338,8 @@ class AIBusinessAgentService:
         from app.api.routes.ai_chat import (
             _extract_assistant_message,
             _hermes_request,
+            _hermes_stream,
+            _extract_stream_content,
             _parse_tool_calls,
             _resolve_tool_result,
             _resolved_entities_from_search,
@@ -531,6 +536,7 @@ class AIBusinessAgentService:
             tool_choice: str | dict[str, object] | None,
             model: str,
             provider: str,
+            stream_final: bool = False,
         ):
             request_started = monotonic()
             timings["model_calls"] = int(timings.get("model_calls") or 0) + 1
@@ -564,21 +570,121 @@ class AIBusinessAgentService:
                     provider,
                     model,
                 )
+            request_messages = messages
+            if stream_final:
+                # A streamed final is user-facing. Capability objects remain
+                # valid internal responses, but a natural-language final is
+                # deliberately plain text so no JSON envelope can leak.
+                request_messages = [
+                    *messages,
+                    {
+                        "role": "system",
+                        "content": (
+                            "USER-FACING STREAMING TURN: if you need another business query, return the normal "
+                            "internal capability JSON. If you can answer, return only the final natural-language "
+                            "answer, without JSON, SQL, protocol labels, or internal reasoning."
+                        ),
+                    },
+                ]
             try:
-                response = await _hermes_request(
-                    messages=messages,
-                    # Internal requests use Hermes as an inference gateway only.
-                    # The model selects JSON actions from the prompt catalog;
-                    # backend code validates and executes every business tool.
-                    tools=[] if capability_only else tools,
-                    stream=False,
-                    tool_choice="none" if capability_only else tool_choice,
-                    model=model,
-                    provider=provider,
-                    # Chat and analytics share one machine-actionable protocol:
-                    # the model returns either a capability request or final.
-                    response_format={"type": "json_object"} if capability_only else None,
-                )
+                response = None
+                if stream_final:
+                    stream_started = monotonic()
+                    timings["final_stream_started_ms"] = (stream_started - started_at) * 1000
+                    streamed_parts: list[str] = []
+                    pending_parts: list[str] = []
+                    visible_started = False
+                    saw_stream_event = False
+                    usage: dict[str, object] | None = None
+                    async with _hermes_stream(
+                        messages=request_messages,
+                        tools=[] if capability_only else tools,
+                        tool_choice="none" if capability_only else tool_choice,
+                        model=model,
+                        provider=provider,
+                        response_format=None,
+                    ) as streamed_response:
+                        if streamed_response.status_code >= 400:
+                            await streamed_response.aread()
+                            response = SimpleNamespace(
+                                status_code=streamed_response.status_code,
+                                json=lambda: {"choices": []},
+                            )
+                        else:
+                            async for line in streamed_response.aiter_lines():
+                                if not line or not line.startswith("data:"):
+                                    continue
+                                data = line[5:].strip()
+                                if data == "[DONE]":
+                                    continue
+                                try:
+                                    chunk = json.loads(data)
+                                except json.JSONDecodeError:
+                                    continue
+                                saw_stream_event = True
+                                if isinstance(chunk.get("usage"), dict):
+                                    usage = chunk["usage"]
+                                content = _extract_stream_content(chunk)
+                                if not content:
+                                    continue
+                                streamed_parts.append(content)
+                                if not visible_started:
+                                    pending_parts.append(content)
+                                    probe = "".join(pending_parts).lstrip()
+                                    if not probe:
+                                        continue
+                                    # Protocol responses start with an object;
+                                    # keep them entirely internal. Plain text is
+                                    # safe to forward as soon as it is known.
+                                    if probe.startswith("{"):
+                                        visible_started = True
+                                        pending_parts.clear()
+                                        continue
+                                    visible_started = True
+                                    first_visible_part = "".join(pending_parts)
+                                    pending_parts.clear()
+                                    first_delta = (monotonic() - started_at) * 1000
+                                    timings.setdefault("first_final_token_ms", first_delta)
+                                    if on_final_delta is not None:
+                                        await on_final_delta(first_visible_part)
+                                elif visible_started and not "".join(streamed_parts).lstrip().startswith("{"):
+                                    if on_final_delta is not None:
+                                        await on_final_delta(content)
+                            complete_content = "".join(streamed_parts)
+                            response = SimpleNamespace(
+                                status_code=streamed_response.status_code if saw_stream_event else 599,
+                                json=lambda: {
+                                    "choices": [{"message": {"content": complete_content}}],
+                                    "usage": usage or {},
+                                },
+                            )
+                    timings["final_stream_duration_ms"] = (monotonic() - stream_started) * 1000
+                    timings["final_completion_ms"] = (monotonic() - started_at) * 1000
+                    # Providers that reject streaming retain the existing
+                    # non-stream fallback rather than failing the chat.
+                    if response.status_code >= 400:
+                        response = await _hermes_request(
+                            messages=messages,
+                            tools=[] if capability_only else tools,
+                            stream=False,
+                            tool_choice="none" if capability_only else tool_choice,
+                            model=model,
+                            provider=provider,
+                            response_format={"type": "json_object"} if capability_only else None,
+                        )
+                else:
+                    response = await _hermes_request(
+                        messages=messages,
+                        # Internal requests use Hermes as an inference gateway only.
+                        # The model selects JSON actions from the prompt catalog;
+                        # backend code validates and executes every business tool.
+                        tools=[] if capability_only else tools,
+                        stream=False,
+                        tool_choice="none" if capability_only else tool_choice,
+                        model=model,
+                        provider=provider,
+                        response_format={"type": "json_object"} if capability_only else None,
+                    )
             except Exception:
                 logger.info(
                     "AI_AGENT_MODEL_RESPONSE request_id=%s round=%s elapsed_ms=%.2f action=invalid",
@@ -641,6 +747,7 @@ class AIBusinessAgentService:
                 model=str(candidate["model_id"]),
                 provider=str(candidate["provider_id"]),
                 round_number=1,
+                stream_final=on_final_delta is not None,
             )
             if candidate_response.status_code < 400:
                 runtime = candidate
@@ -666,6 +773,7 @@ class AIBusinessAgentService:
                 model=str(runtime["model_id"]),
                 provider=str(runtime["provider_id"]),
                 round_number=round_number,
+                stream_final=on_final_delta is not None,
             )
             if synthesis_response.status_code >= 400:
                 raise ValueError("AI provider не смог сформировать финальный ответ по полученным данным.")
@@ -1128,6 +1236,7 @@ class AIBusinessAgentService:
                 model=str(runtime["model_id"]),
                 provider=str(runtime["provider_id"]),
                 round_number=rounds + 1,
+                stream_final=on_final_delta is not None,
             )
             if response.status_code >= 400:
                 raise ValueError("AI provider вернул ошибку после выполнения business tool.")

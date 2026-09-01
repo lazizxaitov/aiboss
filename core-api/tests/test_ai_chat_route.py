@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import UUID
@@ -72,7 +74,63 @@ def test_web_chat_sse_only_contains_final_answer_after_business_query():
     second_context = "\n".join(str(message.get("content")) for message in second_turn)
     assert "BUSINESS_OS_CAPABILITY_RESULT" in second_context
     assert "64742600" in second_context
-    assert "Лидер продаж — Иван, 64 742 600 сум." in body
+    assert all(part in body for part in ("Лидер продаж — ", "Иван, ", "64 742 600 сум."))
+    assert "business.query" not in body
+    assert "SELECT" not in body
+
+
+def test_web_chat_streams_only_final_text_before_done():
+    async def execute():
+        store = RouteSQLStore()
+        capability = '{"capability":"business.query","arguments":{"sql":"SELECT total_amount FROM ai_sales LIMIT 1"}}'
+        final_chunks = ["Лидер продаж — ", "Иван, ", "64 742 600 сум."]
+        stream_calls = 0
+
+        class FakeResponse:
+            status_code = 200
+
+            def __init__(self, chunks):
+                self.chunks = chunks
+
+            async def aiter_lines(self):
+                for content in self.chunks:
+                    yield "data: " + json.dumps({
+                        "choices": [{"delta": {"content": content}}],
+                    }, ensure_ascii=False)
+                yield "data: [DONE]"
+
+        @asynccontextmanager
+        async def fake_stream(**kwargs):
+            nonlocal stream_calls
+            stream_calls += 1
+            yield FakeResponse([capability] if stream_calls == 1 else final_chunks)
+
+        request = ChatRequest(
+            messages=[ChatMessage(role="user", content="Кто продал больше всех по сумме за эту неделю?")],
+            organization_id=UUID("11111111-1111-1111-1111-111111111111"),
+        )
+        candidates = [{
+            "provider_id": "custom",
+            "provider_name": "Local / Custom",
+            "model_id": "local-model",
+            "fallback_used": False,
+        }]
+        with (
+            patch("app.api.routes.ai_chat._hermes_stream", fake_stream),
+            patch("app.api.routes.ai_chat._resolve_tool_result", new=AsyncMock()) as legacy_tool_flow,
+            patch("app.core.hermes_model_registry.HermesModelRegistry.get_providers", new=AsyncMock(return_value=[])),
+            patch("app.api.routes.ai_chat.AITaskRouter.resolve_candidates", return_value=candidates),
+        ):
+            response = await chat(request, store, None)
+            chunks = [chunk async for chunk in response.body_iterator]
+        return store, legacy_tool_flow, "".join(chunks)
+
+    store, legacy_tool_flow, body = asyncio.run(execute())
+    assert len(store.sql_calls) == 1
+    assert legacy_tool_flow.await_count == 0
+    assert all(part in body for part in ("Лидер продаж — ", "Иван, ", "64 742 600 сум."))
+    assert body.index("event: delta") < body.index("event: done")
+    assert "capability" not in body
     assert "business.query" not in body
     assert "SELECT" not in body
 
