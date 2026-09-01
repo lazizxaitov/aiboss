@@ -378,7 +378,12 @@ class AIBusinessAgentService:
             if isinstance(system_context.get("database"), dict)
             else {}
         )
-        schema_for_prompt = database_context.get("schema") or sql_service.database_schema()
+        full_schema = database_context.get("schema") or sql_service.database_schema()
+        schema_for_prompt = (
+            sql_service.compact_schema(full_schema)
+            if isinstance(full_schema, dict)
+            else full_schema
+        )
         allowed_capabilities = {
             capability.name for capability in ai_capability_registry.for_role(task_type)
         }
@@ -407,22 +412,44 @@ class AIBusinessAgentService:
                     "unavailable": True,
                     "message": "Базовый контекст временно недоступен; выполните разрешённый SQL research-запрос.",
                 }
+        routing_message = (
+            f"Active AI role: {task_type}. Provider/model are selected by role routing. "
+            "Use only the capabilities granted to this role."
+            if capability_only
+            else _routing_context(router)
+        )
+        model_context = dict(system_context)
+        if capability_only:
+            model_context["database"] = {
+                "kind": database_context.get("kind", "published_read_only_views"),
+                "schema": schema_for_prompt,
+                "semantic_environment": database_context.get("semantic_environment", {}),
+            }
+        context_message = (
+            "AI BUSINESS OS SYSTEM CONTEXT. Use only the exact published database column names, "
+            "role permissions, organization scope, and period in this context.\n"
+            + json.dumps(model_context, ensure_ascii=False, default=str)
+        )
         messages: list[dict[str, object]] = [
             {"role": "system", "content": system_prompt},
             {"role": "system", "content": memory_prompt},
-            {"role": "system", "content": _routing_context(router)},
-            {
-                "role": "system",
-                "content": (
-                    "AI BUSINESS OS SYSTEM CONTEXT. Use only the capabilities and exact database schema listed here.\n"
-                    + json.dumps(system_context, ensure_ascii=False, default=str)
-                ),
-            },
+            {"role": "system", "content": routing_message},
+            {"role": "system", "content": context_message},
             *[
                 {"role": message.role, "content": message.content}
                 for message in conversation.messages[-MAX_CONVERSATION_MESSAGES:]
             ],
         ]
+        timings["round_1_sections"] = {
+            "base_instructions": len(system_prompt),
+            "memory": len(memory_prompt),
+            "routing": len(routing_message),
+            "system_context": len(context_message),
+            "conversation_history": sum(
+                len(str(message.get("content") or ""))
+                for message in messages[4:]
+            ),
+        }
         if baseline is not None:
             messages.insert(
                 3,
@@ -470,6 +497,7 @@ class AIBusinessAgentService:
                     + json.dumps(available_capabilities, ensure_ascii=False, default=str)
                     + "\nFor a listed capability, emit its documented internal request format; do not tell the user to run it.\n"
                     "The exact database schema and semantic environment are in AI BUSINESS OS SYSTEM CONTEXT above; do not infer or recreate them."
+                    + " Prefer aggregation, filtering, ordering and LIMIT in SQL for top/count/sum questions; return only the required evidence rows."
                     if capability_only
                     else "Business analytical schema is not available to this role."
                 ),
@@ -550,12 +578,16 @@ class AIBusinessAgentService:
                 )
                 raise
             action = "invalid"
-            usage_tokens = None
+            prompt_tokens = None
+            completion_tokens = None
+            total_tokens = None
             try:
                 payload = response.json()
                 usage = payload.get("usage") if isinstance(payload, dict) else None
                 if isinstance(usage, dict):
-                    usage_tokens = usage.get("total_tokens")
+                    prompt_tokens = usage.get("prompt_tokens")
+                    completion_tokens = usage.get("completion_tokens")
+                    total_tokens = usage.get("total_tokens")
                 assistant = _extract_assistant_message(payload) if isinstance(payload, dict) else None
                 if assistant is not None:
                     if _parse_tool_calls(assistant):
@@ -576,11 +608,13 @@ class AIBusinessAgentService:
             except (ValueError, TypeError, json.JSONDecodeError):
                 pass
             logger.info(
-                "AI_AGENT_MODEL_RESPONSE request_id=%s round=%s elapsed_ms=%.2f usage_tokens=%s action=%s status=%s",
+                "AI_AGENT_MODEL_RESPONSE request_id=%s round=%s elapsed_ms=%.2f prompt_tokens=%s completion_tokens=%s total_tokens=%s action=%s status=%s",
                 request_id,
                 round_number,
                 (monotonic() - request_started) * 1000,
-                usage_tokens,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
                 action,
                 response.status_code,
             )

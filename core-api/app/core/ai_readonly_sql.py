@@ -59,6 +59,26 @@ class AIReadOnlySQLService:
     def catalog() -> dict[str, str]:
         return dict(ALLOWED_VIEWS)
 
+    @staticmethod
+    def compact_schema(schema: dict[str, object]) -> dict[str, object]:
+        """Keep exact published names while removing repetitive DB metadata."""
+
+        compact: dict[str, object] = {}
+        for view, definition in schema.items():
+            if not isinstance(definition, dict):
+                continue
+            columns = definition.get("columns")
+            names = [
+                item.get("name")
+                for item in columns
+                if isinstance(item, dict) and isinstance(item.get("name"), str)
+            ] if isinstance(columns, list) else []
+            compact[view] = {
+                "columns": names,
+                "description": definition.get("description", ALLOWED_VIEWS.get(view, "")),
+            }
+        return compact
+
     def database_schema(self) -> dict[str, object]:
         """Return the live published view schema for model grounding.
 
