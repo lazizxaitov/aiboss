@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from logging import getLogger
+from time import monotonic
 from typing import Annotated
 from uuid import UUID, uuid4
 
@@ -31,6 +33,7 @@ from app.core.data_layer.factory import get_core_store
 from app.core.hermes_tools import HermesBusinessTools
 
 router = APIRouter(prefix="/dashboard/widget-builder")
+logger = getLogger(__name__)
 
 
 def _extract_json_object(text: str) -> dict[str, object] | None:
@@ -76,6 +79,8 @@ async def widget_builder_chat(
     request: WidgetBuilderChatRequest,
     store: Annotated[CoreDataStore, Depends(get_core_store)],
 ) -> WidgetBuilderChatResponse:
+    run_id = str(uuid4())
+    started_at = monotonic()
     service = WidgetBuilderService(store)
     conversation_service = AIConversationService(store)
     conversation = conversation_service.resolve_or_create_conversation(
@@ -104,6 +109,22 @@ async def widget_builder_chat(
         "selected_period": request.period,
         "current_draft": None if request.draft is None else request.draft.model_dump(mode="json"),
     }
+    runtime = AITaskRouter(store).resolve_runtime("system_action")
+    logger.info(
+        "AI_WIDGET_RUN_START request_id=%s role=system_action provider=%s model=%s requested_widget_type=%s",
+        run_id,
+        runtime.get("provider_id"),
+        runtime.get("model_id"),
+        widget_type,
+    )
+    logger.info(
+        "AI_WIDGET_INTENT_READY request_id=%s widget_type=%s organization_resolved=%s period_resolved=%s metric_resolved=%s",
+        run_id,
+        widget_type,
+        bool(request.organization_id),
+        bool(request.period),
+        False,
+    )
     system_prompt = (
         "You are constructing ONE AI Business OS dashboard widget requested by the user.\n"
         "The immutable task goal is USER_WIDGET_REQUEST below. Preserve it in every reasoning step.\n"
@@ -129,14 +150,26 @@ async def widget_builder_chat(
         memory_prompt="",
         system_prompt=system_prompt,
         build_baseline=False,
-        request_id=str(uuid4()),
+        request_id=run_id,
         tool_call_budget=4,
         max_duration_seconds=45.0,
         ui_context={"widget_goal": widget_goal, "widget_context": context_payload},
     )
     assistant_message = agent_result.final_text
+    logger.info(
+        "AI_WIDGET_EVIDENCE_READY request_id=%s capability_attempts=%s executions=%s",
+        run_id,
+        agent_result.runtime.get("capability_attempts", 0),
+        agent_result.runtime.get("capability_executions", 0),
+    )
+    logger.info(
+        "AI_WIDGET_SYNTHESIS_START request_id=%s rounds=%s",
+        run_id,
+        agent_result.rounds,
+    )
     parsed = _extract_json_object(assistant_message)
     if parsed is None:
+        logger.info("AI_WIDGET_VALIDATION_FAILED request_id=%s field=widget_draft reason=missing_structured_result", run_id)
         raise HTTPException(status_code=422, detail="AI не вернул структурированную конфигурацию виджета.")
 
     draft: WidgetBuilderDraft | None = request.draft
@@ -165,6 +198,7 @@ async def widget_builder_chat(
             period=request.period,
         )
         if request.draft is not None and resolved_draft.widget_type != request.draft.widget_type:
+            logger.info("AI_WIDGET_VALIDATION_FAILED request_id=%s field=widget_type reason=changed_by_model", run_id)
             raise HTTPException(status_code=422, detail="AI изменил выбранный тип виджета.")
         validation_config = WidgetBuilderConfig(
             **resolved_draft.model_dump(),
@@ -173,6 +207,11 @@ async def widget_builder_chat(
         )
         validation_errors = service.validate_config(validation_config)
         if validation_errors:
+            logger.info(
+                "AI_WIDGET_VALIDATION_FAILED request_id=%s field=config reason=%s",
+                run_id,
+                ",".join(validation_errors),
+            )
             raise HTTPException(
                 status_code=422,
                 detail=f"Некорректная конфигурация виджета: {', '.join(validation_errors)}",
@@ -199,7 +238,7 @@ async def widget_builder_chat(
         },
     )
 
-    return WidgetBuilderChatResponse(
+    result = WidgetBuilderChatResponse(
         conversation_id=conversation.conversation_id,
         assistant_message=assistant_message,
         widget_draft=draft,
@@ -207,6 +246,16 @@ async def widget_builder_chat(
         clarification_options=clarification_options,
         preview=preview,
     )
+    logger.info(
+        "AI_WIDGET_RUN_DONE request_id=%s rounds=%s capability_attempts=%s executions=%s elapsed_ms=%.2f status=%s",
+        run_id,
+        agent_result.rounds,
+        agent_result.runtime.get("capability_attempts", 0),
+        agent_result.runtime.get("capability_executions", 0),
+        (monotonic() - started_at) * 1000,
+        "clarification" if clarification_required else "ready",
+    )
+    return result
 
 
 @router.post("/confirm", response_model=WidgetBuilderConfirmResponse)
