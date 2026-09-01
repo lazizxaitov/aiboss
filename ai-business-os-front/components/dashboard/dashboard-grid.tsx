@@ -1438,10 +1438,17 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
   return (
     <>
       {fullScreen ? (
-        <div className="fixed inset-0 z-[55] bg-[#17191d]/80 backdrop-blur-sm" aria-hidden="true" />
+        <div
+          className="fixed inset-0 z-[55] bg-[#17191d]/80 backdrop-blur-sm"
+          aria-hidden="true"
+          onPointerDown={() => {
+            setExpanded(false);
+            setFullScreen(false);
+          }}
+        />
       ) : null}
-      <div ref={assistantRootRef} className={fullScreen ? "fixed inset-3 z-[60] mx-auto flex w-[min(980px,calc(100vw-1.5rem))] flex-col gap-3 sm:inset-6" : floating ? "fixed bottom-6 right-6 z-50 flex w-[min(420px,calc(100vw-2rem))] flex-col gap-3" : "flex min-h-0 flex-col gap-3 xl:sticky xl:top-[6.5rem] xl:h-[calc(100dvh-8rem)]"}>
-      <div id="ai-chat" ref={chatSurfaceRef}>
+      <div ref={assistantRootRef} className={fullScreen ? "fixed inset-3 z-[60] mx-auto flex h-[calc(100dvh-1.5rem)] min-h-0 w-[min(980px,calc(100vw-1.5rem))] max-h-[calc(100dvh-1.5rem)] flex-col gap-3 sm:inset-6 sm:h-[calc(100dvh-3rem)] sm:max-h-[calc(100dvh-3rem)]" : floating ? "fixed bottom-6 right-6 z-50 flex w-[min(420px,calc(100vw-2rem))] flex-col gap-3" : "flex min-h-0 flex-col gap-3 xl:sticky xl:top-[6.5rem] xl:h-[calc(100dvh-8rem)]"}>
+      <div id="ai-chat" ref={chatSurfaceRef} className={fullScreen ? "flex min-h-0 flex-1" : undefined}>
         <Surface
           className={cn(
             "relative flex min-h-0 shrink-0 flex-col overflow-hidden border-[#3c4048] bg-[radial-gradient(circle_at_78%_12%,rgba(255,255,255,0.05),transparent_32%),linear-gradient(180deg,#2E3137_0%,#2A2D33_100%)] px-4",
@@ -1495,22 +1502,24 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
                       {activeModel.name}
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={handleEndConversation}
-                    className="ml-auto shrink-0 rounded-full border border-[#4a4e56] px-3 py-2 text-[10px] uppercase tracking-[0.12em] text-slate-400 transition hover:border-[#FFF27A]/40 hover:text-[#FFF27A]"
-                  >
-                    Завершить диалог
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setFullScreen((value) => !value)}
-                    className="shrink-0 rounded-full border border-[#4a4e56] px-3 py-2 text-[10px] uppercase tracking-[0.12em] text-slate-400 transition hover:border-[#FFF27A]/40 hover:text-[#FFF27A]"
-                    aria-label={fullScreen ? "Закрыть полный экран" : "Открыть чат в полный размер"}
-                    title={fullScreen ? "Закрыть полный экран" : "Открыть чат в полный размер"}
-                  >
-                    {fullScreen ? "Свернуть" : "На весь экран"}
-                  </button>
+                  <div className="ml-auto flex shrink-0 flex-col items-stretch gap-2">
+                    <button
+                      type="button"
+                      onClick={handleEndConversation}
+                      className="rounded-full border border-[#4a4e56] px-3 py-2 text-[10px] uppercase tracking-[0.12em] text-slate-400 transition hover:border-[#FFF27A]/40 hover:text-[#FFF27A]"
+                    >
+                      Завершить диалог
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFullScreen((value) => !value)}
+                      className="rounded-full border border-[#4a4e56] px-3 py-2 text-[10px] uppercase tracking-[0.12em] text-slate-400 transition hover:border-[#FFF27A]/40 hover:text-[#FFF27A]"
+                      aria-label={fullScreen ? "Закрыть полный экран" : "Открыть чат в полный размер"}
+                      title={fullScreen ? "Закрыть полный экран" : "Открыть чат в полный размер"}
+                    >
+                      {fullScreen ? "Свернуть" : "На весь экран"}
+                    </button>
+                  </div>
                 </div>
               </div>
             ) : (
