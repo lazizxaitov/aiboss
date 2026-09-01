@@ -3,19 +3,20 @@ import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
-from app.api.routes.ai_insights import get_dashboard_insights
+from app.api.routes import ai_insights
+from app.api.routes.ai_insights import get_dashboard_insights, run_dashboard_analysis
 from app.core.ai_insight_presentation import AIInsightPresentationService
 from app.core.auto_business_analytics import (
     AutoAnalyticsResult,
     AutoAnalyticsRun,
     AutoAnalyticsStatus,
     AutoBusinessAnalyticsService,
+    DashboardPlan,
+    DashboardWidgetPlan,
     _analytical_content_count,
     _normalize_ai_result_payload,
     _unwrap_analytics_result,
     _validated_dashboard_widgets,
-    DashboardPlan,
-    DashboardWidgetPlan,
 )
 from app.core.data_layer.entities import AppSetting
 from app.core.data_layer.service import InMemoryCoreDataLayer
@@ -33,8 +34,15 @@ def _completed_run() -> AutoAnalyticsRun:
         summary="Продажи растут.",
         structured_result=AutoAnalyticsResult(
             summary="Продажи растут.",
-            findings=[{"title": "Рост продаж", "priority": "high", "evidence": [{"metric": "revenue"}]}],
-            recommendations=[{"title": "Удержать темп", "description": "Продолжить работу с лидерами."}],
+            findings=[{
+                "title": "Рост продаж",
+                "priority": "high",
+                "evidence": [{"metric": "revenue"}],
+            }],
+            recommendations=[{
+                "title": "Удержать темп",
+                "description": "Продолжить работу с лидерами.",
+            }],
             organization_ids=["org-1"],
             analysis_period={"preset": "last_7_days"},
         ),
@@ -70,7 +78,10 @@ def test_running_dashboard_state_is_explicit():
     now = datetime.now(UTC)
     store.upsert_app_setting(AppSetting(
         setting_key="ai_business_analytics:status:v1",
-        setting_value=AutoAnalyticsStatus(status="analyzing", last_started_at=now).model_dump(mode="json"),
+        setting_value=AutoAnalyticsStatus(
+            status="analyzing",
+            last_started_at=now,
+        ).model_dump(mode="json"),
         metadata={},
         created_at=now,
         updated_at=now,
@@ -80,6 +91,34 @@ def test_running_dashboard_state_is_explicit():
 
     assert payload["status"] == "running"
     assert payload["message"] == "ИИ анализирует бизнес..."
+
+
+def test_manual_analysis_starts_in_background_and_deduplicates_requests():
+    store = InMemoryCoreDataLayer()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_run(_service, mode="deep"):
+        started.set()
+        await release.wait()
+        return AutoAnalyticsRun(status="completed", analysis_level=mode)
+
+    async def scenario():
+        with patch.object(AutoBusinessAnalyticsService, "run", new=fake_run):
+            first = await run_dashboard_analysis(store)
+            await started.wait()
+            second = await run_dashboard_analysis(store)
+            release.set()
+            await asyncio.sleep(0)
+        return first, second
+
+    try:
+        first, second = asyncio.run(scenario())
+    finally:
+        ai_insights._MANUAL_ANALYSIS_TASKS.clear()
+
+    assert first.status == "running"
+    assert second.status == "running"
 
 
 def test_startup_analysis_skips_when_canonical_data_is_not_ready():

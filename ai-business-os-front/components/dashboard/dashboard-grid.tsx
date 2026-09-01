@@ -19,7 +19,7 @@ import { useBusinessContext } from "@/components/business/business-context-provi
 import { AiPreviewBanner } from "@/components/dashboard/ai-preview-banner";
 import { AiSuggestionsButton } from "@/components/dashboard/ai-suggestions-button";
 import { AiSuggestionsDrawer } from "@/components/dashboard/ai-suggestions-drawer";
-import { useDashboardManifest } from "@/components/dashboard/dashboard-manifest-provider";
+import { useDashboardManifest, useOptionalDashboardManifest } from "@/components/dashboard/dashboard-manifest-provider";
 import { cn } from "@/lib/cn";
 import {
   dedupeWidgets,
@@ -69,7 +69,7 @@ import {
   type DashboardManifestWidget,
   type DashboardWidgetType,
 } from "@/lib/core-api";
-import { getAiProviders, getAiRouting, getDashboardAIInsights, getDashboardManifest, streamAiChat, type AiProvider } from "@/lib/core-api";
+import { getAiProviders, getAiRouting, getDashboardAIAnalysisStatus, getDashboardAIInsights, getDashboardManifest, runDashboardAIAnalysis, streamAiChat, type AiProvider } from "@/lib/core-api";
 
 type SerializedMetricValue = AnalyticsMetricValue;
 
@@ -991,6 +991,7 @@ const FALLBACK_DASHBOARD_WIDGETS: DashboardManifestWidget[] = [
 
 export function DashboardAssistantPanel({ floating = false }: { floating?: boolean }) {
   const { state: businessState } = useBusinessContext();
+  const dashboardManifest = useOptionalDashboardManifest();
   const [expanded, setExpanded] = useState(false);
   const [conversationId, setConversationId] = useState(createConversationId);
   const [selectedModel, setSelectedModel] = useState(0);
@@ -1004,6 +1005,8 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
+  const [analysisStatus, setAnalysisStatus] = useState<"idle" | "running" | "completed" | "failed">("idle");
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
   const messageInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const chatSurfaceRef = useRef<HTMLDivElement | null>(null);
@@ -1013,6 +1016,7 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
   const modelDragRef = useRef({ active: false, moved: false, startX: 0, scrollLeft: 0, lastX: 0, velocity: 0 });
   const modelMomentumRef = useRef<number | null>(null);
   const chatStateHydrated = useRef(false);
+  const analysisPollTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     try {
@@ -1033,10 +1037,9 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
     window.localStorage.setItem(CHAT_STATE_STORAGE_KEY, JSON.stringify({ conversationId, messages: chatMessages }));
   }, [conversationId, chatMessages]);
 
-  useEffect(() => {
-    const refreshInsights = () => {
-      void getDashboardAIInsights()
-        .then((payload) => {
+  const refreshInsights = useCallback(async () => {
+    try {
+      const payload = await getDashboardAIInsights();
         if (payload.status === "empty" || payload.status === "running" || payload.status === "error") {
           setAiThoughts([{
             label: "Статус",
@@ -1054,13 +1057,76 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
           text: [item.description, item.affected_entity, item.affected_metric].filter(Boolean).join(" · "),
         }));
         setAiThoughts([...summary, ...items]);
-        })
-        .catch(() => setAiThoughts([]));
-    };
-    refreshInsights();
-    const interval = window.setInterval(refreshInsights, 30_000);
-    return () => window.clearInterval(interval);
+    } catch {
+      setAiThoughts([]);
+    }
   }, []);
+
+  const pollAnalysisStatus = useCallback(async (attempt: number) => {
+    try {
+      const payload = await getDashboardAIAnalysisStatus();
+      if (payload.status === "analyzing") {
+        setAnalysisStatus("running");
+        if (attempt < 40) {
+          analysisPollTimerRef.current = window.setTimeout(() => void pollAnalysisStatus(attempt + 1), 3_000);
+        } else {
+          setAnalysisStatus("failed");
+          setAnalysisError("Анализ выполняется дольше обычного. Проверьте статус позже.");
+        }
+        return;
+      }
+      if (payload.status === "completed") {
+        setAnalysisStatus("completed");
+        setAnalysisError(null);
+        await refreshInsights();
+        if (dashboardManifest) await dashboardManifest.reload();
+        return;
+      }
+      if (payload.status === "error" || payload.status === "retry_wait") {
+        setAnalysisStatus("failed");
+        setAnalysisError(payload.last_error ?? "Не удалось завершить AI-анализ.");
+        return;
+      }
+      setAnalysisStatus("idle");
+    } catch {
+      setAnalysisStatus("failed");
+      setAnalysisError("Не удалось получить статус AI-анализа.");
+    }
+  }, [dashboardManifest, refreshInsights]);
+
+  useEffect(() => {
+    let active = true;
+    void getDashboardAIAnalysisStatus()
+      .then((payload) => {
+        if (!active) return;
+        if (payload.status === "analyzing") {
+          setAnalysisStatus("running");
+          void pollAnalysisStatus(0);
+        } else if (payload.status === "completed") {
+          setAnalysisStatus("completed");
+        }
+      })
+      .catch(() => undefined);
+    const interval = window.setInterval(() => void refreshInsights(), 30_000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+      if (analysisPollTimerRef.current !== null) window.clearTimeout(analysisPollTimerRef.current);
+    };
+  }, [pollAnalysisStatus, refreshInsights]);
+
+  async function startDashboardAnalysis() {
+    if (analysisStatus === "running") return;
+    setAnalysisStatus("running");
+    setAnalysisError(null);
+    try {
+      await runDashboardAIAnalysis();
+      void pollAnalysisStatus(0);
+    } catch (error) {
+      setAnalysisStatus("failed");
+      setAnalysisError(error instanceof Error ? error.message : "Не удалось запустить AI-анализ.");
+    }
+  }
 
   useEffect(() => {
     if (!expanded) return;
@@ -1807,8 +1873,21 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
               Что важно сейчас
             </h3>
           </div>
-          <Badge variant="accent">{thoughts.length}</Badge>
+          <div className="flex items-center gap-2">
+            <Badge variant="accent">{thoughts.length}</Badge>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              disabled={analysisStatus === "running"}
+              onClick={() => void startDashboardAnalysis()}
+              className="whitespace-nowrap text-[11px]"
+            >
+              {analysisStatus === "running" ? "Анализируется..." : analysisStatus === "completed" ? "Анализ завершён" : "Запустить анализ"}
+            </Button>
+          </div>
         </div>
+        {analysisError ? <p className="mt-2 text-[11px] text-rose-200">{analysisError}</p> : null}
         <div
           className={cn(
             "mt-3 flex min-h-0 flex-col gap-2 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",

@@ -169,3 +169,7 @@ export function useDashboardManifest() {
   }
   return context;
 }
+
+export function useOptionalDashboardManifest() {
+  return useContext(DashboardManifestContext);
+}

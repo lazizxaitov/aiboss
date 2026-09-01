@@ -2617,6 +2617,28 @@ export type DashboardAIInsightsResponse = {
   items: DashboardAIInsight[];
 };
 
+export type DashboardAIAnalysisStatus = {
+  status: "idle" | "analyzing" | "completed" | "retry_wait" | "error" | "disabled" | string;
+  last_started_at?: string | null;
+  last_completed_at?: string | null;
+  last_error?: string | null;
+  provider_id?: string | null;
+  model_id?: string | null;
+};
+
+export async function getDashboardAIAnalysisStatus(): Promise<DashboardAIAnalysisStatus> {
+  const payload = await requestJson<unknown>("/api/v1/ai/insights/status", {}, 10_000);
+  const response = isRecord(payload) ? payload : {};
+  return {
+    status: typeof response.status === "string" ? response.status : "idle",
+    last_started_at: typeof response.last_started_at === "string" ? response.last_started_at : null,
+    last_completed_at: typeof response.last_completed_at === "string" ? response.last_completed_at : null,
+    last_error: typeof response.last_error === "string" ? response.last_error : null,
+    provider_id: typeof response.provider_id === "string" ? response.provider_id : null,
+    model_id: typeof response.model_id === "string" ? response.model_id : null,
+  };
+}
+
 function normalizeDashboardAIInsight(value: unknown): DashboardAIInsight | null {
   if (!isRecord(value)) return null;
   const priority = value.priority === "low" || value.priority === "medium" || value.priority === "high" || value.priority === "critical"
@@ -2660,7 +2682,7 @@ export async function getDashboardAIInsights(): Promise<DashboardAIInsightsRespo
 }
 
 export async function runDashboardAIAnalysis(): Promise<unknown> {
-  return requestJson<unknown>("/api/v1/ai/insights/analyze", { method: "POST" }, 120_000);
+  return requestJson<unknown>("/api/v1/ai/insights/analyze", { method: "POST" }, 15_000);
 }
 
 export async function streamAiChat(
