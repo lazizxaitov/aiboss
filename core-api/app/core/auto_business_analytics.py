@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, ValidationError
 from app.core.ai_business_agent import AIBusinessAgentService
 from app.core.ai_conversation import AIConversationChannel, AIConversationMessage, AIConversationState
 from app.core.ai_routing import AITaskRouter
+from app.core.config import settings
 from app.core.data_layer.contracts import CoreDataStore
 from app.core.data_layer.entities import AppSetting
 from app.core.hermes_tools import HermesBusinessTools
@@ -245,6 +246,8 @@ class AutoAnalyticsRun(BaseModel):
     data_version: str | None = None
     capability_calls: int = 0
     successful_business_queries: int = 0
+    model_rounds: int = 0
+    elapsed_ms: float | None = None
     failure_stage: str | None = None
 
 
@@ -376,6 +379,7 @@ class AutoBusinessAnalyticsService:
             _AUTO_ANALYTICS_RUN_LOCK.release()
 
     async def _run_locked(self, mode: Literal["widget", "daily", "deep"]) -> AutoAnalyticsRun:
+        analysis_started = datetime.now(UTC)
         await hermes_model_registry.get_providers(refresh=True)
         router = AITaskRouter(self.store)
         candidates = router.resolve_candidates("business_analytics")
@@ -395,10 +399,15 @@ class AutoBusinessAnalyticsService:
             model_id=str(runtime.get("model_id")) if runtime.get("model_id") else None,
         ))
         tools = HermesBusinessTools(self.store)
-        context = OrganizationContextService(self.store).get_context()
+        context_service = OrganizationContextService(self.store)
+        context = context_service.get_context()
+        # Proactive analysis has no user-supplied organization scope. Do not
+        # inherit a Dashboard selection; research all organizations accessible
+        # to the active owner through the normal query scope.
+        accessible_organization_ids = context_service.resolve_accessible_organization_ids()
         data_version = self._data_version()
         run = AutoAnalyticsRun(
-            organization_scope=[str(item) for item in context.organization_context.organization_ids],
+            organization_scope=[str(item) for item in accessible_organization_ids],
             period=context.period_context.preset.value,
             provider_id=runtime.get("provider_id") if runtime else None,
             model_id=runtime.get("model_id") if runtime else None,
@@ -452,8 +461,8 @@ class AutoBusinessAnalyticsService:
             )
             conversation = AIConversationState(
                 user_id="auto-business-analytics",
-                organization_id=(context.organization_context.organization_ids[0]
-                                 if len(context.organization_context.organization_ids) == 1 else None),
+                organization_id=(accessible_organization_ids[0]
+                                 if len(accessible_organization_ids) == 1 else None),
                 period=context.period_context.preset.value,
                 messages=[AIConversationMessage(
                     role="user", content=instruction, source_channel=AIConversationChannel.WEB,
@@ -485,8 +494,11 @@ class AutoBusinessAnalyticsService:
                 model_id=None,
                 build_baseline=False,
                 tool_call_budget={"widget": 4, "daily": 6, "deep": 12}[mode],
+                max_duration_seconds=settings.ai_analytics_agent_timeout_seconds,
             )
             run.capability_calls = agent_result.tool_calls
+            run.model_rounds = agent_result.rounds
+            run.elapsed_ms = (datetime.now(UTC) - analysis_started).total_seconds() * 1000
             run.successful_business_queries = int(
                 agent_result.runtime.get("successful_business_queries") or 0
             )
@@ -571,6 +583,7 @@ class AutoBusinessAnalyticsService:
             )
         except Exception as error:  # noqa: BLE001 - failed runs must remain observable and persisted
             last_error = error
+            run.elapsed_ms = (datetime.now(UTC) - analysis_started).total_seconds() * 1000
             if run.failure_stage is None:
                 run.failure_stage = "model_request"
             logger.info("BUSINESS_ANALYSIS_ERROR analysis_id=%s error=%s", run.analysis_id, str(error)[:300])

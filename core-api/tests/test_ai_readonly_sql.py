@@ -115,6 +115,30 @@ def test_semantic_environment_can_omit_duplicate_column_catalog_for_agent_prompt
     assert sales["grain"] == "one realized sale fact"
 
 
+def test_semantic_graph_covers_published_domains_and_compound_identity():
+    environment = AIReadOnlySQLService(SimpleNamespace()).semantic_environment(
+        include_columns=False,
+    )
+    datasets = {item["name"]: item for item in environment["datasets"]}
+
+    assert set(datasets) == {
+        "ai_organizations", "ai_sales", "ai_sale_items", "ai_orders", "ai_products",
+        "ai_customers", "ai_returns", "ai_visits", "ai_inventory", "ai_finance",
+    }
+    assert datasets["ai_sales"]["identity"] == ["organization_id", "id"]
+    assert "total_amount" in datasets["ai_sales"]["measures"]
+    assert datasets["ai_sales"]["labels"] == ["sales_rep_name", "customer_name"]
+    assert datasets["ai_visits"]["date_semantics"]["event_date_column"] == "visit_date"
+    assert datasets["ai_inventory"]["date_semantics"]["event_date_column"] == "snapshot_date"
+    assert any(
+        relationship["from"] == "ai_sale_items.(organization_id,product_id)"
+        and relationship["to"] == "ai_products.(organization_id,id)"
+        and relationship["organization_scope"].startswith("compound organization_id")
+        for relationship in environment["relationships"]
+    )
+    assert all("canonical_" not in str(relationship) for relationship in environment["relationships"])
+
+
 def test_schema_introspection_is_reused_for_one_store():
     class SchemaStore:
         def __init__(self):

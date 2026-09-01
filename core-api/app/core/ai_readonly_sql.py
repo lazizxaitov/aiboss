@@ -132,7 +132,13 @@ class AIReadOnlySQLService:
 
         schema = schema or self.database_schema()
         datasets: list[dict[str, object]] = []
-        for view, meaning in ALLOWED_VIEWS.items():
+        published_views = list(ALLOWED_VIEWS)
+        published_views.extend(
+            view for view in ai_semantic_graph_registry.names()
+            if view in schema and view not in ALLOWED_VIEWS
+        )
+        for view in published_views:
+            meaning = ALLOWED_VIEWS.get(view, str((ai_semantic_graph_registry.get(view) or {}).get("meaning", "")))
             published = schema.get(view)
             columns = published.get("columns", []) if isinstance(published, dict) else []
             names = {
@@ -145,11 +151,22 @@ class AIReadOnlySQLService:
                 for name in names
                 if isinstance(name, str)
             }
+            contract = ai_semantic_graph_registry.get(view) or {}
             dataset: dict[str, object] = {
                 "name": view,
                 "meaning": meaning,
-                "grain": _AI_VIEW_GRAINS.get(view),
-                "date_semantics": _AI_DATE_SEMANTICS.get(view, {}),
+                "domain": contract.get("domain", "commerce"),
+                "source": contract.get("source", "canonical"),
+                "grain": contract.get("grain", _AI_VIEW_GRAINS.get(view)),
+                "identity": _published_metadata(contract.get("identity"), names),
+                "organization_behavior": contract.get(
+                    "organization_behavior",
+                    "organization_id scopes every published business fact",
+                ),
+                "dimensions": _published_metadata(contract.get("dimensions"), names),
+                "measures": _published_metadata(contract.get("measures"), names),
+                "labels": _published_metadata(contract.get("labels"), names),
+                "date_semantics": contract.get("date_semantics", _AI_DATE_SEMANTICS.get(view, {})),
             }
             if include_columns:
                 dataset["columns"] = fields
@@ -166,6 +183,12 @@ class AIReadOnlySQLService:
                 "Keep organization_id in every relationship and filter within the same organization.",
                 "A sale is a realized sale fact; sale items are line-level facts.",
             ],
+            "extensibility": {
+                "registration": "Register a dataset contract first; publish its approved view and capability separately before it becomes queryable.",
+                "supported_future_domains": ["marketing", "advertising", "content", "social", "attribution"],
+                "attribution": "Only explicit tracking, conversion, campaign or source identifiers establish attribution; date coincidence is not causality.",
+                "unresolved_relationships": "Potential relationships may be documented, but are not joinable until a real key or attribution mechanism is confirmed.",
+            },
         }
 
     def validate(self, sql: str) -> tuple[str, str, tuple[Any, ...]]:
@@ -314,6 +337,128 @@ _AI_DATE_SEMANTICS = {
     "ai_finance": {"event_date_column": "operation_at", "meaning": "Financial operation event time."},
 }
 
+_AI_ENTITY_CONTRACTS: dict[str, dict[str, object]] = {
+    "ai_organizations": {
+        "identity": ["organization_id"],
+        "dimensions": ["name", "company_id", "filial_id", "filial_code", "project_code", "is_active"],
+        "measures": [],
+        "labels": ["name", "filial_code", "project_code"],
+        "organization_behavior": "One row is the organization/filial scope itself; organization_id is globally scoped.",
+    },
+    "ai_sales": {
+        "identity": ["organization_id", "id"],
+        "dimensions": ["organization_id", "sale_id", "sales_rep_id", "sales_rep_external_id", "customer_id", "customer_external_id", "order_id", "deal_id", "normalized_status", "currency_code"],
+        "measures": ["total_amount", "sold_quantity", "returned_quantity"],
+        "labels": ["sales_rep_name", "customer_name"],
+        "organization_behavior": "Sale identity is organization_id + canonical sale id. Never join sale identifiers across organizations.",
+    },
+    "ai_sale_items": {
+        "identity": ["organization_id", "sale_id", "product_id", "line_number"],
+        "dimensions": ["organization_id", "sale_id", "order_id", "product_id", "product_external_id", "product_code", "warehouse_id", "warehouse_external_id", "warehouse_code", "currency_code"],
+        "measures": ["ordered_quantity", "sold_quantity", "returned_quantity", "unit_price", "amount", "margin_amount"],
+        "labels": ["product_name"],
+        "organization_behavior": "Line identity and every product/warehouse link are scoped by organization_id.",
+    },
+    "ai_orders": {
+        "identity": ["organization_id", "id"],
+        "dimensions": ["organization_id", "order_id", "deal_id", "sales_rep_id", "sales_rep_external_id", "customer_id", "customer_external_id", "normalized_status", "currency_code"],
+        "measures": ["total_amount", "ordered_quantity", "sold_quantity", "item_count"],
+        "labels": ["customer_name"],
+        "organization_behavior": "Order identity is organization_id + canonical order id.",
+    },
+    "ai_products": {
+        "identity": ["organization_id", "id"],
+        "dimensions": ["organization_id", "product_id", "code", "article_code", "producer_code", "state", "source_kind", "measure_code", "gtin", "ikpu"],
+        "measures": [],
+        "labels": ["name", "short_name"],
+        "organization_behavior": "Product identity is organization_id + canonical product id; source codes are not global keys.",
+    },
+    "ai_customers": {
+        "identity": ["organization_id", "id"],
+        "dimensions": ["organization_id", "person_id", "code", "state", "customer_kind", "tin"],
+        "measures": [],
+        "labels": ["name", "short_name", "main_phone", "email"],
+        "organization_behavior": "Customer identity is organization_id + canonical customer id.",
+    },
+    "ai_returns": {
+        "identity": ["organization_id", "return_id"],
+        "dimensions": ["organization_id", "return_id", "deal_id", "sales_rep_id", "sales_rep_external_id", "customer_id", "customer_external_id", "normalized_status", "linked_order_id", "linked_order_external_id", "currency_code"],
+        "measures": ["total_amount", "returned_quantity", "item_count"],
+        "labels": ["customer_name"],
+        "organization_behavior": "Return identity is deduplicated at the published view while organization_id remains part of every cross-entity link.",
+    },
+    "ai_visits": {
+        "identity": ["organization_id", "id"],
+        "dimensions": ["organization_id", "visit_id", "sales_rep_id", "sales_rep_external_id", "customer_id", "customer_external_id", "working_zone_id", "working_zone_external_id", "normalized_status", "display_status"],
+        "measures": [],
+        "labels": ["sales_rep_name", "customer_name"],
+        "organization_behavior": "Visit identity is deduplicated at the published view; organization_id is retained for scope and joins.",
+    },
+    "ai_inventory": {
+        "identity": ["organization_id", "warehouse_id", "product_id", "snapshot_date", "grain_key"],
+        "dimensions": ["organization_id", "warehouse_id", "warehouse_external_id", "warehouse_code", "product_id", "product_external_id", "product_code", "inventory_kind", "measure_code", "currency_code"],
+        "measures": ["quantity", "available_quantity", "reserved_quantity", "valuation_amount"],
+        "labels": ["product_name"],
+        "organization_behavior": "Balance identity is organization_id + warehouse/product grain; snapshot_date is temporal state, not a movement event.",
+    },
+    "ai_finance": {
+        "identity": ["organization_id", "id"],
+        "dimensions": ["organization_id", "operation_id", "normalized_operation_type", "direction", "currency_code", "counterparty_external_id", "posted"],
+        "measures": ["amount"],
+        "labels": ["counterparty_name"],
+        "organization_behavior": "Financial operation identity is organization_id + canonical operation id.",
+    },
+}
+
+
+class SemanticBusinessGraphRegistry:
+    """Extensible metadata registry kept separate from SQL authorization."""
+
+    def __init__(self, definitions: dict[str, dict[str, object]] | None = None) -> None:
+        self._definitions = dict(definitions or {})
+
+    def get(self, dataset: str) -> dict[str, object] | None:
+        definition = self._definitions.get(dataset)
+        return dict(definition) if definition is not None else None
+
+    def names(self) -> tuple[str, ...]:
+        return tuple(self._definitions)
+
+    def register(
+        self,
+        dataset: str,
+        *,
+        meaning: str,
+        grain: str,
+        domain: str,
+        source: str,
+        identity: list[str] | tuple[str, ...] = (),
+        dimensions: list[str] | tuple[str, ...] = (),
+        measures: list[str] | tuple[str, ...] = (),
+        labels: list[str] | tuple[str, ...] = (),
+        organization_behavior: str = "organization scope is defined by the published dataset contract",
+        date_semantics: dict[str, str] | None = None,
+    ) -> None:
+        """Register semantic metadata; this does not authorize SQL access."""
+
+        if not re.fullmatch(r"ai_[a-z][a-z0-9_]*", dataset):
+            raise ValueError("Semantic datasets must use an ai_* identifier.")
+        self._definitions[dataset] = {
+            "meaning": meaning,
+            "grain": grain,
+            "domain": domain,
+            "source": source,
+            "identity": list(identity),
+            "dimensions": list(dimensions),
+            "measures": list(measures),
+            "labels": list(labels),
+            "organization_behavior": organization_behavior,
+            "date_semantics": dict(date_semantics or {}),
+        }
+
+
+ai_semantic_graph_registry = SemanticBusinessGraphRegistry(_AI_ENTITY_CONTRACTS)
+
 _AI_COLUMN_SEMANTICS = {
     "ai_sales": {
         "organization_id": {"kind": "identifier", "meaning": "Canonical organization scope."},
@@ -380,11 +525,26 @@ def _generic_column_semantics(name: str) -> dict[str, str]:
     return {"kind": kind, "meaning": name.replace("_", " ") + " from the canonical source."}
 
 _AI_RELATIONSHIPS = (
-    {"from": "ai_sales.organization_id", "to": "ai_organizations.organization_id", "scope": "same organization"},
-    {"from": "ai_sales.(organization_id,id)", "to": "ai_sale_items.(organization_id,sale_id)", "scope": "same organization; sale line items"},
-    {"from": "ai_sales.(organization_id,sales_rep_external_id)", "to": "canonical_sales_reps.(organization_id,sales_manager_id|sales_manager_code)", "scope": "same organization; name is resolved in ai_sales"},
-    {"from": "ai_sale_items.(organization_id,product_id)", "to": "ai_products.(organization_id,id)", "scope": "same organization when product_id is populated"},
+    {"from": "ai_sales.organization_id", "to": "ai_organizations.organization_id", "from_key": ["organization_id"], "to_key": ["organization_id"], "cardinality": "many-to-one", "organization_scope": "global organization identity", "meaning": "Every sale belongs to one published organization."},
+    {"from": "ai_sales.(organization_id,id)", "to": "ai_sale_items.(organization_id,sale_id)", "from_key": ["organization_id", "id"], "to_key": ["organization_id", "sale_id"], "cardinality": "one-to-many", "organization_scope": "compound organization_id plus sale identifier", "meaning": "A realized sale contains its line items."},
+    {"from": "ai_sales.(organization_id,order_id)", "to": "ai_orders.(organization_id,id)", "from_key": ["organization_id", "order_id"], "to_key": ["organization_id", "id"], "cardinality": "many-to-one", "organization_scope": "compound organization_id plus order identifier", "meaning": "A realized sale may reference its source order."},
+    {"from": "ai_sales.(organization_id,customer_id)", "to": "ai_customers.(organization_id,id)", "from_key": ["organization_id", "customer_id"], "to_key": ["organization_id", "id"], "cardinality": "many-to-one", "organization_scope": "compound organization_id plus customer identifier", "meaning": "A sale may reference its customer."},
+    {"from": "ai_sale_items.(organization_id,product_id)", "to": "ai_products.(organization_id,id)", "from_key": ["organization_id", "product_id"], "to_key": ["organization_id", "id"], "cardinality": "many-to-one", "organization_scope": "compound organization_id plus product identifier", "meaning": "A sale line references its product."},
+    {"from": "ai_sale_items.(organization_id,warehouse_id,product_id)", "to": "ai_inventory.(organization_id,warehouse_id,product_id)", "from_key": ["organization_id", "warehouse_id", "product_id"], "to_key": ["organization_id", "warehouse_id", "product_id"], "cardinality": "many-to-many-over-time", "organization_scope": "compound organization_id plus warehouse/product grain", "meaning": "A sale line can be compared with inventory balance snapshots."},
+    {"from": "ai_returns.(organization_id,linked_order_id)", "to": "ai_orders.(organization_id,id)", "from_key": ["organization_id", "linked_order_id"], "to_key": ["organization_id", "id"], "cardinality": "many-to-one", "organization_scope": "compound organization_id plus order identifier", "meaning": "A return may reference its source order."},
+    {"from": "ai_returns.(organization_id,customer_id)", "to": "ai_customers.(organization_id,id)", "from_key": ["organization_id", "customer_id"], "to_key": ["organization_id", "id"], "cardinality": "many-to-one", "organization_scope": "compound organization_id plus customer identifier", "meaning": "A return may reference its customer."},
+    {"from": "ai_visits.(organization_id,customer_id)", "to": "ai_customers.(organization_id,id)", "from_key": ["organization_id", "customer_id"], "to_key": ["organization_id", "id"], "cardinality": "many-to-one", "organization_scope": "compound organization_id plus customer identifier", "meaning": "A field visit may reference its customer."},
+    {"from": "ai_products.(organization_id,id)", "to": "ai_inventory.(organization_id,product_id)", "from_key": ["organization_id", "id"], "to_key": ["organization_id", "product_id"], "cardinality": "one-to-many-over-time", "organization_scope": "compound organization_id plus product identifier", "meaning": "A product can have inventory balances."},
+    {"from": "ai_finance.organization_id", "to": "ai_organizations.organization_id", "from_key": ["organization_id"], "to_key": ["organization_id"], "cardinality": "many-to-one", "organization_scope": "global organization identity", "meaning": "A financial operation belongs to one published organization."},
 )
+
+
+def _published_metadata(metadata: object, published_names: set[str]) -> list[str]:
+    """Return only contract fields that are present in the live published view."""
+
+    if not isinstance(metadata, list):
+        return []
+    return [name for name in metadata if isinstance(name, str) and name in published_names]
 
 
 def _relationship_is_published(relationship: dict[str, object], schema: dict[str, object]) -> bool:

@@ -329,6 +329,7 @@ class AIBusinessAgentService:
         build_baseline: bool = False,
         request_id: str | None = None,
         tool_call_budget: int = MAX_TOOL_CALLS,
+        max_duration_seconds: float | None = None,
         ui_context: dict[str, object] | None = None,
         on_final_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> AIBusinessAgentResult:
@@ -351,6 +352,12 @@ class AIBusinessAgentService:
 
         request_id = request_id or str(uuid4())
         started_at = monotonic()
+        deadline = started_at + max_duration_seconds if max_duration_seconds is not None else None
+
+        def check_deadline() -> None:
+            if deadline is not None and monotonic() >= deadline:
+                raise TimeoutError("AI research достиг установленного лимита времени.")
+
         timings: dict[str, object] = {
             "model_calls": 0,
             "db_queries": 0,
@@ -539,6 +546,7 @@ class AIBusinessAgentService:
             provider: str,
             stream_final: bool = False,
         ):
+            check_deadline()
             request_started = monotonic()
             timings["model_calls"] = int(timings.get("model_calls") or 0) + 1
             prompt_chars = sum(len(str(message.get("content") or "")) for message in messages)
@@ -803,6 +811,7 @@ class AIBusinessAgentService:
             )
 
         for rounds in range(1, max_rounds + 1):
+            check_deadline()
             logger.info(
                 "AI_AGENT_ROUND request_id=%s round=%s tool_calls=%s tool_choice=%s",
                 request_id,
@@ -1046,6 +1055,7 @@ class AIBusinessAgentService:
                 not structured_mode,
             )
             for tool_call in tool_calls:
+                check_deadline()
                 arguments = _tool_arguments(tool_call)
                 tool_name = str(tool_call.get("function", {}).get("name") or "")
                 query_executed = False

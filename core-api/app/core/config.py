@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     ai_analytics_model: str | None = None
     ai_analytics_language: str = "ru"
     ai_analytics_timeout_seconds: float = 8.0
+    ai_analytics_agent_timeout_seconds: float = 120.0
     ai_analytics_prompt_version: str = "phase-3c-v1"
     ai_analytics_cache_ttl_seconds: int = 300
     openai_api_key: str | None = None
