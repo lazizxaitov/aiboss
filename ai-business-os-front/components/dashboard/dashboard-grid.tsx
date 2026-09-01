@@ -1413,12 +1413,13 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
   };
 
   const handleQuickAction = (tile: ChatTile, index: number) => {
-    const prompt = QUICK_ACTION_PROMPTS[tile.title] ?? tile.title;
-    const taskType = tile.title === "Создать виджет через ИИ" ? "system_action" : "business_analytics" as const;
     setSelectedTileIndex(index);
     if (tile.title === "Создать виджет через ИИ") {
       window.dispatchEvent(new CustomEvent("ai-business-os:open-ai-widget-builder"));
+      return;
     }
+    const prompt = QUICK_ACTION_PROMPTS[tile.title] ?? tile.title;
+    const taskType = "business_analytics" as const;
     void handleSendMessage(prompt, [], taskType);
   };
 

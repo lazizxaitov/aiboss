@@ -49,6 +49,7 @@ export function SessionLockGuard({ children }: { children: ReactNode }) {
     timer.current = window.setTimeout(() => {
       void fetch(`${apiUrl}/api/v1/auth/lock`, { method: "POST", headers: authHeaders() }).then((response) => {
         if (!response.ok) return;
+        setShowUnlockPrompt(false);
         setLocked(true);
       }).catch(() => undefined);
     }, lockAfterMs.current);
@@ -116,6 +117,7 @@ export function SessionLockGuard({ children }: { children: ReactNode }) {
           lockAfterMs.current = timeoutMinutes * 60 * 1000;
           if (sessionResult.payload.locked !== true) resetTimer();
         }
+        if (sessionResult.payload.locked === true) setShowUnlockPrompt(false);
         setLocked(sessionResult.payload.locked === true);
         const user = sessionResult.payload.user;
         setLogin(typeof user === "object" && user !== null && "login" in user && typeof user.login === "string" ? user.login : "Пользователь");
@@ -142,21 +144,47 @@ export function SessionLockGuard({ children }: { children: ReactNode }) {
   }, [authenticated, hydrated, router, sessionUnavailable]);
 
   useEffect(() => {
-    const preventLockedNavigation = (event: MouseEvent) => {
+    if (!locked) return;
+
+    // A locked session remains visible for passive reading. A mouse press
+    // reveals the unlock prompt, while interactive controls stay inert until
+    // the session is unlocked.
+    const revealUnlockPrompt = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest("[data-session-unlock]")) return;
+      setShowUnlockPrompt(true);
+    };
+    const preventLockedInteraction = (event: Event) => {
       if (!locked) return;
       const target = event.target;
       if (!(target instanceof Element)) return;
-      const link = target.closest("a[href]");
-      if (!(link instanceof HTMLAnchorElement)) return;
-      if (link.target === "_blank" || link.hasAttribute("download")) return;
+      if (target.closest("[data-session-unlock]")) return;
+      const interactive = target.closest("a[href],button,input,textarea,select,[role=button],[contenteditable=true]");
+      if (!interactive && event.type !== "keydown") return;
       event.preventDefault();
       event.stopPropagation();
+      event.stopImmediatePropagation();
       setShowUnlockPrompt(true);
     };
 
-    document.addEventListener("click", preventLockedNavigation, true);
-    return () => document.removeEventListener("click", preventLockedNavigation, true);
+    document.addEventListener("pointerdown", revealUnlockPrompt, true);
+    document.addEventListener("pointerdown", preventLockedInteraction, true);
+    document.addEventListener("click", preventLockedInteraction, true);
+    document.addEventListener("keydown", preventLockedInteraction, true);
+    document.addEventListener("submit", preventLockedInteraction, true);
+    return () => {
+      document.removeEventListener("pointerdown", revealUnlockPrompt, true);
+      document.removeEventListener("pointerdown", preventLockedInteraction, true);
+      document.removeEventListener("click", preventLockedInteraction, true);
+      document.removeEventListener("keydown", preventLockedInteraction, true);
+      document.removeEventListener("submit", preventLockedInteraction, true);
+    };
   }, [locked]);
+
+  useEffect(() => {
+    if (!locked) return;
+    router.replace("/");
+  }, [locked, router]);
 
   async function unlock(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -187,7 +215,7 @@ export function SessionLockGuard({ children }: { children: ReactNode }) {
       <div className={showUnlockPrompt ? "select-none brightness-50 blur-[1px]" : ""}>{children}</div>
       {showUnlockPrompt ? (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#0d0e10]/55 p-4">
-          <form onSubmit={unlock} className="pointer-events-auto w-full max-w-[360px] rounded-[28px] border border-[#454952] bg-[#2E3137] p-7 shadow-[0_28px_90px_rgba(0,0,0,0.5)]">
+          <form data-session-unlock onSubmit={unlock} className="pointer-events-auto w-full max-w-[360px] rounded-[28px] border border-[#454952] bg-[#2E3137] p-7 shadow-[0_28px_90px_rgba(0,0,0,0.5)]">
             <p className="text-xs uppercase tracking-[0.3em] text-slate-400">AI БОС</p>
             <h2 className="mt-3 text-2xl font-semibold text-[#f4f7fb]">Система заблокирована</h2>
             <p className="mt-2 text-sm text-slate-400">{login}</p>
