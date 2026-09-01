@@ -26,6 +26,7 @@ MAX_TOOL_CALLS = 12
 CHAT_MAX_ROUNDS = 4
 CHAT_TOOL_CALLS = 3
 LIGHTWEIGHT_ANALYSIS_MAX_ROUNDS = 6
+MAX_CONVERSATION_MESSAGES = 12
 
 
 def _tool_catalog(tools: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -315,6 +316,11 @@ class AIBusinessAgentService:
 
         request_id = request_id or str(uuid4())
         started_at = monotonic()
+        timings: dict[str, object] = {
+            "model_calls": 0,
+            "db_queries": 0,
+            "provider_rounds_ms": {},
+        }
         candidates = router.resolve_candidates(
             task_type,
             provider_id=provider_id,
@@ -323,9 +329,11 @@ class AIBusinessAgentService:
         if not candidates:
             raise ValueError("Для этой задачи нет доступного provider/model.")
         runtime = candidates[0]
+        runtime["timings"] = timings
         runtime["successful_business_queries"] = 0
         runtime["business_entities"] = []
         sql_service = AIReadOnlySQLService(self.store)
+        context_started = monotonic()
         system_context = AISystemContextService(self.store).build(
             role=task_type,
             provider=str(runtime.get("provider_id") or "") or None,
@@ -333,7 +341,9 @@ class AIBusinessAgentService:
             organization_id=conversation.organization_id,
             period=conversation.period,
             ui_context=ui_context,
+            compact_business_data=True,
         )
+        timings["context_build_ms"] = (monotonic() - context_started) * 1000
         database_context = (
             system_context.get("database")
             if isinstance(system_context.get("database"), dict)
@@ -379,7 +389,10 @@ class AIBusinessAgentService:
                     + json.dumps(system_context, ensure_ascii=False, default=str)
                 ),
             },
-            *[{"role": message.role, "content": message.content} for message in conversation.messages],
+            *[
+                {"role": message.role, "content": message.content}
+                for message in conversation.messages[-MAX_CONVERSATION_MESSAGES:]
+            ],
         ]
         if baseline is not None:
             messages.insert(
@@ -463,6 +476,10 @@ class AIBusinessAgentService:
             provider: str,
         ):
             request_started = monotonic()
+            timings["model_calls"] = int(timings.get("model_calls") or 0) + 1
+            prompt_chars = sum(len(str(message.get("content") or "")) for message in messages)
+            timings[f"round_{round_number}_prompt_chars"] = prompt_chars
+            timings[f"round_{round_number}_input_tokens_estimate"] = max(1, prompt_chars // 4)
             logger.info(
                 "AI_AGENT_MODEL_REQUEST request_id=%s round=%s timestamp=%s tool_choice=%s provider=%s model=%s",
                 request_id,
@@ -538,6 +555,9 @@ class AIBusinessAgentService:
                 action,
                 response.status_code,
             )
+            rounds_timing = timings.get("provider_rounds_ms")
+            if isinstance(rounds_timing, dict):
+                rounds_timing[str(round_number)] = (monotonic() - request_started) * 1000
             return response
 
         response = None
@@ -624,6 +644,7 @@ class AIBusinessAgentService:
             if capability_only and not tool_calls:
                 # Capability envelopes are internal control messages and are
                 # recognized on every round, without an intent classifier.
+                parse_started = monotonic()
                 structured_action = _parse_capability_request(assistant_message.get("content"))
                 if structured_action is None:
                     shorthand_action, _ = _parse_structured_action(
@@ -662,6 +683,7 @@ class AIBusinessAgentService:
                                 "arguments": json.dumps(structured_action["arguments"], ensure_ascii=False),
                             },
                         }]
+                timings["capability_parse_ms"] = (monotonic() - parse_started) * 1000
             if structured_mode and not tool_calls:
                 if task_type != "business_analytics" and total_tool_calls:
                     payload = _parse_json_object(assistant_message.get("content"))
@@ -918,6 +940,11 @@ class AIBusinessAgentService:
                                 "message": str(error),
                                 "database_schema": schema_for_prompt,
                             }
+                        timings["db_queries"] = int(timings.get("db_queries") or 0) + 1
+                        timings.update({
+                            key: value for key, value in sql_service.last_timing.items()
+                            if key in {"sql_validation_ms", "postgres_query_ms", "capability_result_ms"}
+                        })
                     else:
                         tool_result = await _resolve_tool_result(
                             tool_name,
@@ -948,12 +975,13 @@ class AIBusinessAgentService:
                             conversation,
                             _resolved_entities_from_search(tool_result, arguments),
                         )
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": str(tool_call.get("id")),
-                    "content": "AUTHORITATIVE AI BUSINESS OS TOOL RESULT. Use these returned values as factual business evidence.\n"
-                    + json.dumps(tool_result, ensure_ascii=False, default=str),
-                })
+                if not capability_only:
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": str(tool_call.get("id")),
+                        "content": "AUTHORITATIVE AI BUSINESS OS TOOL RESULT. Use these returned values as factual business evidence.\n"
+                        + json.dumps(tool_result, ensure_ascii=False, default=str),
+                    })
                 # Hermes deployments may discard role=tool messages when no
                 # native tool call was sent. Keep the same full result in a
                 # normal readable context message for provider-independent

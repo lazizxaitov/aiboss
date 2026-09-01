@@ -876,6 +876,24 @@ async def chat(
             assistant_text = result.final_text
             if not assistant_text.strip():
                 raise ValueError("AI не вернул завершённый ответ.")
+            timings = result.runtime.get("timings")
+            if isinstance(timings, dict):
+                normalization_started = monotonic()
+                timings["total_ms"] = (monotonic() - request_started) * 1000
+                timings["final_normalization_ms"] = (monotonic() - normalization_started) * 1000
+                timings.setdefault("first_token_ms", None)
+                logger.info(
+                    "AI_CHAT_LATENCY request_id=%s total_request_ms=%.2f model_calls=%s db_queries=%s "
+                    "round1_prompt_chars=%s round2_prompt_chars=%s postgres_query_ms=%s capability_result_ms=%s",
+                    request_id,
+                    timings["total_ms"],
+                    timings.get("model_calls", 0),
+                    timings.get("db_queries", 0),
+                    timings.get("round_1_prompt_chars", 0),
+                    timings.get("round_2_prompt_chars", 0),
+                    timings.get("postgres_query_ms", 0),
+                    timings.get("capability_result_ms", 0),
+                )
             conversation_service.append_message(
                 conversation,
                 role="assistant",

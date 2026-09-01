@@ -123,6 +123,8 @@ def test_capability_envelope_is_executed_and_never_returned_as_final_text():
     assert "capability" not in result.final_text
     assert "SELECT" not in result.final_text
     assert "64742600" in "\n".join(str(item.get("content")) for item in request.await_args_list[1].kwargs["messages"])
+    assert result.runtime["timings"]["model_calls"] == 2
+    assert result.runtime["timings"]["db_queries"] == 1
 
 
 def test_business_query_capability_is_intercepted_and_rows_are_sent_to_model():

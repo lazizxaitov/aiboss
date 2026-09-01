@@ -33,6 +33,7 @@ class AISystemContextService:
         organization_id: object | None = None,
         period: str | None = None,
         ui_context: dict[str, Any] | None = None,
+        compact_business_data: bool = False,
     ) -> dict[str, Any]:
         now = datetime.now(UTC).astimezone(ZoneInfo(BUSINESS_TIMEZONE))
         week = resolve_business_period("this_week", now)
@@ -116,7 +117,10 @@ class AISystemContextService:
             context["database"] = {
                 "kind": "published_read_only_views",
                 "schema": schema,
-                "semantic_environment": sql_service.semantic_environment(schema),
+                "semantic_environment": sql_service.semantic_environment(
+                    schema,
+                    include_columns=not compact_business_data,
+                ),
             }
         if ui_context:
             context["current_ui"] = ui_context

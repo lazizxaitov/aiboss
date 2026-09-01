@@ -103,6 +103,18 @@ def test_semantic_environment_is_grounded_in_published_columns():
     assert environment["relationships"] == []
 
 
+def test_semantic_environment_can_omit_duplicate_column_catalog_for_agent_prompt():
+    class SchemaStore:
+        def describe_ai_views(self):
+            return {"ai_sales": {"columns": [{"name": "organization_id"}]}}
+
+    environment = AIReadOnlySQLService(SchemaStore()).semantic_environment(include_columns=False)
+    sales = next(item for item in environment["datasets"] if item["name"] == "ai_sales")
+
+    assert "columns" not in sales
+    assert sales["grain"] == "one realized sale fact"
+
+
 def test_schema_introspection_is_reused_for_one_store():
     class SchemaStore:
         def __init__(self):

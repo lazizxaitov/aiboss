@@ -6,6 +6,7 @@ import re
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from time import monotonic
 from typing import Any
 from uuid import UUID
 from weakref import WeakKeyDictionary
@@ -52,6 +53,7 @@ class AIReadOnlySQLService:
 
     def __init__(self, store: Any) -> None:
         self.store = store
+        self.last_timing: dict[str, float] = {}
 
     @staticmethod
     def catalog() -> dict[str, str]:
@@ -100,7 +102,12 @@ class AIReadOnlySQLService:
         }
         return schema
 
-    def semantic_environment(self, schema: dict[str, object] | None = None) -> dict[str, object]:
+    def semantic_environment(
+        self,
+        schema: dict[str, object] | None = None,
+        *,
+        include_columns: bool = True,
+    ) -> dict[str, object]:
         """Describe the published business data environment without inventing fields."""
 
         schema = schema or self.database_schema()
@@ -118,13 +125,15 @@ class AIReadOnlySQLService:
                 for name in names
                 if isinstance(name, str)
             }
-            datasets.append({
+            dataset: dict[str, object] = {
                 "name": view,
                 "meaning": meaning,
                 "grain": _AI_VIEW_GRAINS.get(view),
-                "columns": fields,
                 "date_semantics": _AI_DATE_SEMANTICS.get(view, {}),
-            })
+            }
+            if include_columns:
+                dataset["columns"] = fields
+            datasets.append(dataset)
         relationships = [
             relationship for relationship in _AI_RELATIONSHIPS
             if _relationship_is_published(relationship, schema)
@@ -172,7 +181,10 @@ class AIReadOnlySQLService:
         organization_id: UUID | str | None = None,
         organization_ids: list[UUID | str] | None = None,
     ) -> dict[str, Any]:
+        started_at = monotonic()
+        validation_started = monotonic()
         query, view, _ = self.validate(sql)
+        validation_ms = (monotonic() - validation_started) * 1000
         requested_scope = [str(item) for item in (organization_ids or []) if item]
         if organization_id:
             requested_scope = [str(organization_id)]
@@ -210,11 +222,19 @@ class AIReadOnlySQLService:
             params = tuple(scope)
         elif view != "ai_organizations":
             raise AIReadOnlyQueryError("Для бизнес-данных требуется organization scope.")
+        query_started = monotonic()
         rows = self.store.execute_ai_readonly_sql(
             query,
             params,
             statement_timeout_ms=STATEMENT_TIMEOUT_MS,
         )
+        query_ms = (monotonic() - query_started) * 1000
+        self.last_timing = {
+            "sql_validation_ms": validation_ms,
+            "postgres_query_ms": query_ms,
+            "capability_result_ms": (monotonic() - query_started) * 1000,
+            "total_ms": (monotonic() - started_at) * 1000,
+        }
         return {
             "available": True,
             "source": "AI Business OS Canonical/Core analytical views",
