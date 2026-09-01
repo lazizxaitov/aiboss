@@ -219,3 +219,47 @@ class YouTubeMarketingService:
             self.repository.upsert(
                 "youtube_channel_analytics_daily", data, ("organization_id", "channel_id", "date")
             )
+        videos = {
+            row.get("external_id"): row for row in self.repository.list("youtube_videos", org)
+        }
+        video_report = self.client.analytics(
+            ids=f"channel=={external_id}",
+            startDate=since,
+            endDate=until,
+            metrics="views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,likes,comments,shares,subscribersGained,subscribersLost",
+            dimensions="day,video",
+        )
+        for values in video_report.get("rows", []) or []:
+            if not isinstance(values, list) or len(values) < 2 or values[1] not in videos:
+                continue
+            data = {
+                "id": str(uuid4()),
+                "organization_id": org,
+                "channel_id": channel_id,
+                "video_id": str(videos[values[1]]["id"]),
+                "date": values[0],
+                **dict(
+                    zip(
+                        (
+                            "views",
+                            "estimated_minutes_watched",
+                            "average_view_duration",
+                            "average_view_percentage",
+                            "likes",
+                            "comments",
+                            "shares",
+                            "subscribers_gained",
+                            "subscribers_lost",
+                        ),
+                        values[2:],
+                        strict=False,
+                    )
+                ),
+                "created_at": now,
+                "updated_at": now,
+            }
+            self.repository.upsert(
+                "youtube_video_analytics_daily",
+                data,
+                ("organization_id", "channel_id", "video_id", "date"),
+            )
