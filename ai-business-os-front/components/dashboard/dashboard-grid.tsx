@@ -250,6 +250,34 @@ type WidgetCatalogItem = {
 
 const CUSTOM_WIDGETS_STORAGE_KEY = "ai-business-os:dashboard-custom-widgets:v1";
 const CHAT_STATE_STORAGE_KEY = "ai-business-os:dashboard-chat:v1";
+const AI_THOUGHTS_STORAGE_KEY = "ai-business-os:dashboard-ai-thoughts:v1";
+
+type AIThought = { label: string; title: string; text: string };
+
+function loadCachedAIThoughts(): AIThought[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const parsed = JSON.parse(window.sessionStorage.getItem(AI_THOUGHTS_STORAGE_KEY) ?? "null");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is AIThought => (
+      item !== null
+      && typeof item === "object"
+      && typeof item.label === "string"
+      && typeof item.title === "string"
+      && typeof item.text === "string"
+    ));
+  } catch {
+    return [];
+  }
+}
+
+function cacheAIThoughts(thoughts: AIThought[]) {
+  try {
+    window.sessionStorage.setItem(AI_THOUGHTS_STORAGE_KEY, JSON.stringify(thoughts));
+  } catch {
+    // Keep the in-memory result when browser storage is unavailable.
+  }
+}
 const ALL_WIDGET_TYPES: DashboardWidgetType[] = [
   "kpi",
   "trend",
@@ -998,7 +1026,7 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
   const [availableModels, setAvailableModels] = useState<ModelItem[]>([]);
   const [selectedModelId, setSelectedModelId] = useState<string | undefined>();
   const [savedModelsByProvider, setSavedModelsByProvider] = useState<Record<string, string>>({});
-  const [aiThoughts, setAiThoughts] = useState<Array<{ label: string; title: string; text: string }>>([]);
+  const [aiThoughts, setAiThoughts] = useState<AIThought[]>(loadCachedAIThoughts);
   const [selectedTileIndex, setSelectedTileIndex] = useState<number | null>(null);
   const [message, setMessage] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -1041,11 +1069,13 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
     try {
       const payload = await getDashboardAIInsights();
         if (payload.status === "empty" || payload.status === "running" || payload.status === "error") {
-          setAiThoughts([{
+          const nextThoughts = [{
             label: "Статус",
             title: payload.status === "empty" ? "ИИ-анализ ещё не выполнен" : payload.status === "running" ? "ИИ анализирует бизнес..." : "ИИ-анализ недоступен",
             text: payload.message ?? "Результат анализа пока недоступен.",
-          }]);
+          }];
+          setAiThoughts(nextThoughts);
+          cacheAIThoughts(nextThoughts);
           return;
         }
         const summary = payload.summary
@@ -1056,9 +1086,11 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
           title: item.title,
           text: [item.description, item.affected_entity, item.affected_metric].filter(Boolean).join(" · "),
         }));
-        setAiThoughts([...summary, ...items]);
+        const nextThoughts = [...summary, ...items];
+        setAiThoughts(nextThoughts);
+        cacheAIThoughts(nextThoughts);
     } catch {
-      setAiThoughts([]);
+      // Keep the last successful analysis visible during transient API failures.
     }
   }, []);
 
