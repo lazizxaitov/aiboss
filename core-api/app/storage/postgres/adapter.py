@@ -1143,11 +1143,14 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
         self,
         organization_id: UUID | None = None,
     ) -> Iterable[CanonicalCustomerReturn]:
-        return self._fetch_source_list(
+        from app.core.data_layer.visit_identity import deduplicate_cross_organization_returns
+
+        rows = self._fetch_source_list(
             "canonical_customer_returns",
             CanonicalCustomerReturn,
             organization_id,
         )
+        return deduplicate_cross_organization_returns(rows)
 
     def get_canonical_customer_return_item(
         self,
@@ -1163,11 +1166,14 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
         self,
         organization_id: UUID | None = None,
     ) -> Iterable[CanonicalCustomerReturnItem]:
-        return self._fetch_source_list(
+        from app.core.data_layer.visit_identity import deduplicate_cross_organization_return_items
+
+        rows = self._fetch_source_list(
             "canonical_customer_return_items",
             CanonicalCustomerReturnItem,
             organization_id,
         )
+        return rows if organization_id is not None else deduplicate_cross_organization_return_items(rows)
 
     def get_canonical_inventory_balance(
         self,

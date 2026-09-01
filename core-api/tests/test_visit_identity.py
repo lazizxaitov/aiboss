@@ -1,8 +1,16 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from app.core.data_layer.canonical_v2 import CanonicalVisit
-from app.core.data_layer.visit_identity import deduplicate_cross_organization_visits
+from app.core.data_layer.canonical_v2 import (
+    CanonicalCustomerReturn,
+    CanonicalCustomerReturnItem,
+    CanonicalVisit,
+)
+from app.core.data_layer.visit_identity import (
+    deduplicate_cross_organization_returns,
+    deduplicate_cross_organization_return_items,
+    deduplicate_cross_organization_visits,
+)
 
 
 def _visit(*, organization_id, visit_id="199455599", visited_at=None):
@@ -45,3 +53,53 @@ def test_same_visit_id_with_different_business_identity_stays_separate():
     ])
 
     assert len(result) == 2
+
+
+def test_exact_cross_organization_return_copy_is_one_document():
+    organization_a = uuid4()
+    organization_b = uuid4()
+    timestamp = datetime(2026, 8, 29, 10, 0, tzinfo=UTC)
+    values = {
+        "source_endpoint": "returns",
+        "source_external_id": "return-1",
+        "return_id": "return-1",
+        "customer_external_id": "customer-1",
+        "sales_rep_external_id": "seller-1",
+        "return_at": timestamp,
+        "total_amount": 100,
+        "returned_quantity": 2,
+        "item_count": 1,
+    }
+
+    result = deduplicate_cross_organization_returns([
+        CanonicalCustomerReturn(organization_id=organization_a, **values),
+        CanonicalCustomerReturn(organization_id=organization_b, **values),
+    ])
+
+    assert len(result) == 1
+    assert result[0].metadata["equivalent_organization_ids"] == sorted(
+        [str(organization_a), str(organization_b)],
+    )
+
+
+def test_exact_cross_organization_return_line_copy_is_one_line():
+    organization_a = uuid4()
+    organization_b = uuid4()
+    values = {
+        "customer_return_id": uuid4(),
+        "source_endpoint": "returns",
+        "source_external_id": "return-1:1",
+        "return_external_id": "return-1",
+        "line_number": 1,
+        "product_external_id": "product-1",
+        "product_code": "product-1",
+        "returned_quantity": 2,
+        "amount": 100,
+    }
+
+    result = deduplicate_cross_organization_return_items([
+        CanonicalCustomerReturnItem(organization_id=organization_a, **values),
+        CanonicalCustomerReturnItem(organization_id=organization_b, **values),
+    ])
+
+    assert len(result) == 1

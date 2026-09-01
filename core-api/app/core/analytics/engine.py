@@ -586,9 +586,14 @@ class BusinessAnalyticsEngine:
             self.store.list_canonical_financial_operations(),
             selected_set,
         )
-        customer_returns = _filter_org(self.store.list_canonical_customer_returns(), selected_set)
-        from app.core.data_layer.visit_identity import deduplicate_cross_organization_visits
+        from app.core.data_layer.visit_identity import (
+            deduplicate_cross_organization_returns,
+            deduplicate_cross_organization_visits,
+        )
 
+        customer_returns = deduplicate_cross_organization_returns(
+            _filter_org(self.store.list_canonical_customer_returns(), selected_set),
+        )
         visits = deduplicate_cross_organization_visits(
             _filter_org(self.store.list_canonical_visits(), selected_set),
         )

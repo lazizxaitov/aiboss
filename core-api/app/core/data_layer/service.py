@@ -790,10 +790,12 @@ class InMemoryCoreDataLayer(CoreDataReader, CoreDataWriter):
         self,
         organization_id: UUID | None = None,
     ) -> Iterable[CanonicalCustomerReturn]:
-        return self._filter_by_organization(
-            self.canonical_customer_returns.values(),
-            organization_id,
+        from app.core.data_layer.visit_identity import deduplicate_cross_organization_returns
+
+        rows = self._filter_by_organization(
+            self.canonical_customer_returns.values(), organization_id,
         )
+        return deduplicate_cross_organization_returns(rows)
 
     def get_canonical_customer_return_item(
         self,
@@ -805,9 +807,13 @@ class InMemoryCoreDataLayer(CoreDataReader, CoreDataWriter):
         self,
         organization_id: UUID | None = None,
     ) -> Iterable[CanonicalCustomerReturnItem]:
+        from app.core.data_layer.visit_identity import deduplicate_cross_organization_return_items
+
         return self._filter_by_organization(
             self.canonical_customer_return_items.values(),
             organization_id,
+        ) if organization_id is not None else deduplicate_cross_organization_return_items(
+            self.canonical_customer_return_items.values(),
         )
 
     def get_canonical_inventory_balance(
