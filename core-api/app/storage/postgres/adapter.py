@@ -3315,16 +3315,19 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
 
     def _fetch_rows(self, sql: str, params: tuple[Any, ...] | None) -> list[Row]:
         connection = self.connection_factory()
-        with connection.cursor() as cursor:
-            cursor.execute(sql, params)
-            rows = cursor.fetchall()
-            if not rows:
-                return []
-            if isinstance(rows[0], Mapping):
-                return [dict(row) for row in rows]
-            description = getattr(cursor, "description", None) or ()
-            columns = [column[0] for column in description]
-        return [dict(zip(columns, row, strict=False)) for row in rows]
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(sql, params)
+                rows = cursor.fetchall()
+                if not rows:
+                    return []
+                if isinstance(rows[0], Mapping):
+                    return [dict(row) for row in rows]
+                description = getattr(cursor, "description", None) or ()
+                columns = [column[0] for column in description]
+            return [dict(zip(columns, row, strict=False)) for row in rows]
+        finally:
+            _close_connection(connection)
 
     def execute_ai_readonly_sql(
         self,
@@ -3360,6 +3363,8 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
         except Exception:
             connection.rollback()
             raise
+        finally:
+            _close_connection(connection)
 
     def describe_ai_views(self) -> dict[str, Any]:
         """Read the exact published analytical view schema from PostgreSQL."""
@@ -3397,6 +3402,8 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
         except Exception:
             connection.rollback()
             raise
+        finally:
+            _close_connection(connection)
 
     def _upsert(
         self,
@@ -3432,12 +3439,22 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
         except Exception:
             connection.rollback()
             raise
+        finally:
+            _close_connection(connection)
 
     @staticmethod
     def _adapt_params(values: Iterable[Any]) -> tuple[Any, ...]:
         """Adapt Python values into psycopg-friendly parameters."""
 
         return tuple(_adapt_param(value) for value in values)
+
+
+def _close_connection(connection: Any) -> None:
+    """Release per-operation connections without assuming test doubles expose close()."""
+
+    close = getattr(connection, "close", None)
+    if callable(close):
+        close()
 
 
 def _adapt_param(value: Any) -> Any:

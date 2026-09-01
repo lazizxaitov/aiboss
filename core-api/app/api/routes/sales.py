@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import date
+from logging import getLogger
+from time import monotonic
 from decimal import Decimal
 from typing import Annotated
 from uuid import UUID
@@ -23,6 +25,7 @@ from app.core.sales_workspace.models import (
 from app.core.sales_workspace.service import SalesWorkspaceService
 
 router = APIRouter(prefix="/sales")
+logger = getLogger(__name__)
 
 
 @router.get("", response_model=SalesWorkspaceResponse)
@@ -79,7 +82,16 @@ def get_sales_workspace(
         page=page,
         page_size=page_size,
     )
-    return SalesWorkspaceService(store).list_workspace(analytics_query, workspace_query)
+    started_at = monotonic()
+    response = SalesWorkspaceService(store).list_workspace(analytics_query, workspace_query)
+    elapsed_ms = (monotonic() - started_at) * 1000
+    logger.info(
+        "BUSINESS_API_LATENCY endpoint=sales query_ms=%.2f serialization_ms=not_measured total_ms=%.2f rows=%s",
+        elapsed_ms,
+        elapsed_ms,
+        len(response.rows),
+    )
+    return response
 
 
 @router.get("/{record_id}", response_model=SalesWorkspaceDetail)

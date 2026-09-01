@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import date
+from logging import getLogger
+from time import monotonic
 from typing import Annotated
 from uuid import UUID
 
@@ -24,6 +26,7 @@ from app.core.visits_workspace.models import (
 from app.core.visits_workspace.service import VisitsWorkspaceService
 
 router = APIRouter(prefix="/visits")
+logger = getLogger(__name__)
 
 
 @router.get("", response_model=VisitsWorkspaceResponse)
@@ -74,7 +77,16 @@ def get_visits_workspace(
         page=page,
         page_size=page_size,
     )
-    return VisitsWorkspaceService(store).list_workspace(analytics_query, workspace_query)
+    started_at = monotonic()
+    response = VisitsWorkspaceService(store).list_workspace(analytics_query, workspace_query)
+    elapsed_ms = (monotonic() - started_at) * 1000
+    logger.info(
+        "BUSINESS_API_LATENCY endpoint=visits query_ms=%.2f serialization_ms=not_measured total_ms=%.2f rows=%s",
+        elapsed_ms,
+        elapsed_ms,
+        len(response.rows.visits),
+    )
+    return response
 
 
 @router.get("/{visit_id}", response_model=VisitsWorkspaceDetail)

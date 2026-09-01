@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass
@@ -1103,7 +1104,8 @@ class AIBusinessAgentService:
                         query_started = monotonic()
                     if tool_name in {"query_business_data", BUSINESS_QUERY_CAPABILITY} and isinstance(arguments.get("sql"), str):
                         try:
-                            tool_result = sql_service.execute(
+                            tool_result = await asyncio.to_thread(
+                                sql_service.execute,
                                 str(arguments["sql"]),
                                 organization_id=conversation.organization_id,
                             )

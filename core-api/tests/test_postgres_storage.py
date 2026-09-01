@@ -47,6 +47,7 @@ class _FakeConnection:
     description: tuple[tuple[str, object, object, object, object, object, object], ...] = ()
     committed: bool = False
     rolled_back: bool = False
+    closed: bool = False
 
     def cursor(self):
         return _FakeCursor(self.statements, self.rows, self.description)
@@ -56,6 +57,9 @@ class _FakeConnection:
 
     def rollback(self) -> None:
         self.rolled_back = True
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def test_ai_readonly_sql_uses_postgres_timeout_literal() -> None:
@@ -77,6 +81,7 @@ def test_ai_readonly_sql_uses_postgres_timeout_literal() -> None:
     timeout_statement = statements[1]
     assert timeout_statement == ("SET LOCAL statement_timeout = '20000ms'", None)
     assert "$1" not in timeout_statement[0]
+    assert connection.closed is True
 
 
 def test_postgres_store_wraps_json_values_in_jsonb() -> None:
@@ -159,6 +164,7 @@ def test_postgres_store_reads_tuple_rows_into_models() -> None:
     assert source_system is not None
     assert source_system.name == "SmartUp"
     assert source_system.business_id == UUID("22222222-2222-2222-2222-222222222222")
+    assert connection.closed is True
 
 
 def test_postgres_store_upsert_app_setting_targets_setting_key_conflict() -> None:
