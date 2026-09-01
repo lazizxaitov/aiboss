@@ -702,8 +702,12 @@ class WidgetBuilderService:
         widgets: list[DashboardManifestWidget],
         *,
         organization_ids: list[UUID] | None = None,
+        widget_ids: list[str] | None = None,
     ) -> list[DashboardManifestWidget]:
         configs = self.list_configs(organization_ids=organization_ids)
+        if widget_ids is not None:
+            requested = set(widget_ids)
+            configs = [config for config in configs if config.widget_id in requested or config.config_id in requested]
         if not configs:
             return widgets
         # A user-created AI widget is a normal dashboard widget after it is

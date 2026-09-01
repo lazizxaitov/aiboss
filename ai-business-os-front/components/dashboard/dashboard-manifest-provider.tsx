@@ -14,6 +14,7 @@ import { useBusinessContext } from "@/components/business/business-context-provi
 import { useBusinessRefresh } from "@/components/business/business-refresh-provider";
 import {
   getDashboardManifest,
+  getDashboardLauncherState,
   type DashboardManifest,
   type DashboardManifestFilters,
 } from "@/lib/core-api";
@@ -42,6 +43,7 @@ function getDashboardManifestCacheKey(filters: DashboardManifestFilters) {
     hiddenWidgetIds: filters.hiddenWidgetIds ?? [],
     lockedPositionWidgetIds: filters.lockedPositionWidgetIds ?? [],
     lockedSizeWidgetIds: filters.lockedSizeWidgetIds ?? [],
+    customWidgetIds: filters.customWidgetIds ?? [],
   })}`;
 }
 
@@ -107,9 +109,11 @@ export function DashboardManifestProvider({ children }: { children: ReactNode })
         const cached = readCachedDashboardManifest(filters);
         setLoading(cached === null);
       }
-      const next = await getDashboardManifest(filters);
+      const launcher = await getDashboardLauncherState();
+      const requestFilters = { ...filters, customWidgetIds: launcher.custom_widget_ids };
+      const next = await getDashboardManifest(requestFilters);
       setManifest(next);
-      storeCachedDashboardManifest(filters, next);
+      storeCachedDashboardManifest(requestFilters, next);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Не удалось загрузить manifest.");
     } finally {

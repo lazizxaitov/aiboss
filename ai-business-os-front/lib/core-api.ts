@@ -406,6 +406,12 @@ export type DashboardManifestFilters = {
   hiddenWidgetIds?: string[];
   lockedPositionWidgetIds?: string[];
   lockedSizeWidgetIds?: string[];
+  customWidgetIds?: string[];
+};
+
+export type DashboardLauncherState = {
+  state: Record<string, unknown>;
+  custom_widget_ids: string[];
 };
 
 export type DashboardBusinessBreakdown = {
@@ -2718,6 +2724,24 @@ export type WidgetBuilderChatResponse = {
   preview?: Record<string, unknown> | null;
 };
 
+export type WidgetBuilderContextResponse = {
+  current_context: Record<string, unknown>;
+  organizations: Array<Record<string, unknown>>;
+  widget_specs: Array<Record<string, unknown>>;
+  saved_configs: Array<Record<string, unknown>>;
+};
+
+export async function getWidgetBuilderContext(payload: {
+  organizationId?: string | null;
+  period?: string | null;
+} = {}): Promise<WidgetBuilderContextResponse> {
+  const params = new URLSearchParams();
+  if (payload.organizationId) params.set("organization_id", payload.organizationId);
+  if (payload.period) params.set("period", payload.period);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return requestJson<WidgetBuilderContextResponse>(`/api/v1/dashboard/widget-builder/context${suffix}`);
+}
+
 export async function runWidgetBuilderChat(payload: {
   conversationId?: string;
   message: string;
@@ -2853,9 +2877,24 @@ export async function getDashboardManifest(
   for (const widgetId of filters.lockedSizeWidgetIds ?? []) {
     params.append("locked_size_widget_ids", widgetId);
   }
+  for (const widgetId of filters.customWidgetIds ?? []) {
+    params.append("custom_widget_ids", widgetId);
+  }
 
   const suffix = params.toString() ? `?${params.toString()}` : "";
   return requestJson<DashboardManifest>(`/api/v1/dashboard/manifest${suffix}`, {}, 15_000);
+}
+
+export async function getDashboardLauncherState(): Promise<DashboardLauncherState> {
+  return requestJson<DashboardLauncherState>("/api/v1/dashboard/launcher-state");
+}
+
+export async function saveDashboardLauncherState(payload: DashboardLauncherState): Promise<DashboardLauncherState> {
+  return requestJson<DashboardLauncherState>("/api/v1/dashboard/launcher-state", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function getOrganizationContext(): Promise<AnalyticsContextState> {

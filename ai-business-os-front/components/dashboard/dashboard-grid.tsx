@@ -69,7 +69,7 @@ import {
   type DashboardManifestWidget,
   type DashboardWidgetType,
 } from "@/lib/core-api";
-import { confirmWidgetBuilder, getAiProviders, getAiRouting, getDashboardAIAnalysisStatus, getDashboardAIInsights, getDashboardManifest, runDashboardAIAnalysis, runWidgetBuilderChat, streamAiChat, type AiProvider } from "@/lib/core-api";
+import { confirmWidgetBuilder, getAiProviders, getAiRouting, getDashboardAIAnalysisStatus, getDashboardAIInsights, getDashboardLauncherState, getDashboardManifest, getWidgetBuilderContext, runDashboardAIAnalysis, runWidgetBuilderChat, saveDashboardLauncherState, streamAiChat, type AiProvider } from "@/lib/core-api";
 
 type SerializedMetricValue = AnalyticsMetricValue;
 
@@ -3382,6 +3382,9 @@ export function DashboardGrid() {
   const [aiWidgetBuilderDraft, setAiWidgetBuilderDraft] = useState<Record<string, unknown> | null>(null);
   const [aiWidgetBuilderClarification, setAiWidgetBuilderClarification] = useState(false);
   const [aiWidgetBuilderConversationId, setAiWidgetBuilderConversationId] = useState<string | undefined>();
+  const [aiWidgetBuilderPreview, setAiWidgetBuilderPreview] = useState<Record<string, unknown> | null>(null);
+  const [savedWidgetConfigs, setSavedWidgetConfigs] = useState<Record<string, unknown>[]>([]);
+  const [visibleCustomWidgetIds, setVisibleCustomWidgetIds] = useState<string[]>([]);
   const [customWidgets, setCustomWidgets] = useState<DashboardManifestWidget[]>(() => readStoredCustomWidgets());
   const [librarySelectedType, setLibrarySelectedType] = useState<DashboardWidgetType>("kpi");
   const [librarySelectedOrganizationId, setLibrarySelectedOrganizationId] = useState<string>("");
@@ -3394,6 +3397,7 @@ export function DashboardGrid() {
   const [gridMounted, setGridMounted] = useState(false);
   const [widgetsColumnRef, containerWidth] = useMeasuredWidth<HTMLDivElement>();
   const launcherStateLoaded = useRef(false);
+  const launcherBackendStateLoaded = useRef(false);
 
   useEffect(() => {
     const handleOpenWidgetBuilder = () => {
@@ -3404,6 +3408,10 @@ export function DashboardGrid() {
         (current) => current || businessState.selectedOrganizationIds[0] || availableOrganizations[0]?.id || "",
       );
       setWidgetLibraryOpen(true);
+      void getWidgetBuilderContext({
+        organizationId: businessState.selectedOrganizationIds[0] ?? availableOrganizations[0]?.id,
+        period: businessState.period.preset,
+      }).then((context) => setSavedWidgetConfigs(context.saved_configs)).catch(() => undefined);
     };
 
     const handleOpenAiWidgetBuilder = () => {
@@ -3412,6 +3420,7 @@ export function DashboardGrid() {
       setAiWidgetBuilderDraft(null);
       setAiWidgetBuilderClarification(false);
       setAiWidgetBuilderConversationId(undefined);
+      setAiWidgetBuilderPreview(null);
       setAiWidgetBuilderOpen(true);
     };
 
@@ -3421,7 +3430,14 @@ export function DashboardGrid() {
       window.removeEventListener("ai-business-os:open-widget-builder", handleOpenWidgetBuilder);
       window.removeEventListener("ai-business-os:open-ai-widget-builder", handleOpenAiWidgetBuilder);
     };
-  }, [availableOrganizations, businessState.selectedOrganizationIds]);
+  }, [availableOrganizations, businessState.period.preset, businessState.selectedOrganizationIds]);
+
+  useEffect(() => {
+    if (!widgetLibraryOpen) return;
+    void getWidgetBuilderContext({ period: businessState.period.preset })
+      .then((context) => setSavedWidgetConfigs(context.saved_configs))
+      .catch(() => undefined);
+  }, [businessState.period.preset, widgetLibraryOpen]);
 
   const manifestWidgets = useMemo(
     () => [...(manifest?.widgets.filter((widget) => !widget.hidden) ?? []), ...customWidgets],
@@ -3434,6 +3450,21 @@ export function DashboardGrid() {
     },
     [manifestWidgets],
   );
+  useEffect(() => {
+    let active = true;
+    void getDashboardLauncherState().then((persisted) => {
+      if (!active) return;
+      launcherBackendStateLoaded.current = true;
+      setVisibleCustomWidgetIds(persisted.custom_widget_ids);
+      if (!persisted.state || typeof persisted.state !== "object") return;
+      const next = normalizeLauncherState(persisted.state, allWidgets) as LauncherState;
+      setLauncherState(next);
+      launcherStateLoaded.current = true;
+    }).catch(() => {
+      launcherBackendStateLoaded.current = true;
+    });
+    return () => { active = false; };
+  }, [allWidgets]);
   const defaultState = useMemo(() => createDefaultLauncherState(allWidgets) as LauncherState, [allWidgets]);
   const effectiveState = useMemo(
     () => normalizeLauncherState(launcherState ?? defaultState, allWidgets) as LauncherState,
@@ -3538,6 +3569,7 @@ export function DashboardGrid() {
 
   useEffect(() => {
     if (loading) return;
+    if (!launcherBackendStateLoaded.current) return;
     if (!launcherStateLoaded.current) {
       launcherStateLoaded.current = true;
       const nextState = normalizeLauncherState(loadLauncherState() ?? defaultState, allWidgets) as LauncherState;
@@ -3553,7 +3585,11 @@ export function DashboardGrid() {
   useEffect(() => {
     if (!launcherStateLoaded.current || !launcherState) return;
     saveLauncherState(launcherState);
-  }, [launcherState]);
+    void saveDashboardLauncherState({
+      state: launcherState as unknown as Record<string, unknown>,
+      custom_widget_ids: visibleCustomWidgetIds,
+    });
+  }, [launcherState, visibleCustomWidgetIds]);
 
   useEffect(() => {
     if (process.env.NODE_ENV !== "development" || containerWidth <= 0) return;
@@ -3571,6 +3607,11 @@ export function DashboardGrid() {
   const resetLayouts = () => {
     clearLauncherState();
     setLauncherState(defaultState);
+    setVisibleCustomWidgetIds([]);
+    void saveDashboardLauncherState({
+      state: defaultState as unknown as Record<string, unknown>,
+      custom_widget_ids: [],
+    });
     setInteractionLayouts(null);
     setWidgetLibraryOpen(false);
     setSuggestionsDrawerOpen(false);
@@ -3742,6 +3783,32 @@ export function DashboardGrid() {
 
   const hiddenCount = hiddenWidgets.length;
   const activeSuggestion = previewResult?.suggestion ?? null;
+  const aiPreviewWidget = useMemo(() => {
+    if (!aiWidgetBuilderDraft) return null;
+    const typeMap: Record<string, DashboardWidgetType> = {
+      kpi: "kpi",
+      detailed_list: "table",
+      line_chart: "line_chart",
+      bar_chart: "bar_chart",
+      donut: "ranking",
+      ranking: "ranking",
+      comparison: "organization_comparison",
+    };
+    const widgetType = typeMap[String(aiWidgetBuilderDraft.widget_type)] ?? "kpi";
+    const payload = aiWidgetBuilderPreview && typeof aiWidgetBuilderPreview.payload === "object"
+      ? aiWidgetBuilderPreview.payload as Record<string, unknown>
+      : buildWidgetPreviewPayload(widgetType, selectedOrganizationName ?? "Организация");
+    return createFallbackWidget({
+      widget_id: "ai-builder-preview",
+      widget_type: widgetType,
+      title: String(aiWidgetBuilderDraft.title ?? "Новый виджет"),
+      subtitle: String(aiWidgetBuilderPreview?.subtitle ?? "Актуальные данные"),
+      semantic_size: "L",
+      priority: 0,
+      summary: String(aiWidgetBuilderDraft.metric ?? "Показатель бизнеса"),
+      payload,
+    });
+  }, [aiWidgetBuilderDraft, aiWidgetBuilderPreview, selectedOrganizationName]);
 
   useEffect(() => {
     if (editMode && previewResult) {
@@ -3838,6 +3905,18 @@ export function DashboardGrid() {
       setLibraryLoading(false);
     }
   }, [allWidgets, availableOrganizations, businessState.period.dateFrom, businessState.period.dateTo, businessState.period.preset, businessState.selectedOrganizationIds, librarySelectedOrganizationId, selectedCatalogItem, updateSemanticState]);
+
+  const setSavedWidgetVisible = useCallback(async (widgetId: string, visible: boolean) => {
+    const nextIds = visible
+      ? Array.from(new Set([...visibleCustomWidgetIds, widgetId]))
+      : visibleCustomWidgetIds.filter((id) => id !== widgetId);
+    setVisibleCustomWidgetIds(nextIds);
+    await saveDashboardLauncherState({
+      state: effectiveState as unknown as Record<string, unknown>,
+      custom_widget_ids: nextIds,
+    });
+    await reloadDashboardManifest();
+  }, [effectiveState, reloadDashboardManifest, visibleCustomWidgetIds]);
 
   return (
     <div ref={widgetsColumnRef} className="w-full min-w-0 space-y-4">
@@ -3991,7 +4070,7 @@ export function DashboardGrid() {
         open={aiWidgetBuilderOpen}
         onClose={() => setAiWidgetBuilderOpen(false)}
         title="Создать виджет через ИИ"
-        description="Опишите, какие данные должны быть на виджете. ИИ поможет собрать конфигурацию."
+        description="Опишите данные для виджета."
         badges={<Badge variant="neutral">AI-конструктор</Badge>}
         className="max-w-[min(52rem,calc(100vw-2rem))]"
       >
@@ -4016,7 +4095,7 @@ export function DashboardGrid() {
               onChange={setLibrarySelectedOrganizationId}
               placeholder="Выберите организацию"
             />
-            <div className="rounded-2xl border border-dashed border-[#4a4e56] bg-[#2E3137] p-4 text-sm leading-6 text-slate-400">
+            <div className="rounded-2xl border border-dashed border-[#4a4e56] bg-[#2E3137] p-3 text-xs leading-5 text-slate-400">
               Период, метрика и фильтры будут определены по вашему описанию и текущему контексту бизнеса.
             </div>
           </div>
@@ -4029,6 +4108,11 @@ export function DashboardGrid() {
             <div className="mt-4 min-h-0 flex-1 rounded-2xl border border-[#3a3d43] bg-[#2E3137] p-4 text-sm leading-6 text-slate-300">
               {aiWidgetBuilderReply || "Например: покажи продажи Бекзода за неделю простой цифрой."}
             </div>
+            {aiPreviewWidget ? (
+              <div className="mt-3 h-48 overflow-hidden rounded-2xl border border-[#3a3d43] bg-[#2E3137] p-2">
+                {renderWidget(aiPreviewWidget, "compact")}
+              </div>
+            ) : null}
             {aiWidgetBuilderDraft ? (
               <div className="mt-3 rounded-2xl border border-[#3a3d43] bg-[#2E3137] p-4 text-xs leading-5 text-slate-300">
                 <p className="uppercase tracking-[0.22em] text-slate-400">Подготовленный виджет</p>
@@ -4074,6 +4158,7 @@ export function DashboardGrid() {
                   }).then((response) => {
                     setAiWidgetBuilderConversationId(response.conversation_id);
                     setAiWidgetBuilderDraft(response.widget_draft);
+                    setAiWidgetBuilderPreview(response.preview ?? null);
                     setAiWidgetBuilderClarification(response.clarification_required);
                     setAiWidgetBuilderReply(response.assistant_message || (response.clarification_required
                       ? response.clarification_options.join("\n")
@@ -4097,7 +4182,12 @@ export function DashboardGrid() {
                     }).then(async () => {
                       setAiWidgetBuilderReply("Виджет сохранён и будет обновляться по актуальным данным.");
                       setAiWidgetBuilderDraft(null);
-                      await reloadDashboardManifest();
+                      setAiWidgetBuilderPreview(null);
+                      const context = await getWidgetBuilderContext({
+                        organizationId: businessState.selectedOrganizationIds[0] ?? availableOrganizations[0]?.id,
+                        period: businessState.period.preset,
+                      });
+                      setSavedWidgetConfigs(context.saved_configs);
                     }).catch((error) => setAiWidgetBuilderReply(error instanceof Error ? error.message : "Не удалось сохранить виджет."))
                       .finally(() => setAiWidgetBuilderLoading(false));
                   }}
@@ -4120,6 +4210,52 @@ export function DashboardGrid() {
         >
           <div className="grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_minmax(360px,0.8fr)]">
             <div className="space-y-4">
+              <div className="rounded-[26px] border border-[#3a3d43] bg-[#26292e] p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] uppercase tracking-[0.28em] text-slate-400">Пользовательские виджеты</p>
+                    <h3 className="mt-2 text-lg font-semibold tracking-[-0.04em] text-[#f4f7fb]">Сохранённые через ИИ</h3>
+                  </div>
+                  <Badge variant="neutral">{savedWidgetConfigs.length}</Badge>
+                </div>
+                {savedWidgetConfigs.length === 0 ? (
+                  <p className="mt-3 text-sm leading-6 text-slate-400">Здесь появятся виджеты после сохранения. Они не добавляются на Dashboard автоматически.</p>
+                ) : (
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    {savedWidgetConfigs.map((config) => {
+                      const widgetId = typeof config.widget_id === "string" ? config.widget_id : "";
+                      const isVisible = visibleCustomWidgetIds.includes(widgetId);
+                      const preview = config.preview && typeof config.preview === "object" ? config.preview as Record<string, unknown> : null;
+                      return (
+                        <div key={widgetId || String(config.config_id)} className="rounded-[20px] border border-[#3a3d43] bg-[#2E3137] p-3">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-semibold text-[#f4f7fb]">{String(config.title ?? "Виджет")}</p>
+                              <p className="mt-1 text-xs text-slate-400">{String(config.metric ?? config.widget_type ?? "Показатель")}</p>
+                            </div>
+                            <Badge variant={isVisible ? "accent" : "neutral"}>{isVisible ? "На Dashboard" : "Сохранён"}</Badge>
+                          </div>
+                          <div className="mt-3 h-20 overflow-hidden rounded-xl border border-[#3a3d43] bg-[#26292e] p-2">
+                            <div className="h-full rounded-lg bg-gradient-to-br from-white/[0.08] to-transparent p-2">
+                              <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{String(config.widget_type ?? "widget")}</p>
+                              <p className="mt-2 text-sm font-semibold text-slate-200">{String(preview?.subtitle ?? "Актуальные данные")}</p>
+                            </div>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant={isVisible ? "soft" : "secondary"}
+                            className="mt-3 w-full"
+                            disabled={!widgetId}
+                            onClick={() => void setSavedWidgetVisible(widgetId, !isVisible)}
+                          >
+                            {isVisible ? "Скрыть на Dashboard" : "Показать на Dashboard"}
+                          </Button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="text-[11px] uppercase tracking-[0.28em] text-slate-400">Все типы</p>

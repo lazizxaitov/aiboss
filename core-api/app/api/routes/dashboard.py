@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import date
-from typing import Annotated
+from datetime import UTC, date, datetime
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel, Field
 
 from app.agents.ceo import AIAnalyticsAgent, AIDashboardComposer
 from app.core.analytics.dashboard_manifest import DashboardManifest, UserDashboardPreferences
@@ -32,6 +33,59 @@ from app.core.data_layer.factory import get_core_store
 from app.core.organization_context import OrganizationContextService
 
 router = APIRouter()
+
+DASHBOARD_LAUNCHER_STATE_KEY = "dashboard:launcher_state:v1"
+
+
+class DashboardLauncherState(BaseModel):
+    """Persistent user dashboard layout and custom-widget placement."""
+
+    state: dict[str, Any] = Field(default_factory=dict)
+    custom_widget_ids: list[str] = Field(default_factory=list)
+
+
+def _read_launcher_state(store: CoreDataStore) -> DashboardLauncherState:
+    setting = store.get_app_setting(DASHBOARD_LAUNCHER_STATE_KEY)
+    if setting is None or not isinstance(setting.setting_value, dict):
+        return DashboardLauncherState()
+    value = setting.setting_value
+    raw_state = value.get("state")
+    raw_ids = value.get("custom_widget_ids")
+    return DashboardLauncherState(
+        state=raw_state if isinstance(raw_state, dict) else {},
+        custom_widget_ids=list(dict.fromkeys(item for item in raw_ids or [] if isinstance(item, str))),
+    )
+
+
+@router.get("/dashboard/launcher-state", response_model=DashboardLauncherState)
+def get_dashboard_launcher_state(
+    store: Annotated[CoreDataStore, Depends(get_core_store)],
+) -> DashboardLauncherState:
+    return _read_launcher_state(store)
+
+
+@router.put("/dashboard/launcher-state", response_model=DashboardLauncherState)
+def save_dashboard_launcher_state(
+    payload: DashboardLauncherState,
+    store: Annotated[CoreDataStore, Depends(get_core_store)],
+) -> DashboardLauncherState:
+    normalized = DashboardLauncherState(
+        state=payload.state,
+        custom_widget_ids=list(dict.fromkeys(payload.custom_widget_ids)),
+    )
+    from app.core.data_layer.entities import AppSetting
+
+    now = datetime.now(UTC)
+    store.upsert_app_setting(
+        AppSetting(
+            setting_key=DASHBOARD_LAUNCHER_STATE_KEY,
+            setting_value=normalized.model_dump(mode="json"),
+            metadata={"scope": "owner", "kind": "dashboard_launcher_state"},
+            created_at=now,
+            updated_at=now,
+        ),
+    )
+    return normalized
 
 
 @router.get("/dashboard/auto-analysis/latest", response_model=AutoAnalyticsRun | None)
@@ -123,6 +177,7 @@ def get_dashboard_manifest(
     hidden_widget_ids: Annotated[list[str] | None, Query()] = None,
     locked_position_widget_ids: Annotated[list[str] | None, Query()] = None,
     locked_size_widget_ids: Annotated[list[str] | None, Query()] = None,
+    custom_widget_ids: Annotated[list[str] | None, Query()] = None,
 ) -> DashboardManifest:
     """Return the semantic dashboard manifest for the future layout engine."""
 
@@ -175,6 +230,7 @@ def get_dashboard_manifest(
     custom_widgets = custom_widgets_service.append_custom_widgets(
         manifest.widgets,
         organization_ids=selected_organization_ids,
+        widget_ids=custom_widget_ids or [],
     )
     if custom_widgets != manifest.widgets:
         manifest.widgets = custom_widgets
