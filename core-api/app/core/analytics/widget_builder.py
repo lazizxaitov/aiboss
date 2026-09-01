@@ -706,7 +706,19 @@ class WidgetBuilderService:
         configs = self.list_configs(organization_ids=organization_ids)
         if not configs:
             return widgets
-        custom_widgets = [self.build_manifest_widget(config) for config in configs]
+        # A user-created AI widget is a normal dashboard widget after it is
+        # saved. Rebuild its preview from the persisted query definition so a
+        # later Core/Canonical update changes the displayed value as well.
+        custom_widgets: list[DashboardManifestWidget] = []
+        for config in configs:
+            preview = self.build_preview(
+                config,
+                organization_id=config.organization_ids[0] if config.organization_ids else None,
+                period=config.period,
+            )
+            custom_widgets.append(
+                self.build_manifest_widget(config.model_copy(update={"preview": preview})),
+            )
         widget_ids = {widget.widget_id for widget in custom_widgets}
         base_widgets = [widget for widget in widgets if widget.widget_id not in widget_ids]
         return [*base_widgets, *custom_widgets]
@@ -1083,6 +1095,15 @@ class WidgetBuilderService:
         organization_ids: list[UUID] | None = None,
         period: str | None = None,
     ) -> AnalyticsQuery:
+        requested_organization_ids = list(dict.fromkeys(
+            [organization_id] if organization_id is not None else (organization_ids or []),
+        ))
+        if requested_organization_ids:
+            accessible_organization_ids = set(
+                OrganizationContextService(self.store).resolve_accessible_organization_ids(),
+            )
+            if not set(requested_organization_ids).issubset(accessible_organization_ids):
+                raise ValueError("Выбранная организация недоступна для текущего владельца.")
         resolved_organization_ids = (
             [item for item in organization_ids if item is not None]
             if organization_ids

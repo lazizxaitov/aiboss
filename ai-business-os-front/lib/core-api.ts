@@ -2738,6 +2738,27 @@ export async function runWidgetBuilderChat(payload: {
   }, 60_000);
 }
 
+export type WidgetBuilderConfirmResponse = {
+  config: Record<string, unknown>;
+  preview?: Record<string, unknown> | null;
+  dashboard_widget?: Record<string, unknown> | null;
+};
+
+export async function confirmWidgetBuilder(payload: {
+  draft: Record<string, unknown>;
+  conversationId?: string;
+}): Promise<WidgetBuilderConfirmResponse> {
+  return requestJson<WidgetBuilderConfirmResponse>("/api/v1/dashboard/widget-builder/confirm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      draft: payload.draft,
+      conversation_id: payload.conversationId,
+      source_channel: "web",
+    }),
+  }, 30_000);
+}
+
 export async function streamAiChat(
   messages: AiChatMessage[],
   onChunk: (content: string) => void,

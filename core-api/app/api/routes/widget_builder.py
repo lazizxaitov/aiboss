@@ -264,12 +264,15 @@ def confirm_widget_builder(
     store: Annotated[CoreDataStore, Depends(get_core_store)],
 ) -> WidgetBuilderConfirmResponse:
     service = WidgetBuilderService(store)
-    config, preview = service.save_confirmed_widget(
-        request.draft,
-        source_channel=request.source_channel,
-        organization_id=request.draft.organization_ids[0] if request.draft.organization_ids else None,
-        period=request.draft.period,
-    )
+    try:
+        config, preview = service.save_confirmed_widget(
+            request.draft,
+            source_channel=request.source_channel,
+            organization_id=request.draft.organization_ids[0] if request.draft.organization_ids else None,
+            period=request.draft.period,
+        )
+    except ValueError as error:
+        raise _handle_value_error(error) from error
     return WidgetBuilderConfirmResponse(
         config=config,
         preview=preview,

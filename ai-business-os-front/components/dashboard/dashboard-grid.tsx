@@ -69,7 +69,7 @@ import {
   type DashboardManifestWidget,
   type DashboardWidgetType,
 } from "@/lib/core-api";
-import { getAiProviders, getAiRouting, getDashboardAIAnalysisStatus, getDashboardAIInsights, getDashboardManifest, runDashboardAIAnalysis, runWidgetBuilderChat, streamAiChat, type AiProvider } from "@/lib/core-api";
+import { confirmWidgetBuilder, getAiProviders, getAiRouting, getDashboardAIAnalysisStatus, getDashboardAIInsights, getDashboardManifest, runDashboardAIAnalysis, runWidgetBuilderChat, streamAiChat, type AiProvider } from "@/lib/core-api";
 
 type SerializedMetricValue = AnalyticsMetricValue;
 
@@ -3369,7 +3369,7 @@ function renderWidget(widget: DashboardManifestWidget, variant?: LauncherWidgetV
 }
 
 export function DashboardGrid() {
-  const { manifest, loading, error } = useDashboardManifest();
+  const { manifest, loading, error, reload: reloadDashboardManifest } = useDashboardManifest();
   const { state: businessState, availableOrganizations } = useBusinessContext();
   const [launcherState, setLauncherState] = useState<LauncherState | null>(null);
   const [editMode, setEditMode] = useState(false);
@@ -3379,6 +3379,9 @@ export function DashboardGrid() {
   const [aiWidgetBuilderPrompt, setAiWidgetBuilderPrompt] = useState("");
   const [aiWidgetBuilderReply, setAiWidgetBuilderReply] = useState("");
   const [aiWidgetBuilderLoading, setAiWidgetBuilderLoading] = useState(false);
+  const [aiWidgetBuilderDraft, setAiWidgetBuilderDraft] = useState<Record<string, unknown> | null>(null);
+  const [aiWidgetBuilderClarification, setAiWidgetBuilderClarification] = useState(false);
+  const [aiWidgetBuilderConversationId, setAiWidgetBuilderConversationId] = useState<string | undefined>();
   const [customWidgets, setCustomWidgets] = useState<DashboardManifestWidget[]>(() => readStoredCustomWidgets());
   const [librarySelectedType, setLibrarySelectedType] = useState<DashboardWidgetType>("kpi");
   const [librarySelectedOrganizationId, setLibrarySelectedOrganizationId] = useState<string>("");
@@ -3406,6 +3409,9 @@ export function DashboardGrid() {
     const handleOpenAiWidgetBuilder = () => {
       setEditMode(true);
       setAiWidgetBuilderReply("");
+      setAiWidgetBuilderDraft(null);
+      setAiWidgetBuilderClarification(false);
+      setAiWidgetBuilderConversationId(undefined);
       setAiWidgetBuilderOpen(true);
     };
 
@@ -4023,6 +4029,15 @@ export function DashboardGrid() {
             <div className="mt-4 min-h-0 flex-1 rounded-2xl border border-[#3a3d43] bg-[#2E3137] p-4 text-sm leading-6 text-slate-300">
               {aiWidgetBuilderReply || "Например: покажи продажи Бекзода за неделю простой цифрой."}
             </div>
+            {aiWidgetBuilderDraft ? (
+              <div className="mt-3 rounded-2xl border border-[#3a3d43] bg-[#2E3137] p-4 text-xs leading-5 text-slate-300">
+                <p className="uppercase tracking-[0.22em] text-slate-400">Подготовленный виджет</p>
+                <p className="mt-2">Тип: {String(aiWidgetBuilderDraft.widget_type ?? "не указан")}</p>
+                <p>Метрика: {String(aiWidgetBuilderDraft.metric ?? "будет определена AI")}</p>
+                <p>Период: {String(aiWidgetBuilderDraft.period ?? businessState.period.preset)}</p>
+                {aiWidgetBuilderClarification ? <p className="mt-2 text-amber-200">Нужно уточнение перед сохранением.</p> : null}
+              </div>
+            ) : null}
             <div className="mt-4 space-y-3">
               <textarea
                 value={aiWidgetBuilderPrompt}
@@ -4047,6 +4062,7 @@ export function DashboardGrid() {
                     organization_comparison: "comparison",
                   } as Record<string, string>)[librarySelectedType] ?? "kpi";
                   void runWidgetBuilderChat({
+                    conversationId: aiWidgetBuilderConversationId,
                     message: prompt,
                     organizationId: businessState.selectedOrganizationIds[0] ?? null,
                     period: businessState.period.preset,
@@ -4056,6 +4072,9 @@ export function DashboardGrid() {
                       period: businessState.period.preset,
                     },
                   }).then((response) => {
+                    setAiWidgetBuilderConversationId(response.conversation_id);
+                    setAiWidgetBuilderDraft(response.widget_draft);
+                    setAiWidgetBuilderClarification(response.clarification_required);
                     setAiWidgetBuilderReply(response.assistant_message || (response.clarification_required
                       ? response.clarification_options.join("\n")
                       : "Черновик виджета подготовлен."));
@@ -4065,6 +4084,27 @@ export function DashboardGrid() {
               >
                 {aiWidgetBuilderLoading ? "ИИ думает..." : "Отдать команду ИИ"}
               </Button>
+              {aiWidgetBuilderDraft && !aiWidgetBuilderClarification ? (
+                <Button
+                  className="w-full"
+                  variant="secondary"
+                  disabled={aiWidgetBuilderLoading}
+                  onClick={() => {
+                    setAiWidgetBuilderLoading(true);
+                    void confirmWidgetBuilder({
+                      draft: aiWidgetBuilderDraft,
+                      conversationId: aiWidgetBuilderConversationId,
+                    }).then(async () => {
+                      setAiWidgetBuilderReply("Виджет сохранён и будет обновляться по актуальным данным.");
+                      setAiWidgetBuilderDraft(null);
+                      await reloadDashboardManifest();
+                    }).catch((error) => setAiWidgetBuilderReply(error instanceof Error ? error.message : "Не удалось сохранить виджет."))
+                      .finally(() => setAiWidgetBuilderLoading(false));
+                  }}
+                >
+                  Сохранить виджет
+                </Button>
+              ) : null}
             </div>
           </div>
         </div>
