@@ -1422,7 +1422,10 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
     return (
       <button
         type="button"
-        onClick={() => setExpanded(true)}
+        onClick={() => {
+          setExpanded(true);
+          setFullScreen(true);
+        }}
         className="fixed bottom-6 right-6 z-50 flex h-14 w-14 items-center justify-center rounded-full border border-[#4a4e56] bg-[#FFF27A] text-[#1E1E21] shadow-[0_16px_40px_rgba(0,0,0,0.35)] transition hover:scale-105"
         aria-label="Открыть чат с ИИ"
         title="Открыть чат с ИИ"
@@ -1534,11 +1537,11 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
                 {expanded ? (
                   <button
                     type="button"
-                    onClick={() => setFullScreen(true)}
+                    onClick={() => setFullScreen((value) => !value)}
                     className="inline-flex h-11 items-center justify-center rounded-full border border-[#4a4e56] px-3 text-[10px] uppercase tracking-[0.12em] text-slate-400 transition hover:border-[#FFF27A]/40 hover:text-[#FFF27A]"
-                    aria-label="Открыть чат в полный размер"
+                    aria-label={fullScreen ? "Свернуть чат" : "Открыть чат в полный размер"}
                   >
-                    На весь экран
+                    {fullScreen ? "Свернуть" : "На весь экран"}
                   </button>
                 ) : null}
               </div>
@@ -1916,7 +1919,7 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
         </Surface>
       </div>
 
-      {!floating ? (
+      {!floating && !fullScreen ? (
         <Surface
           className={cn(
             "relative flex min-h-0 flex-col overflow-hidden border-[#3c4048] bg-[linear-gradient(180deg,#2E3137_0%,#2A2D33_100%)] px-4 py-4 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
