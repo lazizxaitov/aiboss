@@ -37,6 +37,7 @@ export function SessionLockGuard({ children }: { children: ReactNode }) {
   const [locked, setLocked] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
+  const [sessionUnavailable, setSessionUnavailable] = useState(false);
   const [showUnlockPrompt, setShowUnlockPrompt] = useState(false);
   const [login, setLogin] = useState("Пользователь");
   const [pin, setPin] = useState("");
@@ -55,38 +56,90 @@ export function SessionLockGuard({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let active = true;
-    void Promise.all([
-      fetch(`${apiUrl}/api/v1/auth/me`, { headers: authHeaders(), cache: "no-store" }).then(async (response) => ({ response, payload: await response.json().catch(() => ({})) })),
-      fetch(`${apiUrl}/api/v1/auth/lock-settings`, { headers: authHeaders(), cache: "no-store" }).then(async (response) => ({ response, payload: await response.json().catch(() => ({})) })),
-    ])
-      .then(([sessionResult, lockSettingsResult]) => {
-        const sessionIsValid = sessionResult.response.ok && sessionResult.payload?.locked !== undefined;
-        setAuthenticated(sessionIsValid);
+    let retryTimer: number | undefined;
+    const retryDeadline = Date.now() + 45_000;
+
+    const fetchSessionEndpoint = async (path: string) => {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 2500);
+      try {
+        const response = await fetch(`${apiUrl}${path}`, {
+          headers: authHeaders(),
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        return {
+          response,
+          payload: await response.json().catch(() => ({})) as Record<string, unknown>,
+        };
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    };
+
+    const retry = () => {
+      if (!active) return;
+      setSessionUnavailable(true);
+      if (Date.now() < retryDeadline) {
+        retryTimer = window.setTimeout(() => void checkSession(), 1000);
+        return;
+      }
+      // Keep the rendered shell visible while the backend is temporarily down.
+      // Server-side middleware still protects subsequent navigations.
+      setHydrated(true);
+    };
+
+    const checkSession = async () => {
+      try {
+        const [sessionResult, lockSettingsResult] = await Promise.all([
+          fetchSessionEndpoint("/api/v1/auth/me"),
+          fetchSessionEndpoint("/api/v1/auth/lock-settings"),
+        ]);
+        if (!active) return;
+
+        if (sessionResult.response.status === 401 || sessionResult.response.status === 403) {
+          setSessionUnavailable(false);
+          setAuthenticated(false);
+          setHydrated(true);
+          return;
+        }
+        if (!sessionResult.response.ok || typeof sessionResult.payload.locked !== "boolean") {
+          retry();
+          return;
+        }
+
+        setSessionUnavailable(false);
+        setAuthenticated(true);
         setHydrated(true);
-        if (Number.isFinite(lockSettingsResult.payload.timeout_minutes) && lockSettingsResult.payload.timeout_minutes >= 1) {
-          lockAfterMs.current = lockSettingsResult.payload.timeout_minutes * 60 * 1000;
+        const timeoutMinutes = Number(lockSettingsResult.payload.timeout_minutes);
+        if (lockSettingsResult.response.ok && Number.isFinite(timeoutMinutes) && timeoutMinutes >= 1) {
+          lockAfterMs.current = timeoutMinutes * 60 * 1000;
           if (sessionResult.payload.locked !== true) resetTimer();
         }
-        if (!sessionIsValid) return;
-        if (!active) return;
         setLocked(sessionResult.payload.locked === true);
-        setLogin(sessionResult.payload.user?.login ?? "Пользователь");
-      })
-      .catch(() => setHydrated(true));
+        const user = sessionResult.payload.user;
+        setLogin(typeof user === "object" && user !== null && "login" in user && typeof user.login === "string" ? user.login : "Пользователь");
+      } catch {
+        retry();
+      }
+    };
+
+    void checkSession();
 
     const events = ["pointerdown", "keydown", "touchstart", "scroll"];
     events.forEach((event) => window.addEventListener(event, resetTimer, { passive: true }));
     resetTimer();
     return () => {
       active = false;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
       events.forEach((event) => window.removeEventListener(event, resetTimer));
       if (timer.current !== null) window.clearTimeout(timer.current);
     };
   }, []);
 
   useEffect(() => {
-    if (hydrated && !authenticated) router.replace("/login");
-  }, [authenticated, hydrated, router]);
+    if (hydrated && !authenticated && !sessionUnavailable) router.replace("/login");
+  }, [authenticated, hydrated, router, sessionUnavailable]);
 
   useEffect(() => {
     const preventLockedNavigation = (event: MouseEvent) => {
