@@ -92,6 +92,7 @@ from app.integrations.smartup.models import (
 from app.core.ai_readonly_sql import AI_ANALYTICAL_VIEW_DDL, ALLOWED_VIEWS
 from app.integrations.meta.schema import META_DDL
 from app.integrations.youtube.schema import YOUTUBE_DDL
+from app.integrations.attribution_schema import ATTRIBUTION_DDL
 from app.storage.postgres.ddl import render_core_data_layer_ddl
 
 Row = dict[str, Any]
@@ -168,6 +169,7 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
         self._execute_many(render_core_data_layer_ddl())
         self._execute_many(list(META_DDL))
         self._execute_many(list(YOUTUBE_DDL))
+        self._execute_many(list(ATTRIBUTION_DDL))
         self._execute_many(list(AI_ANALYTICAL_VIEW_DDL))
 
     def _ensure_smartup_organization_compatibility(self) -> None:
@@ -3410,7 +3412,8 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
     ) -> None:
         from app.integrations.meta.schema import META_TABLES
         from app.integrations.youtube.schema import YOUTUBE_TABLES
-        tables = {**META_TABLES, **YOUTUBE_TABLES}
+        from app.integrations.attribution_schema import ATTRIBUTION_TABLES
+        tables = {**META_TABLES, **YOUTUBE_TABLES, **ATTRIBUTION_TABLES}
 
         if table not in tables or not set(values).issubset(tables[table]):
             raise ValueError("Unsupported Meta table or column")
@@ -3428,7 +3431,8 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
     def list_meta_records(self, table: str, organization_id: str | None = None) -> list[Row]:
         from app.integrations.meta.schema import META_TABLES
         from app.integrations.youtube.schema import YOUTUBE_TABLES
-        tables = {**META_TABLES, **YOUTUBE_TABLES}
+        from app.integrations.attribution_schema import ATTRIBUTION_TABLES
+        tables = {**META_TABLES, **YOUTUBE_TABLES, **ATTRIBUTION_TABLES}
 
         if table not in tables:
             raise ValueError("Unsupported Meta table")

@@ -13,6 +13,7 @@ from weakref import WeakKeyDictionary
 
 from app.integrations.meta.schema import META_VIEW_COLUMNS, META_VIEW_DEFINITIONS
 from app.integrations.youtube.schema import YOUTUBE_VIEW_COLUMNS, YOUTUBE_VIEW_DEFINITIONS
+from app.integrations.attribution_schema import ATTRIBUTION_VIEW_COLUMNS, ATTRIBUTION_VIEW_DEFINITIONS
 
 ALLOWED_VIEWS = {
     "ai_sales": "realized sales facts; one row per sale",
@@ -41,6 +42,10 @@ ALLOWED_VIEWS.update(
         "ai_facebook_posts_daily": "Daily Facebook post insights",
     }
 )
+ALLOWED_VIEWS.update({
+    "ai_marketing_attribution_evidence": "Confirmed marketing linkage evidence",
+    "ai_marketing_attributed_outcomes": "Canonical outcomes with confirmed attribution evidence",
+})
 ALLOWED_VIEWS.update(
     {
         "ai_youtube_channels": "YouTube channels",
@@ -358,6 +363,7 @@ _AI_VIEW_DEFINITIONS = {
 }
 _AI_VIEW_DEFINITIONS.update(META_VIEW_DEFINITIONS)
 _AI_VIEW_DEFINITIONS.update(YOUTUBE_VIEW_DEFINITIONS)
+_AI_VIEW_DEFINITIONS.update(ATTRIBUTION_VIEW_DEFINITIONS)
 
 _AI_PUBLISHED_COLUMNS = {
     "ai_sales": (
@@ -528,6 +534,7 @@ _AI_PUBLISHED_COLUMNS = {
 }
 _AI_PUBLISHED_COLUMNS.update(META_VIEW_COLUMNS)
 _AI_PUBLISHED_COLUMNS.update(YOUTUBE_VIEW_COLUMNS)
+_AI_PUBLISHED_COLUMNS.update(ATTRIBUTION_VIEW_COLUMNS)
 
 _AI_VIEW_GRAINS = {
     "ai_sales": "one realized sale fact",
@@ -849,6 +856,20 @@ for _youtube_view, _youtube_columns in YOUTUBE_VIEW_COLUMNS.items():
             "date_semantics": {"event_date_column": "date", "meaning": "YouTube reporting date."},
         },
     )
+for _attribution_view, _attribution_columns in ATTRIBUTION_VIEW_COLUMNS.items():
+    _AI_ENTITY_CONTRACTS.setdefault(
+        _attribution_view,
+        {
+            "identity": ["organization_id", "evidence_id"],
+            "dimensions": [column for column in _attribution_columns if column.endswith("_id") or column.endswith("_type") or column in {"source_platform", "evidence_type", "confidence", "provenance", "currency"}],
+            "measures": [column for column in _attribution_columns if column == "revenue"],
+            "labels": [],
+            "domain": "marketing",
+            "source": "attribution_evidence",
+            "organization_behavior": "Evidence and outcomes are strictly scoped by organization_id.",
+            "date_semantics": {"event_date_column": "occurred_at", "meaning": "Recorded linkage/event time."},
+        },
+    )
 
 
 class SemanticBusinessGraphRegistry:
@@ -1139,6 +1160,15 @@ _AI_RELATIONSHIPS = (
         "cardinality": "many-to-one",
         "organization_scope": "same organization and page",
         "meaning": "Facebook posts belong to a Page.",
+    },
+    {
+        "from": "ai_marketing_attributed_outcomes.(organization_id,evidence_id)",
+        "to": "ai_marketing_attribution_evidence.(organization_id,id)",
+        "from_key": ["organization_id", "evidence_id"],
+        "to_key": ["organization_id", "id"],
+        "cardinality": "many-to-one",
+        "organization_scope": "same organization and confirmed evidence",
+        "meaning": "An attributed outcome exists only when persisted evidence supports it.",
     },
 )
 

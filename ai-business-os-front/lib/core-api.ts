@@ -99,6 +99,8 @@ export async function getYouTubeStatus(): Promise<YouTubeStatus> { return reques
 export async function connectYouTube(): Promise<YouTubeStatus> { return requestJson<YouTubeStatus>("/api/v1/youtube/connect", { method: "POST" }); }
 export async function mapYouTubeChannel(payload: { organization_id: string; channel_id: string; display_name?: string }): Promise<unknown> { return requestJson<unknown>("/api/v1/youtube/mappings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); }
 export async function syncYouTube(mode: "incremental" | "backfill" = "incremental", backfillDays = 7): Promise<YouTubeStatus & { sync_status?: string }> { return requestJson<YouTubeStatus & { sync_status?: string }>("/api/v1/youtube/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode, backfill_days: backfillDays }) }); }
+export type MarketingAttributionStatus = { evidence_available: boolean; confirmed_attribution_available: boolean; evidence_count: number; attributed_outcome_count: number; message: string };
+export async function getMarketingAttributionStatus(): Promise<MarketingAttributionStatus> { return requestJson<MarketingAttributionStatus>("/api/v1/marketing/attribution/status"); }
 
 export type AnalyticsDataStatus =
   | "AVAILABLE"
