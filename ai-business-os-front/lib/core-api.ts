@@ -94,6 +94,12 @@ export async function syncMeta(mode: "incremental" | "backfill" = "incremental",
   return requestJson<MetaStatus & { sync_status?: string }>("/api/v1/meta/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode, backfill_days: backfillDays }) });
 }
 
+export type YouTubeStatus = { status: string; configured: boolean; last_success_at?: string | null; last_error?: string | null; channels: Array<{ external_id: string; title?: string | null; subscriber_count?: string | null; video_count?: string | null }>; mappings: Array<{ organization_id: string; channel_id: string }> };
+export async function getYouTubeStatus(): Promise<YouTubeStatus> { return requestJson<YouTubeStatus>("/api/v1/youtube/status"); }
+export async function connectYouTube(): Promise<YouTubeStatus> { return requestJson<YouTubeStatus>("/api/v1/youtube/connect", { method: "POST" }); }
+export async function mapYouTubeChannel(payload: { organization_id: string; channel_id: string; display_name?: string }): Promise<unknown> { return requestJson<unknown>("/api/v1/youtube/mappings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); }
+export async function syncYouTube(mode: "incremental" | "backfill" = "incremental", backfillDays = 7): Promise<YouTubeStatus & { sync_status?: string }> { return requestJson<YouTubeStatus & { sync_status?: string }>("/api/v1/youtube/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode, backfill_days: backfillDays }) }); }
+
 export type AnalyticsDataStatus =
   | "AVAILABLE"
   | "PARTIAL"

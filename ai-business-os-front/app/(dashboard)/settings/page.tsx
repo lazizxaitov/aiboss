@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Surface } from "@/components/ui/surface";
 import { AiRoutingSettings } from "@/components/settings/ai-routing-settings";
 import { MetaIntegrationCard } from "@/components/settings/meta-integration-card";
+import { YouTubeIntegrationCard } from "@/components/settings/youtube-integration-card";
 import { MobileAccessCard } from "@/components/settings/mobile-access-card";
 import { useOwnerSessionState } from "@/components/auth/session-lock-guard";
 import {
@@ -118,6 +119,10 @@ export default function Page() {
 
       <SettingsBlockBoundary fallback="Не удалось загрузить интеграцию Meta.">
         <MetaIntegrationCard />
+      </SettingsBlockBoundary>
+
+      <SettingsBlockBoundary fallback="Не удалось загрузить интеграцию YouTube.">
+        <YouTubeIntegrationCard />
       </SettingsBlockBoundary>
 
 

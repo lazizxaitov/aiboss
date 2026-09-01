@@ -12,6 +12,7 @@ from uuid import UUID
 from weakref import WeakKeyDictionary
 
 from app.integrations.meta.schema import META_VIEW_COLUMNS, META_VIEW_DEFINITIONS
+from app.integrations.youtube.schema import YOUTUBE_VIEW_COLUMNS, YOUTUBE_VIEW_DEFINITIONS
 
 ALLOWED_VIEWS = {
     "ai_sales": "realized sales facts; one row per sale",
@@ -38,6 +39,14 @@ ALLOWED_VIEWS.update(
         "ai_facebook_pages": "Facebook Pages",
         "ai_facebook_posts": "Facebook Page posts",
         "ai_facebook_posts_daily": "Daily Facebook post insights",
+    }
+)
+ALLOWED_VIEWS.update(
+    {
+        "ai_youtube_channels": "YouTube channels",
+        "ai_youtube_videos": "YouTube video metadata",
+        "ai_youtube_channel_daily": "Daily YouTube channel analytics",
+        "ai_youtube_video_daily": "Daily YouTube video analytics",
     }
 )
 MAX_ROWS = 100
@@ -348,6 +357,7 @@ _AI_VIEW_DEFINITIONS = {
     "ai_organizations": "SELECT organization_id, name, company_id, filial_id, filial_code, project_code, is_active, sort_order FROM canonical_organizations",
 }
 _AI_VIEW_DEFINITIONS.update(META_VIEW_DEFINITIONS)
+_AI_VIEW_DEFINITIONS.update(YOUTUBE_VIEW_DEFINITIONS)
 
 _AI_PUBLISHED_COLUMNS = {
     "ai_sales": (
@@ -517,6 +527,7 @@ _AI_PUBLISHED_COLUMNS = {
     ),
 }
 _AI_PUBLISHED_COLUMNS.update(META_VIEW_COLUMNS)
+_AI_PUBLISHED_COLUMNS.update(YOUTUBE_VIEW_COLUMNS)
 
 _AI_VIEW_GRAINS = {
     "ai_sales": "one realized sale fact",
@@ -543,6 +554,14 @@ _AI_VIEW_GRAINS.update(
         "ai_facebook_pages": "one Facebook Page",
         "ai_facebook_posts": "one Facebook Page post",
         "ai_facebook_posts_daily": "one daily Facebook post insight",
+    }
+)
+_AI_VIEW_GRAINS.update(
+    {
+        "ai_youtube_channels": "one YouTube channel",
+        "ai_youtube_videos": "one YouTube video",
+        "ai_youtube_channel_daily": "one channel reporting day",
+        "ai_youtube_video_daily": "one video reporting day",
     }
 )
 
@@ -583,6 +602,12 @@ _AI_DATE_SEMANTICS.update(
             "event_date_column": "date_start",
             "meaning": "Organic Facebook reporting date.",
         },
+    }
+)
+_AI_DATE_SEMANTICS.update(
+    {
+        "ai_youtube_channel_daily": {"event_date_column": "date", "meaning": "YouTube Analytics reporting day."},
+        "ai_youtube_video_daily": {"event_date_column": "date", "meaning": "YouTube Analytics reporting day."},
     }
 )
 
@@ -807,6 +832,21 @@ for _meta_view, _meta_columns in META_VIEW_COLUMNS.items():
                 "event_date_column": "date_start",
                 "meaning": "Source reporting date; preserve source timezone semantics.",
             },
+        },
+    )
+
+for _youtube_view, _youtube_columns in YOUTUBE_VIEW_COLUMNS.items():
+    _AI_ENTITY_CONTRACTS.setdefault(
+        _youtube_view,
+        {
+            "identity": ["organization_id", "id"],
+            "dimensions": [column for column in _youtube_columns if column.endswith("_id") or column in {"country", "privacy_status", "content_type"}],
+            "measures": [column for column in _youtube_columns if column in {"subscriber_count", "video_count", "view_count", "views", "estimated_minutes_watched", "average_view_duration", "average_view_percentage", "likes", "comments", "shares", "subscribers_gained", "subscribers_lost"}],
+            "labels": [column for column in _youtube_columns if column in {"title", "description", "custom_url"}],
+            "domain": "video",
+            "source": "youtube",
+            "organization_behavior": "Explicit AI Business OS channel mapping; never infer organization from channel name.",
+            "date_semantics": {"event_date_column": "date", "meaning": "YouTube reporting date."},
         },
     )
 

@@ -91,6 +91,7 @@ from app.integrations.smartup.models import (
 )
 from app.core.ai_readonly_sql import AI_ANALYTICAL_VIEW_DDL, ALLOWED_VIEWS
 from app.integrations.meta.schema import META_DDL
+from app.integrations.youtube.schema import YOUTUBE_DDL
 from app.storage.postgres.ddl import render_core_data_layer_ddl
 
 Row = dict[str, Any]
@@ -166,6 +167,7 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
         self._ensure_normalized_entity_compatibility()
         self._execute_many(render_core_data_layer_ddl())
         self._execute_many(list(META_DDL))
+        self._execute_many(list(YOUTUBE_DDL))
         self._execute_many(list(AI_ANALYTICAL_VIEW_DDL))
 
     def _ensure_smartup_organization_compatibility(self) -> None:
@@ -3407,8 +3409,10 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
         self, table: str, values: Mapping[str, Any], keys: tuple[str, ...]
     ) -> None:
         from app.integrations.meta.schema import META_TABLES
+        from app.integrations.youtube.schema import YOUTUBE_TABLES
+        tables = {**META_TABLES, **YOUTUBE_TABLES}
 
-        if table not in META_TABLES or not set(values).issubset(META_TABLES[table]):
+        if table not in tables or not set(values).issubset(tables[table]):
             raise ValueError("Unsupported Meta table or column")
         columns = list(values)
         placeholders = ", ".join(["%s"] * len(columns))
@@ -3423,15 +3427,23 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
 
     def list_meta_records(self, table: str, organization_id: str | None = None) -> list[Row]:
         from app.integrations.meta.schema import META_TABLES
+        from app.integrations.youtube.schema import YOUTUBE_TABLES
+        tables = {**META_TABLES, **YOUTUBE_TABLES}
 
-        if table not in META_TABLES:
+        if table not in tables:
             raise ValueError("Unsupported Meta table")
         sql = f"SELECT * FROM {table}"
         params: tuple[Any, ...] = ()
-        if "organization_id" in META_TABLES[table] and organization_id:
+        if "organization_id" in tables[table] and organization_id:
             sql += " WHERE organization_id = %s"
             params = (organization_id,)
         return self._fetch_rows(sql, params)
+
+    def upsert_source_record(self, table: str, values: Mapping[str, Any], keys: tuple[str, ...]) -> None:
+        self.upsert_meta_record(table, values, keys)
+
+    def list_source_records(self, table: str, organization_id: str | None = None) -> list[Row]:
+        return self.list_meta_records(table, organization_id)
 
     def _execute_many(self, statements: list[str]) -> None:
         connection = self.connection_factory()

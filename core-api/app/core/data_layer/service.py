@@ -1487,6 +1487,9 @@ class InMemoryCoreDataLayer(CoreDataReader, CoreDataWriter):
         identity = "|".join(str(values.get(key, "")) for key in keys)
         self.meta_records[(table, identity)] = dict(values)
 
+    def upsert_source_record(self, table: str, values: dict[str, object], keys: tuple[str, ...]) -> None:
+        self.upsert_meta_record(table, values, keys)
+
     def list_meta_records(
         self, table: str, organization_id: str | None = None
     ) -> list[dict[str, object]]:
@@ -1494,3 +1497,6 @@ class InMemoryCoreDataLayer(CoreDataReader, CoreDataWriter):
         if organization_id:
             rows = [row for row in rows if str(row.get("organization_id")) == organization_id]
         return rows
+
+    def list_source_records(self, table: str, organization_id: str | None = None) -> list[dict[str, object]]:
+        return self.list_meta_records(table, organization_id)
