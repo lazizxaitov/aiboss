@@ -395,6 +395,9 @@ class AIBusinessAgentService:
             "provider_rounds_ms": {},
             "round_telemetry": [],
             "capability_telemetry": [],
+            "capability_attempts": 0,
+            "capability_executions": 0,
+            "capability_cache_hits": 0,
         }
         candidates = router.resolve_candidates(
             task_type,
@@ -407,6 +410,9 @@ class AIBusinessAgentService:
         runtime["timings"] = timings
         runtime["successful_business_queries"] = 0
         runtime["business_entities"] = []
+        runtime["capability_attempts"] = 0
+        runtime["capability_executions"] = 0
+        runtime["capability_cache_hits"] = 0
         sql_service = AIReadOnlySQLService(self.store)
         context_started = monotonic()
         system_context = AISystemContextService(self.store).build(
@@ -1143,6 +1149,8 @@ class AIBusinessAgentService:
             for tool_call in tool_calls:
                 capability_remaining_before = check_deadline("research_deadline")
                 capability_started = monotonic()
+                runtime["capability_attempts"] = int(runtime.get("capability_attempts") or 0) + 1
+                timings["capability_attempts"] = int(timings.get("capability_attempts") or 0) + 1
                 arguments = _tool_arguments(tool_call)
                 tool_name = str(tool_call.get("function", {}).get("name") or "")
                 query_executed = False
@@ -1182,7 +1190,15 @@ class AIBusinessAgentService:
                     logger.info("AI_TOOL_RESULT request_id=%s name=%s rejected=true", request_id, tool_name)
                 elif cache_key in result_cache:
                     tool_result = result_cache[cache_key]
+                    runtime["capability_cache_hits"] = int(runtime.get("capability_cache_hits") or 0) + 1
+                    timings["capability_cache_hits"] = int(timings.get("capability_cache_hits") or 0) + 1
                     duplicate_query_keys.add(cache_key)
+                    logger.info(
+                        "AI_ANALYTICS_CAPABILITY_CACHE_HIT analysis_id=%s call=%s capability=%s",
+                        request_id,
+                        runtime["capability_attempts"],
+                        tool_name,
+                    )
                     logger.info("AI_TOOL_RESULT request_id=%s name=%s rows=%s cached=true", request_id, tool_name, _row_count(tool_result))
                 elif total_tool_calls >= tool_call_budget:
                     tool_result = {
@@ -1192,6 +1208,8 @@ class AIBusinessAgentService:
                     logger.info("AI_TOOL_RESULT request_id=%s name=%s budget_exhausted=true", request_id, tool_name)
                 else:
                     total_tool_calls += 1
+                    runtime["capability_executions"] = int(runtime.get("capability_executions") or 0) + 1
+                    timings["capability_executions"] = int(timings.get("capability_executions") or 0) + 1
                     logger.info(
                         "AI_TOOL_CALL request_id=%s name=%s args=%s",
                         request_id,
@@ -1357,12 +1375,13 @@ class AIBusinessAgentService:
                         "remaining_budget_before": capability_remaining_before,
                         "remaining_budget_after": remaining_budget(),
                         "cache_hit": cached_query,
+                        "attempt": runtime["capability_attempts"],
                     })
                 if task_type == "business_analytics":
                     logger.info(
                         "AI_ANALYTICS_CAPABILITY_DONE analysis_id=%s call=%s capability=%s elapsed_ms=%.2f status=%s row_count=%s remaining_budget_after=%.3f cache_hit=%s",
                         request_id,
-                        total_tool_calls,
+                        runtime["capability_attempts"],
                         tool_name,
                         (monotonic() - capability_started) * 1000,
                         "error" if isinstance(tool_result, dict) and tool_result.get("available") is False else "completed",
@@ -1371,6 +1390,13 @@ class AIBusinessAgentService:
                         cached_query,
                     )
                 if repeated_query:
+                    logger.info(
+                        "AI_ANALYTICS_REPEATED_QUERY_GUARD analysis_id=%s capability=%s attempts=%s cache_hits=%s action=force_synthesis",
+                        request_id,
+                        tool_name,
+                        runtime["capability_attempts"],
+                        runtime["capability_cache_hits"],
+                    )
                     return await final_synthesis(round_number=rounds + 1)
             if rounds >= max_rounds:
                 return await final_synthesis(round_number=rounds + 1)

@@ -250,6 +250,9 @@ class AutoAnalyticsRun(BaseModel):
     analysis_level: Literal["widget", "daily", "deep"] = "deep"
     data_version: str | None = None
     capability_calls: int = 0
+    capability_attempts: int = 0
+    capability_executions: int = 0
+    capability_cache_hits: int = 0
     successful_business_queries: int = 0
     model_rounds: int = 0
     elapsed_ms: float | None = None
@@ -510,6 +513,9 @@ class AutoBusinessAnalyticsService:
                 max_duration_seconds=settings.ai_analytics_agent_timeout_seconds,
             )
             run.capability_calls = agent_result.tool_calls
+            run.capability_attempts = int(agent_result.runtime.get("capability_attempts") or 0)
+            run.capability_executions = int(agent_result.runtime.get("capability_executions") or 0)
+            run.capability_cache_hits = int(agent_result.runtime.get("capability_cache_hits") or 0)
             run.model_rounds = agent_result.rounds
             run.round_telemetry = list(agent_result.runtime.get("timings", {}).get("round_telemetry", []))
             run.capability_telemetry = list(agent_result.runtime.get("timings", {}).get("capability_telemetry", []))
@@ -604,6 +610,9 @@ class AutoBusinessAnalyticsService:
                 run.model_rounds = error.rounds
                 run.capability_calls = error.capability_calls
                 telemetry = error.timings
+                run.capability_attempts = int(telemetry.get("capability_attempts") or 0)
+                run.capability_executions = int(telemetry.get("capability_executions") or 0)
+                run.capability_cache_hits = int(telemetry.get("capability_cache_hits") or 0)
                 if isinstance(telemetry.get("round_telemetry"), list):
                     run.round_telemetry = list(telemetry["round_telemetry"])
                 if isinstance(telemetry.get("capability_telemetry"), list):
