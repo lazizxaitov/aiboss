@@ -69,7 +69,7 @@ import {
   type DashboardManifestWidget,
   type DashboardWidgetType,
 } from "@/lib/core-api";
-import { getAiProviders, getAiRouting, getDashboardAIAnalysisStatus, getDashboardAIInsights, getDashboardManifest, runDashboardAIAnalysis, streamAiChat, type AiProvider } from "@/lib/core-api";
+import { getAiProviders, getAiRouting, getDashboardAIAnalysisStatus, getDashboardAIInsights, getDashboardManifest, runDashboardAIAnalysis, runWidgetBuilderChat, streamAiChat, type AiProvider } from "@/lib/core-api";
 
 type SerializedMetricValue = AnalyticsMetricValue;
 
@@ -4038,18 +4038,28 @@ export function DashboardGrid() {
                   if (!prompt) return;
                   setAiWidgetBuilderLoading(true);
                   setAiWidgetBuilderReply("");
-                  void streamAiChat(
-                    [{ role: "user", content: prompt }],
-                    (content) => setAiWidgetBuilderReply((current) => current + content),
-                    undefined,
-                    "system_action",
-                    undefined,
-                    undefined,
-                    undefined,
-                    undefined,
-                    businessState.selectedOrganizationIds[0] ?? null,
-                    businessState.period.preset,
-                  ).catch((error) => setAiWidgetBuilderReply(error instanceof Error ? error.message : "Не удалось получить ответ AI."))
+                  const widgetType = ({
+                    table: "detailed_list",
+                    line_chart: "line_chart",
+                    bar_chart: "bar_chart",
+                    donut: "donut",
+                    ranking: "ranking",
+                    organization_comparison: "comparison",
+                  } as Record<string, string>)[librarySelectedType] ?? "kpi";
+                  void runWidgetBuilderChat({
+                    message: prompt,
+                    organizationId: businessState.selectedOrganizationIds[0] ?? null,
+                    period: businessState.period.preset,
+                    draft: {
+                      widget_type: widgetType,
+                      organization_ids: businessState.selectedOrganizationIds,
+                      period: businessState.period.preset,
+                    },
+                  }).then((response) => {
+                    setAiWidgetBuilderReply(response.assistant_message || (response.clarification_required
+                      ? response.clarification_options.join("\n")
+                      : "Черновик виджета подготовлен."));
+                  }).catch((error) => setAiWidgetBuilderReply(error instanceof Error ? error.message : "Не удалось получить ответ AI."))
                     .finally(() => setAiWidgetBuilderLoading(false));
                 }}
               >

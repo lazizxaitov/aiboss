@@ -2709,6 +2709,35 @@ export async function runDashboardAIAnalysis(): Promise<unknown> {
   return requestJson<unknown>("/api/v1/ai/insights/analyze", { method: "POST" }, 15_000);
 }
 
+export type WidgetBuilderChatResponse = {
+  conversation_id: string;
+  assistant_message: string;
+  widget_draft: Record<string, unknown> | null;
+  clarification_required: boolean;
+  clarification_options: string[];
+  preview?: Record<string, unknown> | null;
+};
+
+export async function runWidgetBuilderChat(payload: {
+  conversationId?: string;
+  message: string;
+  draft?: Record<string, unknown> | null;
+  organizationId?: string | null;
+  period?: string | null;
+}): Promise<WidgetBuilderChatResponse> {
+  return requestJson<WidgetBuilderChatResponse>("/api/v1/dashboard/widget-builder/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      conversation_id: payload.conversationId,
+      message: payload.message,
+      draft: payload.draft ?? null,
+      organization_id: payload.organizationId ?? null,
+      period: payload.period ?? null,
+    }),
+  }, 60_000);
+}
+
 export async function streamAiChat(
   messages: AiChatMessage[],
   onChunk: (content: string) => void,

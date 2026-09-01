@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 from typing import Annotated
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.api.routes.ai_chat import _extract_assistant_message, _hermes_request
+from app.core.ai_business_agent import AIBusinessAgentService
 from app.core.ai_conversation import AIConversationChannel, AIConversationService
+from app.core.ai_routing import AITaskRouter
 from app.core.analytics.widget_builder import (
     WidgetBuilderCreateRequest,
     WidgetBuilderChatRequest,
@@ -17,6 +18,7 @@ from app.core.analytics.widget_builder import (
     WidgetBuilderDeleteRequest,
     WidgetBuilderConfirmRequest,
     WidgetBuilderConfirmResponse,
+    WidgetBuilderConfig,
     WidgetBuilderContextResponse,
     WidgetBuilderDraft,
     WidgetBuilderPreview,
@@ -26,6 +28,7 @@ from app.core.analytics.widget_builder import (
 )
 from app.core.data_layer.contracts import CoreDataStore
 from app.core.data_layer.factory import get_core_store
+from app.core.hermes_tools import HermesBusinessTools
 
 router = APIRouter(prefix="/dashboard/widget-builder")
 
@@ -93,44 +96,48 @@ async def widget_builder_chat(
         organization_id=request.organization_id,
         period=request.period,
     ).model_dump(mode="json")
+    widget_type = request.draft.widget_type.value if request.draft is not None else WidgetBuilderDraft().widget_type.value
+    widget_goal = {
+        "user_request": request.message,
+        "requested_widget_type": widget_type,
+        "selected_organization_id": str(request.organization_id) if request.organization_id else None,
+        "selected_period": request.period,
+        "current_draft": None if request.draft is None else request.draft.model_dump(mode="json"),
+    }
     system_prompt = (
-        "You are Hermes AI Widget Builder for AI Business OS.\n"
-        "Return STRICT JSON only, without markdown fences or extra commentary.\n"
-        "Schema:\n"
-        "{"
-        '"assistant_message": string, '
-        '"widget_draft": object|null, '
-        '"clarification_required": boolean, '
-        '"clarification_options": array<string>'
-        "}\n"
-        "Rules:\n"
-        "- Use only real AI Business OS data concepts.\n"
-        "- Do not invent SQL, raw SmartUp payloads, shell access, or fake fields.\n"
-        "- Update the draft when the user provides new requirements.\n"
-        "- If the intent is ambiguous, set clarification_required=true and provide concise options.\n"
-        "- Keep widget sizes fixed.\n"
-        "- Prefer current organization and period context when the user does not specify them.\n"
-        f"Current context: {json.dumps(context_payload, ensure_ascii=False, default=str)}\n"
-        f"Current draft: {json.dumps(None if request.draft is None else request.draft.model_dump(mode='json'), ensure_ascii=False, default=str)}\n"
+        "You are constructing ONE AI Business OS dashboard widget requested by the user.\n"
+        "The immutable task goal is USER_WIDGET_REQUEST below. Preserve it in every reasoning step.\n"
+        "Use the shared read-only business.query capability only for the minimum evidence needed for this widget.\n"
+        "Do not investigate unrelated domains, do not switch the selected widget type, and do not return a normal business analysis answer.\n"
+        "Resolve explicit organization names using accessible AI Business OS context; backend scope remains authoritative.\n"
+        "After sufficient evidence, return a final JSON object only, with this shape:\n"
+        '{"assistant_message":"...","widget_draft":{...}|null,"clarification_required":false,"clarification_options":[]}\n'
+        "The widget_draft must use the existing WidgetBuilderDraft schema and must match the requested metric, organization, period and widget type.\n"
+        "If evidence is insufficient or the request is ambiguous, return widget_draft=null and clarification_required=true.\n"
+        "Never invent data, columns, SQL results, organizations, or widget fields.\n"
+        f"USER_WIDGET_REQUEST: {json.dumps(widget_goal, ensure_ascii=False, default=str)}\n"
+        f"CURRENT BUSINESS OS CONTEXT: {json.dumps(context_payload, ensure_ascii=False, default=str)}\n"
     )
-
-    hermes_messages = [
-        {"role": "system", "content": system_prompt},
-        *[
-            {"role": message.role, "content": message.content}
-            for message in conversation.messages
-        ],
-    ]
-    response = await _hermes_request(messages=hermes_messages, tools=None, stream=False)
-    if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=response.text or "Hermes вернул ошибку.")
-
-    payload = response.json()
-    assistant_message = ""
-    assistant_message_payload = _extract_assistant_message(payload)
-    if isinstance(assistant_message_payload, dict):
-        assistant_message = str(assistant_message_payload.get("content") or "")
+    agent_result = await AIBusinessAgentService(store).run(
+        conversation=conversation,
+        user_text=request.message,
+        source_channel="web",
+        task_type="system_action",
+        router=AITaskRouter(store),
+        tools_service=HermesBusinessTools(store),
+        widget_builder=service,
+        memory_prompt="",
+        system_prompt=system_prompt,
+        build_baseline=False,
+        request_id=str(uuid4()),
+        tool_call_budget=4,
+        max_duration_seconds=45.0,
+        ui_context={"widget_goal": widget_goal, "widget_context": context_payload},
+    )
+    assistant_message = agent_result.final_text
     parsed = _extract_json_object(assistant_message)
+    if parsed is None:
+        raise HTTPException(status_code=422, detail="AI не вернул структурированную конфигурацию виджета.")
 
     draft: WidgetBuilderDraft | None = request.draft
     clarification_required = False
@@ -157,6 +164,19 @@ async def widget_builder_chat(
             organization_id=request.organization_id,
             period=request.period,
         )
+        if request.draft is not None and resolved_draft.widget_type != request.draft.widget_type:
+            raise HTTPException(status_code=422, detail="AI изменил выбранный тип виджета.")
+        validation_config = WidgetBuilderConfig(
+            **resolved_draft.model_dump(),
+            preview=preview,
+            source_channel="web",
+        )
+        validation_errors = service.validate_config(validation_config)
+        if validation_errors:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Некорректная конфигурация виджета: {', '.join(validation_errors)}",
+            )
         draft = resolved_draft
         clarification_required = clarification_required or resolved_clarification_required
         clarification_options = list(dict.fromkeys([*clarification_options, *resolved_options]))
