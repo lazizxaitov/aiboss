@@ -1021,6 +1021,7 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
   const { state: businessState } = useBusinessContext();
   const dashboardManifest = useOptionalDashboardManifest();
   const [expanded, setExpanded] = useState(false);
+  const [fullScreen, setFullScreen] = useState(false);
   const [conversationId, setConversationId] = useState(createConversationId);
   const [selectedModel, setSelectedModel] = useState(0);
   const [availableModels, setAvailableModels] = useState<ModelItem[]>([]);
@@ -1229,6 +1230,7 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
       if (!(target instanceof Node)) return;
       if (assistantRootRef.current?.contains(target)) return;
       setExpanded(false);
+      setFullScreen(false);
     };
 
     document.addEventListener("pointerdown", handleOutsidePointerDown);
@@ -1431,13 +1433,17 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
   }
 
   return (
-    <div ref={assistantRootRef} className={floating ? "fixed bottom-6 right-6 z-50 flex w-[min(420px,calc(100vw-2rem))] flex-col gap-3" : "flex min-h-0 flex-col gap-3 xl:sticky xl:top-[6.5rem] xl:h-[calc(100dvh-8rem)]"}>
+    <>
+      {fullScreen ? (
+        <div className="fixed inset-0 z-[55] bg-[#17191d]/80 backdrop-blur-sm" aria-hidden="true" />
+      ) : null}
+      <div ref={assistantRootRef} className={fullScreen ? "fixed inset-3 z-[60] mx-auto flex w-[min(980px,calc(100vw-1.5rem))] flex-col gap-3 sm:inset-6" : floating ? "fixed bottom-6 right-6 z-50 flex w-[min(420px,calc(100vw-2rem))] flex-col gap-3" : "flex min-h-0 flex-col gap-3 xl:sticky xl:top-[6.5rem] xl:h-[calc(100dvh-8rem)]"}>
       <div id="ai-chat" ref={chatSurfaceRef}>
         <Surface
           className={cn(
             "relative flex min-h-0 shrink-0 flex-col overflow-hidden border-[#3c4048] bg-[radial-gradient(circle_at_78%_12%,rgba(255,255,255,0.05),transparent_32%),linear-gradient(180deg,#2E3137_0%,#2A2D33_100%)] px-4",
             smoothTransition,
-            expanded ? "h-[699px] xl:!h-[calc(100dvh_-_23.625rem)] pt-5 pb-4" : "h-[165px] xl:h-[165px] py-3",
+            fullScreen ? "h-full min-h-0 pt-5 pb-4" : expanded ? "h-[699px] xl:!h-[calc(100dvh_-_23.625rem)] pt-5 pb-4" : "h-[165px] xl:h-[165px] py-3",
           )}
         >
           <button
@@ -1493,6 +1499,15 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
                   >
                     Завершить диалог
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => setFullScreen((value) => !value)}
+                    className="shrink-0 rounded-full border border-[#4a4e56] px-3 py-2 text-[10px] uppercase tracking-[0.12em] text-slate-400 transition hover:border-[#FFF27A]/40 hover:text-[#FFF27A]"
+                    aria-label={fullScreen ? "Закрыть полный экран" : "Открыть чат в полный размер"}
+                    title={fullScreen ? "Закрыть полный экран" : "Открыть чат в полный размер"}
+                  >
+                    {fullScreen ? "Свернуть" : "На весь экран"}
+                  </button>
                 </div>
               </div>
             ) : (
@@ -1516,6 +1531,16 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
                 >
                   <span aria-hidden>{expanded ? "⌄" : "›"}</span>
                 </button>
+                {expanded ? (
+                  <button
+                    type="button"
+                    onClick={() => setFullScreen(true)}
+                    className="inline-flex h-11 items-center justify-center rounded-full border border-[#4a4e56] px-3 text-[10px] uppercase tracking-[0.12em] text-slate-400 transition hover:border-[#FFF27A]/40 hover:text-[#FFF27A]"
+                    aria-label="Открыть чат в полный размер"
+                  >
+                    На весь экран
+                  </button>
+                ) : null}
               </div>
             )}
 
@@ -1945,6 +1970,7 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
         </Surface>
       ) : null}
     </div>
+    </>
   );
 }
 
