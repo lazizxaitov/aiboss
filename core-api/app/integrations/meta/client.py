@@ -68,6 +68,7 @@ class MetaGraphClient:
             "fields": "date_start,date_stop,spend,impressions,reach,frequency,clicks,unique_clicks,ctr,cpc,cpm,actions,action_values,cost_per_action_type",
             "time_range": '{"since":"%s","until":"%s"}' % (since, until),
             "level": level,
+            "time_increment": 1,
         }
         if breakdowns:
             params["breakdowns"] = ",".join(breakdowns)
