@@ -5,6 +5,7 @@ import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from logging import INFO, Formatter, StreamHandler, getLogger
+from time import monotonic
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,7 +15,7 @@ from app.api.router import api_router
 from app.api.routes.auth import _session
 from app.core.auto_business_analytics import AutoBusinessAnalyticsService
 from app.core.config import settings
-from app.core.data_layer.factory import get_core_store
+from app.core.data_layer.factory import get_core_store, initialize_core_store
 from app.integrations.smartup.bootstrap import bootstrap_smartup_organizations_from_env
 from app.integrations.smartup.live_sync import SmartUpLiveSyncService
 
@@ -55,6 +56,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_application_logging()
     logger.info("AIBOSS_APPLICATION_LOGGING_READY")
     store = get_core_store()
+    schema_started = monotonic()
+    logger.info("CORE_SCHEMA_INIT_START")
+    try:
+        initialize_core_store(store)
+    except Exception:
+        logger.exception(
+            "CORE_SCHEMA_INIT_FAILED elapsed_ms=%d",
+            int((monotonic() - schema_started) * 1000),
+        )
+        raise
+    logger.info(
+        "CORE_SCHEMA_INIT_DONE elapsed_ms=%d",
+        int((monotonic() - schema_started) * 1000),
+    )
     result = bootstrap_smartup_organizations_from_env(store)
     if result.organizations:
         logger.info("SmartUp organizations bootstrapped: %s", len(result.organizations))
