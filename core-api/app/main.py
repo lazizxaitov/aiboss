@@ -76,14 +76,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     live_sync = SmartUpLiveSyncService(store)
     live_sync.start()
     app.state.smartup_live_sync = live_sync
-    auto_analysis_task = asyncio.create_task(_run_startup_auto_analysis(store))
+    # SmartUpLiveSyncService owns the startup widget-analysis trigger when the
+    # live integration is enabled. Starting the same run here as well causes
+    # duplicate full canonical reads and database contention. Keep the
+    # lifespan fallback only for installations where live sync is disabled.
+    auto_analysis_task = (
+        asyncio.create_task(_run_startup_auto_analysis(store))
+        if not settings.smartup_live_sync_enabled
+        else None
+    )
     app.state.auto_analysis_task = auto_analysis_task
     yield
-    auto_analysis_task.cancel()
-    try:
-        await auto_analysis_task
-    except asyncio.CancelledError:
-        pass
+    if auto_analysis_task is not None:
+        auto_analysis_task.cancel()
+        try:
+            await auto_analysis_task
+        except asyncio.CancelledError:
+            pass
     live_sync.stop()
 
 

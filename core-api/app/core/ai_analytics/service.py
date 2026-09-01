@@ -44,6 +44,7 @@ class AIAnalyticsService:
         *,
         language: str | None = None,
         force_refresh: bool = False,
+        include_provider: bool = True,
     ) -> AIAnalyticsResult:
         started = perf_counter()
         payload = build_input_contract(snapshot)
@@ -53,7 +54,7 @@ class AIAnalyticsService:
 
         provider_language = (language or settings.ai_analytics_language).strip().lower() or "ru"
         context_hash = self._analytics_context_hash(payload, signals)
-        cache_key = self._cache_key(payload, context_hash, provider_language)
+        cache_key = self._cache_key(payload, context_hash, provider_language, include_provider)
         if not force_refresh:
             cached = self._cache.get(cache_key)
             if cached and cached.cache_metadata and (
@@ -73,25 +74,26 @@ class AIAnalyticsService:
             prompt_version=settings.ai_analytics_prompt_version,
         )
 
-        try:
-            provider_response, provider_status = self._invoke_provider(
-                payload=payload,
-                deterministic_signals=signals,
-                deterministic_insights=deterministic_insights,
-                deterministic_brief=deterministic_brief,
-                language=provider_language,
-            )
-        except Exception as exc:
-            provider_response = None
-            provider_status = AIProviderStatus(
-                provider=getattr(self.provider, "provider_name", "unknown"),
-                model=getattr(self.provider, "model", None),
-                health=AIProviderHealth.UNAVAILABLE,
-                used_fallback=True,
-                prompt_version=settings.ai_analytics_prompt_version,
-                error_code="PROVIDER_EXCEPTION",
-                error_message=str(exc),
-            )
+        provider_response = None
+        if include_provider:
+            try:
+                provider_response, provider_status = self._invoke_provider(
+                    payload=payload,
+                    deterministic_signals=signals,
+                    deterministic_insights=deterministic_insights,
+                    deterministic_brief=deterministic_brief,
+                    language=provider_language,
+                )
+            except Exception as exc:
+                provider_status = AIProviderStatus(
+                    provider=getattr(self.provider, "provider_name", "unknown"),
+                    model=getattr(self.provider, "model", None),
+                    health=AIProviderHealth.UNAVAILABLE,
+                    used_fallback=True,
+                    prompt_version=settings.ai_analytics_prompt_version,
+                    error_code="PROVIDER_EXCEPTION",
+                    error_message=str(exc),
+                )
 
         if provider_response is not None:
             validated_insights, rejected_provider_insights = validate_provider_response(
@@ -336,11 +338,18 @@ class AIAnalyticsService:
         )
         return sha256(serialized.encode("utf-8")).hexdigest()
 
-    def _cache_key(self, payload, context_hash: str, language: str) -> str:  # type: ignore[no-untyped-def]
+    def _cache_key(
+        self,
+        payload,
+        context_hash: str,
+        language: str,
+        include_provider: bool,
+    ) -> str:  # type: ignore[no-untyped-def]
         serialized = dumps(
             {
                 "provider": settings.ai_analytics_provider,
                 "model": settings.ai_analytics_model,
+                "include_provider": include_provider,
                 "language": language,
                 "prompt_version": settings.ai_analytics_prompt_version,
                 "context_hash": context_hash,

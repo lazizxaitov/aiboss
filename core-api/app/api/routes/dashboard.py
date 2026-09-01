@@ -143,11 +143,14 @@ def get_dashboard_manifest(
         period=period,
         comparison_mode=comparison_mode,
     )
+    analytics_engine = BusinessAnalyticsEngine(store)
     ai_result = AIAnalyticsAgent().analyze_canonical(
         store,
         query,
         language=language,
         force_refresh=force_refresh,
+        include_provider=False,
+        engine=analytics_engine,
     )
     preferences = _build_manifest_preferences(
         pinned_widget_ids=pinned_widget_ids,
@@ -155,7 +158,7 @@ def get_dashboard_manifest(
         locked_position_widget_ids=locked_position_widget_ids,
         locked_size_widget_ids=locked_size_widget_ids,
     )
-    sales_report = BusinessAnalyticsEngine(store).build_sales(query)
+    sales_report = analytics_engine.build_sales(query)
     manifest = DashboardManifestComposerService().compose(
         snapshot=ai_result.snapshot,
         ai_result=ai_result,

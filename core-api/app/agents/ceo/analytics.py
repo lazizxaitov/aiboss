@@ -31,14 +31,17 @@ class AIAnalyticsAgent:
         *,
         language: str | None = None,
         force_refresh: bool = False,
+        include_provider: bool = True,
+        engine: BusinessAnalyticsEngine | None = None,
     ):
         """Return the full structured AI analytics result from Canonical V2."""
 
-        canonical_snapshot = BusinessAnalyticsEngine(store).build_snapshot(query)
+        canonical_snapshot = (engine or BusinessAnalyticsEngine(store)).build_snapshot(query)
         return self.service.analyze(
             canonical_snapshot,
             language=language,
             force_refresh=force_refresh,
+            include_provider=include_provider,
         )
 
     def _legacy_insights(self, snapshot: BusinessAnalyticsSnapshot) -> list[AIInsightCard]:

@@ -188,7 +188,7 @@ type SerializedAIInsight = {
   entity_id?: string | null;
   organization_ids?: string[];
   metrics?: ExecutiveNumber[];
-  evidence?: string[];
+  evidence?: unknown[];
   tags?: string[];
 };
 
@@ -2136,8 +2136,8 @@ function metricTone(metric?: SerializedMetricValue | null) {
   return "text-slate-400";
 }
 
-function businessCopy(text?: string | null) {
-  if (!text) return null;
+function businessCopy(text?: unknown) {
+  if (typeof text !== "string" || !text) return null;
   const normalized = text.trim();
   if (!normalized) return null;
 
@@ -2151,6 +2151,24 @@ function businessCopy(text?: string | null) {
   if (/\bcanonical\b/i.test(normalized) && normalized.length < 80) return null;
   if (/\bmaterialized\b/i.test(normalized)) return null;
   return normalized;
+}
+
+function evidenceCopy(value: unknown) {
+  if (typeof value === "string") return businessCopy(value) ?? value;
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    for (const key of ["label", "title", "name", "description", "value"]) {
+      if (typeof record[key] === "string" && record[key]) return record[key] as string;
+    }
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 export function displayMetricLabel(label?: string | null) {
@@ -2742,7 +2760,7 @@ function ExecutiveBriefWidget({ widget, variant }: { widget: DashboardManifestWi
                   <div className="mt-2 flex flex-wrap gap-2">
                     {item.evidence.slice(0, 2).map((evidence, evidenceIndex) => (
                       <Badge key={`${item.id ?? index}-evidence-${evidenceIndex}`} variant="soft">
-                        {businessCopy(evidence) ?? evidence}
+                        {evidenceCopy(evidence) ?? "Подтверждённые данные"}
                       </Badge>
                     ))}
                   </div>
@@ -3059,7 +3077,7 @@ function AlertWidget({ widget, variant }: { widget: DashboardManifestWidget; var
         {payload.evidence?.length ? (
           <div className="flex flex-wrap gap-2">
             {payload.evidence.slice(0, 4).map((evidence, index) => (
-              <Badge key={`${evidence}-${index}`} variant="soft">{businessCopy(evidence) ?? evidence}</Badge>
+              <Badge key={`alert-evidence-${index}`} variant="soft">{evidenceCopy(evidence) ?? "Подтверждённые данные"}</Badge>
             ))}
           </div>
         ) : null}

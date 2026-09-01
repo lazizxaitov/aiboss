@@ -122,6 +122,7 @@ class BusinessAnalyticsEngine:
     ) -> None:
         self.store = store
         self.thresholds = thresholds or AnalyticsThresholds()
+        self._prepared_cache: dict[str, _PreparedContext] = {}
 
     def build_summary(self, query: AnalyticsQuery) -> AnalyticsSummaryResponse:
         prepared = self._prepare(query)
@@ -564,6 +565,11 @@ class BusinessAnalyticsEngine:
         ]
 
     def _prepare(self, query: AnalyticsQuery) -> _PreparedContext:
+        cache_key = query.model_dump_json()
+        cached = self._prepared_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         window = _build_period_window(query)
         organizations = list(self.store.list_canonical_organizations())
         selected_ids = list(dict.fromkeys(query.organization_ids or []))
@@ -645,7 +651,7 @@ class BusinessAnalyticsEngine:
         current_sale_items = [row for row in sale_items if row.sale_id in current_sale_ids]
         previous_sale_items = [row for row in sale_items if row.sale_id in previous_sale_ids]
 
-        return _PreparedContext(
+        prepared = _PreparedContext(
             query=query,
             window=window,
             organization_ids=selected_ids,
@@ -681,6 +687,8 @@ class BusinessAnalyticsEngine:
             current_inventory_balances=current_inventory_balances,
             previous_inventory_balances=previous_inventory_balances,
         )
+        self._prepared_cache[cache_key] = prepared
+        return prepared
 
     def _build_business_summary(self, prepared: _PreparedContext) -> AnalyticsBusinessSummary:
         revenue = self._sales_revenue_metric(prepared)
