@@ -2612,6 +2612,24 @@ export function saveSessionLockSettings(timeoutMinutes: number): Promise<Session
   });
 }
 
+export function lockSystem(): Promise<{ locked: boolean }> {
+  return requestJson<{ locked: boolean }>("/api/v1/system/lock", { method: "POST" });
+}
+
+export function restartSystem(pin: string): Promise<{ status: string }> {
+  return requestJson<{ status: string }>("/api/v1/system/restart", {
+    method: "POST",
+    body: JSON.stringify({ pin }),
+  });
+}
+
+export function shutdownSystem(pin: string): Promise<{ status: string }> {
+  return requestJson<{ status: string }>("/api/v1/system/shutdown", {
+    method: "POST",
+    body: JSON.stringify({ pin }),
+  });
+}
+
 export async function saveAiRouting(config: AiRoutingConfig): Promise<AiRoutingResponse> {
   const payload = await requestJson<unknown>("/api/v1/ai/routing", {
     method: "PUT",

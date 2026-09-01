@@ -140,6 +140,15 @@ export function SessionLockGuard({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    const handleManualLock = () => {
+      setShowUnlockPrompt(false);
+      setLocked(true);
+    };
+    window.addEventListener("aibos-session-locked", handleManualLock);
+    return () => window.removeEventListener("aibos-session-locked", handleManualLock);
+  }, []);
+
+  useEffect(() => {
     if (hydrated && !authenticated && !sessionUnavailable) router.replace("/login");
   }, [authenticated, hydrated, router, sessionUnavailable]);
 

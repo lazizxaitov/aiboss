@@ -11,6 +11,8 @@ import { MobileInstallPrompt } from "@/components/pwa/mobile-install-prompt";
 import { MobileBottomNav } from "@/components/shell/mobile-bottom-nav";
 import { DashboardAssistantPanel } from "@/components/dashboard/dashboard-grid";
 import { BackendStartupGate } from "@/components/startup/backend-startup-gate";
+import { SleepModeOverlay } from "@/components/shell/sleep-mode-overlay";
+import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 
 export function DashboardShell({
@@ -19,6 +21,12 @@ export function DashboardShell({
   children: ReactNode;
 }>) {
   const pathname = usePathname();
+  const [sleepMode, setSleepMode] = useState(false);
+  useEffect(() => {
+    const open = () => setSleepMode(true);
+    window.addEventListener("aibos-enter-sleep-mode", open);
+    return () => window.removeEventListener("aibos-enter-sleep-mode", open);
+  }, []);
   return (
     <Suspense fallback={null}>
       <BackendStartupGate>
@@ -41,6 +49,7 @@ export function DashboardShell({
       </BusinessRefreshProvider>
       </SessionLockGuard>
       </BackendStartupGate>
+      {sleepMode ? <SleepModeOverlay onClose={() => setSleepMode(false)} /> : null}
     </Suspense>
   );
 }

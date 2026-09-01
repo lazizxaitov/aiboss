@@ -5,7 +5,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { cn } from "@/lib/cn";
-import { getNotifications, markAllNotificationsRead } from "@/lib/core-api";
+import { getNotifications, lockSystem, markAllNotificationsRead, restartSystem, shutdownSystem } from "@/lib/core-api";
+import { Drawer } from "@/components/ui/drawer";
 import { emitNotificationsChanged } from "@/lib/notifications-events";
 import { Dropdown } from "@/components/ui/dropdown";
 import {
@@ -33,6 +34,10 @@ export function AppTopbar() {
   const [activeTab, setActiveTab] = useState<NotificationTab>("All");
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [systemAction, setSystemAction] = useState<"restart" | "shutdown" | null>(null);
+  const [systemPin, setSystemPin] = useState("");
+  const [systemActionError, setSystemActionError] = useState<string | null>(null);
+  const [systemActionLoading, setSystemActionLoading] = useState(false);
 
   useEffect(() => {
     const loadProfile = () => {
@@ -75,18 +80,67 @@ export function AppTopbar() {
     }
   };
 
+  const openProtectedAction = (action: "restart" | "shutdown", close: () => void) => {
+    close();
+    setSystemPin("");
+    setSystemActionError(null);
+    setSystemAction(action);
+  };
+
+  const confirmSystemAction = async () => {
+    if (!systemAction || systemPin.length !== 4) {
+      setSystemActionError("Введите 4-значный код блокировки.");
+      return;
+    }
+    setSystemActionLoading(true);
+    setSystemActionError(null);
+    try {
+      if (systemAction === "restart") await restartSystem(systemPin);
+      else await shutdownSystem(systemPin);
+      setSystemAction(null);
+      setSystemPin("");
+    } catch (error) {
+      setSystemActionError(error instanceof Error ? error.message : "Не удалось выполнить действие.");
+    } finally {
+      setSystemActionLoading(false);
+    }
+  };
+
   return (
+    <>
     <header className="relative flex items-center justify-between gap-4 rounded-[32px] bg-[#2E3137] px-5 py-4 shadow-[0_18px_50px_rgba(0,0,0,0.22)] lg:sticky lg:top-4 lg:z-40">
-      <Link href="/" className="flex items-center gap-3">
-        <img
-          src="/main%20icon.png"
-          alt="AI Business OS"
-          width={48}
-          height={48}
-          className="h-12 w-12 rounded-full object-cover"
-        />
-        <div className="text-[20px] font-semibold tracking-[-0.04em] text-[#f4f7fb]">AI БОС</div>
-      </Link>
+      <Dropdown
+        align="left"
+        className="shrink-0"
+        panelClassName="w-[280px] overflow-hidden rounded-[24px] border border-[#3a3d43] bg-[#2E3137] shadow-[0_28px_70px_rgba(0,0,0,0.32)]"
+        trigger={(
+          <button type="button" className="flex items-center gap-3 text-left" aria-label="Системные действия">
+            <img src="/main%20icon.png" alt="AI Business OS" width={48} height={48} className="h-12 w-12 rounded-full object-cover" />
+            <div className="text-[20px] font-semibold tracking-[-0.04em] text-[#f4f7fb]">AI БОС</div>
+          </button>
+        )}
+      >
+        {(close) => (
+          <nav className="p-2" aria-label="Системные действия">
+            <button type="button" onClick={() => { close(); void lockSystem().then(() => window.dispatchEvent(new Event("aibos-session-locked"))).catch(() => undefined); }} className="block w-full rounded-2xl px-4 py-3 text-left text-sm text-slate-200 transition hover:bg-[#343840]">
+              <span className="block">Заблокировать систему</span>
+              <span className="mt-1 block text-xs text-slate-400">Блокировка вручную</span>
+            </button>
+            <button type="button" onClick={() => { close(); window.dispatchEvent(new Event("aibos-enter-sleep-mode")); }} className="block w-full rounded-2xl px-4 py-3 text-left text-sm text-slate-200 transition hover:bg-[#343840]">
+              <span className="block">Спящий режим</span>
+              <span className="mt-1 block text-xs text-slate-400">Время, дата и мысли ИИ на экране</span>
+            </button>
+            <button type="button" onClick={() => openProtectedAction("restart", close)} className="block w-full rounded-2xl px-4 py-3 text-left text-sm text-slate-200 transition hover:bg-[#343840]">
+              <span className="block">Перезагрузка системы</span>
+              <span className="mt-1 block text-xs text-slate-400">Перезапуск backend, frontend и приложения</span>
+            </button>
+            <button type="button" onClick={() => openProtectedAction("shutdown", close)} className="block w-full rounded-2xl px-4 py-3 text-left text-sm text-rose-300 transition hover:bg-[#343840]">
+              <span className="block">Полное отключение системы</span>
+              <span className="mt-1 block text-xs text-slate-400">Сервисы запустятся при следующем запуске приложения</span>
+            </button>
+          </nav>
+        )}
+      </Dropdown>
 
       <div className="flex min-w-0 flex-1 items-center justify-end gap-3">
         <label className="hidden w-full max-w-[240px] items-center gap-3 rounded-full border border-[#3a3d43] bg-[#343840] px-4 py-3 text-slate-400 md:flex">
@@ -276,6 +330,33 @@ export function AppTopbar() {
         </Dropdown>
       </div>
     </header>
+    <Drawer
+      open={systemAction !== null}
+      onClose={() => { if (!systemActionLoading) setSystemAction(null); }}
+      title={systemAction === "restart" ? "Перезагрузка системы" : "Полное отключение системы"}
+      description="Для подтверждения введите код блокировки."
+      className="max-w-[min(28rem,calc(100vw-2rem))]"
+    >
+      <div className="space-y-4">
+        <p className="text-sm leading-6 text-slate-300">
+          {systemAction === "restart" ? "Backend и frontend будут перезапущены, после чего откроется AI Business OS." : "Backend и frontend будут отключены до следующего запуска AI Business OS.app."}
+        </p>
+        <input
+          value={systemPin}
+          onChange={(event) => setSystemPin(event.target.value.replace(/\D/g, "").slice(0, 4))}
+          inputMode="numeric"
+          type="password"
+          maxLength={4}
+          placeholder="Код блокировки"
+          className="h-12 w-full rounded-2xl border border-[#3a3d43] bg-[#2E3137] px-4 text-center text-lg tracking-[0.5em] text-[#f4f7fb] outline-none focus:border-[#FFF27A]"
+        />
+        {systemActionError ? <p className="text-sm text-rose-300">{systemActionError}</p> : null}
+        <button type="button" onClick={() => void confirmSystemAction()} disabled={systemActionLoading} className="h-12 w-full rounded-full bg-[#FFF27A] text-sm font-medium text-[#1E1E21] disabled:opacity-60">
+          {systemActionLoading ? "Выполняется..." : "Подтвердить"}
+        </button>
+      </div>
+    </Drawer>
+    </>
   );
 }
 
