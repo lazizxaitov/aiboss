@@ -1261,6 +1261,10 @@ class VisitsWorkspaceService:
         aggregated: list[T] = []
         for organization_id in organization_ids:
             aggregated.extend(list(reader(organization_id=organization_id)))  # type: ignore[arg-type]
+        if aggregated and getattr(aggregated[0], "visit_id", None) is not None:
+            from app.core.data_layer.visit_identity import deduplicate_cross_organization_visits
+
+            return deduplicate_cross_organization_visits(aggregated)  # type: ignore[arg-type, return-value]
         return aggregated
 
     def _optionize_counter(self, counter: Counter[str]) -> list[VisitsWorkspaceFilterOption]:

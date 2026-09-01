@@ -628,7 +628,10 @@ class InMemoryCoreDataLayer(CoreDataReader, CoreDataWriter):
         self,
         organization_id: UUID | None = None,
     ) -> Iterable[CanonicalVisit]:
-        return self._filter_by_organization(self.canonical_visits.values(), organization_id)
+        from app.core.data_layer.visit_identity import deduplicate_cross_organization_visits
+
+        rows = self._filter_by_organization(self.canonical_visits.values(), organization_id)
+        return deduplicate_cross_organization_visits(rows)
 
     def get_canonical_visit_stock(self, visit_stock_id: UUID) -> CanonicalVisitStock | None:
         return self.canonical_visit_stocks.get(visit_stock_id)

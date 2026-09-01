@@ -587,7 +587,11 @@ class BusinessAnalyticsEngine:
             selected_set,
         )
         customer_returns = _filter_org(self.store.list_canonical_customer_returns(), selected_set)
-        visits = _filter_org(self.store.list_canonical_visits(), selected_set)
+        from app.core.data_layer.visit_identity import deduplicate_cross_organization_visits
+
+        visits = deduplicate_cross_organization_visits(
+            _filter_org(self.store.list_canonical_visits(), selected_set),
+        )
         sales_reps = _filter_org(self.store.list_canonical_sales_reps(), selected_set)
         working_zones = _filter_org(self.store.list_canonical_working_zones(), selected_set)
         warehouses = _filter_org(self.store.list_canonical_warehouses(), selected_set)

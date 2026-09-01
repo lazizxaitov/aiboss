@@ -917,7 +917,10 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
         self,
         organization_id: UUID | None = None,
     ) -> Iterable[CanonicalVisit]:
-        return self._fetch_source_list("canonical_visits", CanonicalVisit, organization_id)
+        from app.core.data_layer.visit_identity import deduplicate_cross_organization_visits
+
+        rows = self._fetch_source_list("canonical_visits", CanonicalVisit, organization_id)
+        return deduplicate_cross_organization_visits(rows)
 
     def get_canonical_visit_stock(self, visit_stock_id: UUID) -> CanonicalVisitStock | None:
         return self._fetch_one(
