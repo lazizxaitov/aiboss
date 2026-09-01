@@ -158,6 +158,35 @@ def _parse_final_request(content: object) -> str | None:
     return final_content.strip() if isinstance(final_content, str) and final_content.strip() else None
 
 
+def _parse_action_final(content: object) -> str | None:
+    """Accept the alternate final envelope used by compatible providers."""
+
+    action, _ = _parse_structured_action(content, set())
+    if isinstance(action, dict) and action.get("action") == "final":
+        answer = action.get("answer")
+        return answer.strip() if isinstance(answer, str) and answer.strip() else None
+    return None
+
+
+def _normalized_query_key(sql: str) -> str:
+    """Normalize harmless whitespace differences for the per-run query cache."""
+
+    return " ".join(sql.strip().split()).casefold()
+
+
+def _compact_capability_result(result: object) -> object:
+    """Return only evidence needed by the next model turn."""
+
+    if not isinstance(result, dict):
+        return result
+    compact: dict[str, object] = {
+        key: result[key]
+        for key in ("available", "status", "view", "row_count", "rows", "message")
+        if key in result
+    }
+    return compact or result
+
+
 def _parse_json_object(content: object) -> dict[str, object] | None:
     """Parse a provider JSON object while tolerating a short text wrapper."""
 
@@ -667,6 +696,8 @@ class AIBusinessAgentService:
                     }]
                 else:
                     final_request = _parse_final_request(assistant_message.get("content"))
+                    if final_request is None:
+                        final_request = _parse_action_final(assistant_message.get("content"))
                     if final_request is not None:
                         assistant_message = {**assistant_message, "content": final_request}
                     elif _raw_select(assistant_message.get("content")) is not None:
@@ -873,8 +904,11 @@ class AIBusinessAgentService:
                         tool_name,
                         _sanitized_args(arguments),
                     )
+                cache_arguments = dict(arguments)
+                if tool_name in {"query_business_data", BUSINESS_QUERY_CAPABILITY} and isinstance(cache_arguments.get("sql"), str):
+                    cache_arguments["sql"] = _normalized_query_key(str(cache_arguments["sql"]))
                 cache_key = json.dumps(
-                    {"name": tool_name, "arguments": arguments},
+                    {"name": tool_name, "arguments": cache_arguments},
                     ensure_ascii=False,
                     sort_keys=True,
                     default=str,
@@ -926,7 +960,6 @@ class AIBusinessAgentService:
                                 "available": False,
                                 "status": "invalid_query",
                                 "message": str(error),
-                                "database_schema": schema_for_prompt,
                             }
                         except Exception as error:  # noqa: BLE001 - feed DB errors back to the researcher
                             logger.info(
@@ -938,7 +971,6 @@ class AIBusinessAgentService:
                                 "available": False,
                                 "status": "invalid_query",
                                 "message": str(error),
-                                "database_schema": schema_for_prompt,
                             }
                         timings["db_queries"] = int(timings.get("db_queries") or 0) + 1
                         timings.update({
@@ -986,6 +1018,7 @@ class AIBusinessAgentService:
                 # native tool call was sent. Keep the same full result in a
                 # normal readable context message for provider-independent
                 # capability roundtrips.
+                compact_tool_result = _compact_capability_result(tool_result) if capability_only else tool_result
                 messages.append({
                     "role": "system",
                     "content": (
@@ -996,7 +1029,7 @@ class AIBusinessAgentService:
                             {
                                 "capability": tool_name,
                                 "status": "success" if not (isinstance(tool_result, dict) and tool_result.get("available") is False) else "error",
-                                "result": tool_result,
+                                "result": compact_tool_result,
                             },
                             ensure_ascii=False,
                             default=str,
