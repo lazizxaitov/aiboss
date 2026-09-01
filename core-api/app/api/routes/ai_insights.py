@@ -13,6 +13,7 @@ router = APIRouter(prefix="/ai/insights")
 # The analytics service owns the process-wide execution lock. This registry
 # only prevents duplicate background tasks from the same API process.
 _MANUAL_ANALYSIS_TASKS: dict[int, asyncio.Task[AutoAnalyticsRun]] = {}
+_WIDGET_ANALYSIS_TASKS: dict[int, asyncio.Task[AutoAnalyticsRun | None]] = {}
 
 
 def _forget_manual_task(store_key: int, task: asyncio.Task[AutoAnalyticsRun]) -> None:
@@ -21,6 +22,27 @@ def _forget_manual_task(store_key: int, task: asyncio.Task[AutoAnalyticsRun]) ->
     # Consume failures so asyncio does not emit an unhandled-task warning.
     if not task.cancelled():
         task.exception()
+
+
+def _forget_widget_task(store_key: int, task: asyncio.Task[AutoAnalyticsRun | None]) -> None:
+    if _WIDGET_ANALYSIS_TASKS.get(store_key) is task:
+        _WIDGET_ANALYSIS_TASKS.pop(store_key, None)
+    if not task.cancelled():
+        task.exception()
+
+
+def _schedule_widget_refresh(store: CoreDataStore) -> bool:
+    store_key = id(store)
+    existing_task = _WIDGET_ANALYSIS_TASKS.get(store_key)
+    if existing_task is not None and not existing_task.done():
+        return True
+    service = AutoBusinessAnalyticsService(store)
+    if not service.widget_needs_refresh():
+        return False
+    task = asyncio.create_task(service.run_widget_if_needed())
+    _WIDGET_ANALYSIS_TASKS[store_key] = task
+    task.add_done_callback(lambda completed: _forget_widget_task(store_key, completed))
+    return True
 
 
 @router.get("/status")
@@ -34,8 +56,13 @@ def get_automatic_analytics_status(
 
 
 @router.get("/dashboard")
-def get_dashboard_insights(store: Annotated[CoreDataStore, Depends(get_core_store)]) -> dict:
-    return AIInsightPresentationService(store).dashboard()
+async def get_dashboard_insights(store: Annotated[CoreDataStore, Depends(get_core_store)]) -> dict:
+    refreshing = _schedule_widget_refresh(store)
+    payload = AIInsightPresentationService(store).dashboard()
+    payload["refreshing"] = refreshing
+    if refreshing and payload.get("status") == "ready":
+        payload["message"] = "Обновляем AI-анализ по актуальным данным..."
+    return payload
 
 
 @router.post("/analyze", response_model=AutoAnalyticsRun)

@@ -53,7 +53,7 @@ def test_completed_analysis_is_persisted_and_dashboard_reads_structured_result()
     store = InMemoryCoreDataLayer()
     run = AutoBusinessAnalyticsService(store)._save(_completed_run())
 
-    payload = get_dashboard_insights(store)
+    payload = asyncio.run(get_dashboard_insights(store))
 
     assert AutoBusinessAnalyticsService(store).latest_successful().analysis_id == run.analysis_id
     assert payload["status"] == "ready"

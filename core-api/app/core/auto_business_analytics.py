@@ -700,13 +700,29 @@ class AutoBusinessAnalyticsService:
         return "|".join(sorted(values)) or None
 
     async def run_widget_if_needed(self) -> AutoAnalyticsRun | None:
-        existing = self.latest_successful("widget")
-        version = self._data_version()
-        if existing is not None and existing.data_version == version:
-            return existing
-        if not list(self.store.list_canonical_organizations()):
-            return None
+        if not self.widget_needs_refresh():
+            return self.latest_successful("widget")
         return await self.run("widget")
+
+    def widget_needs_refresh(self) -> bool:
+        """Return whether the persisted lightweight analysis is behind Core data."""
+
+        config = AITaskRouter(self.store).get_config()
+        if not config.business_analytics_auto_enabled:
+            return False
+        if not list(self.store.list_canonical_organizations()):
+            return False
+        current_version = self._data_version()
+        existing = self.latest_successful("widget")
+        if existing is not None and existing.data_version == current_version:
+            return False
+        status = self.status()
+        if status.status == "analyzing":
+            return False
+        if status.status == "retry_wait" and status.next_retry_at is not None:
+            if status.next_retry_at > datetime.now(UTC):
+                return False
+        return True
 
     async def run_startup_if_needed(self) -> AutoAnalyticsRun | None:
         """Run one non-blocking startup refresh when Core data is already usable.
@@ -762,7 +778,10 @@ def _queries_from_agent_messages(messages: list[dict[str, object]]) -> list[dict
             sorted(triggers),
             latest.analysis_id if latest else None,
         )
-        if after_sync and config.business_analytics_auto_enabled and "after_sync" in triggers:
+        if after_sync and config.business_analytics_auto_enabled:
+            # Keep the lightweight AI thoughts refresh automatic after fresh
+            # data arrives. Full daily/weekly research is an explicit user
+            # action and must not compete with Chat or run on a schedule.
             return await self.run_widget_if_needed()
         if not config.business_analytics_auto_enabled:
             logger.info(
@@ -770,19 +789,10 @@ def _queries_from_agent_messages(messages: list[dict[str, object]]) -> list[dict
                 "disabled",
             )
             return None
-        now = datetime.now(UTC)
-        daily = self.latest_successful("daily")
-        if "daily" in triggers and (daily is None or now - daily.generated_at >= timedelta(days=1)):
-            return await self.run("daily")
-        deep = self.latest_successful("deep")
-        if "weekly" in triggers and (deep is None or now - deep.generated_at >= timedelta(days=7)):
-            return await self.run("deep")
-        if latest is None:
-            logger.info("BUSINESS_ANALYSIS_TRIGGER_SKIPPED reason=no_schedule_or_previous_analysis")
-        if latest is not None and latest.status == "failed":
-            status = self.status()
-            if status.status == "retry_wait" and status.next_retry_at and now >= status.next_retry_at:
-                return await self.run()
+        logger.info(
+            "BUSINESS_ANALYSIS_TRIGGER_SKIPPED reason=%s",
+            "full_analysis_manual_only",
+        )
         return None
 
 
