@@ -177,10 +177,14 @@ class AIReadOnlySQLService:
         if organization_id:
             scope = [str(organization_id)]
         if not scope and view != "ai_organizations":
-            # Global dashboard context means all configured canonical
-            # organizations, not an unscoped database request.
+            context_scope = None
+            if callable(getattr(self.store, "get_app_setting", None)):
+                from app.core.organization_context import OrganizationContextService
+
+                context_scope = OrganizationContextService(self.store).resolve_organization_ids()
+            scope = [str(item) for item in (context_scope or []) if item]
             list_organizations = getattr(self.store, "list_canonical_organizations", None)
-            if callable(list_organizations):
+            if not scope and callable(list_organizations):
                 scope = [
                     str(getattr(item, "organization_id", getattr(item, "id", "")))
                     for item in list_organizations()

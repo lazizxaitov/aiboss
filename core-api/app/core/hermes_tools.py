@@ -4,14 +4,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from zoneinfo import ZoneInfo
 from uuid import UUID
 
 from app.core.analytics.engine import BusinessAnalyticsEngine
 from app.core.analytics.models import AnalyticsComparisonMode, AnalyticsPeriodPreset, AnalyticsQuery
 from app.core.data_layer.contracts import CoreDataStore
 from app.core.data_layer.dashboard import build_dashboard_overview
-from app.core.organization_context import AnalyticsContextState, OrganizationContextService
+from app.core.organization_context import (
+    AnalyticsContextState,
+    OrganizationContextService,
+    business_week_bounds,
+)
 
 
 @dataclass(slots=True)
@@ -639,8 +642,8 @@ class HermesBusinessTools:
 
     @staticmethod
     def _week_dates(offset: int) -> tuple[date, date]:
-        today = datetime.now(UTC).astimezone(ZoneInfo("Asia/Tashkent")).date()
-        monday = today - timedelta(days=today.weekday()) + timedelta(days=offset * 7)
+        start, _ = business_week_bounds()
+        monday = (start + timedelta(days=offset * 7)).date()
         return monday, monday + timedelta(days=6)
 
     @staticmethod

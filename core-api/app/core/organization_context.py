@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -14,6 +15,19 @@ from app.core.data_layer.contracts import CoreDataStore
 from app.core.data_layer.entities import AppSetting
 
 CONTEXT_SETTING_KEY = "global_analytics_context"
+BUSINESS_TIMEZONE = "Asia/Tashkent"
+
+
+def business_week_bounds(now: datetime | None = None) -> tuple[datetime, datetime]:
+    """Return the product calendar week in the shared business timezone."""
+
+    timezone = ZoneInfo(BUSINESS_TIMEZONE)
+    local_now = (now or datetime.now(UTC)).astimezone(timezone)
+    monday = local_now.date() - timedelta(days=local_now.weekday())
+    return (
+        datetime.combine(monday, datetime.min.time(), tzinfo=timezone),
+        datetime.combine(monday + timedelta(days=7), datetime.min.time(), tzinfo=timezone),
+    )
 
 
 class OrganizationContextMode(StrEnum):

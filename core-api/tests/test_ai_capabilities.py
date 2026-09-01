@@ -1,7 +1,9 @@
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from app.core.ai_capabilities import ai_capability_registry
 from app.core.ai_system_context import AISystemContextService
+from app.core.organization_context import business_week_bounds
 
 
 def test_business_roles_receive_read_only_business_query_capability():
@@ -56,3 +58,12 @@ def test_business_context_publishes_explicit_local_week_boundaries():
     assert business["calendar_week"]["definition"].startswith("Monday")
     assert business["calendar_week"]["start"].endswith("+05:00")
     assert business["calendar_week"]["end_exclusive"].endswith("+05:00")
+    assert business["selected_period"] == "current_week"
+    assert business["selected_period_window"]["start"].endswith("+05:00")
+
+
+def test_business_week_resolver_is_timezone_stable_at_monday_boundary():
+    start, end = business_week_bounds(datetime(2026, 8, 31, 18, 0, tzinfo=UTC))
+
+    assert start.isoformat() == "2026-08-31T00:00:00+05:00"
+    assert end.isoformat() == "2026-09-07T00:00:00+05:00"
