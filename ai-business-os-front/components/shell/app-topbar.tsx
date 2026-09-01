@@ -38,6 +38,12 @@ export function AppTopbar() {
   const [systemPin, setSystemPin] = useState("");
   const [systemActionError, setSystemActionError] = useState<string | null>(null);
   const [systemActionLoading, setSystemActionLoading] = useState(false);
+  const [systemNow, setSystemNow] = useState(() => new Date());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setSystemNow(new Date()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     const loadProfile = () => {
@@ -154,7 +160,7 @@ export function AppTopbar() {
 
         <div className="hidden items-center gap-3 lg:flex">
           <div className="rounded-full border border-[#3a3d43] bg-[#343840] px-5 py-3 text-sm font-medium text-slate-200">
-            20 августа в 23:46
+            {systemNow.toLocaleDateString("ru-RU", { day: "numeric", month: "long" })} в {systemNow.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}
           </div>
         </div>
 
