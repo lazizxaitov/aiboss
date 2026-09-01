@@ -55,15 +55,15 @@ def test_business_context_publishes_explicit_local_week_boundaries():
 
     business = context["business_context"]
     assert business["timezone"] == "Asia/Tashkent"
-    assert business["calendar_week"]["definition"].startswith("Monday")
+    assert business["calendar_week"]["definition"].startswith("Rolling seven")
     assert business["calendar_week"]["start"].endswith("+05:00")
-    assert business["calendar_week"]["end_exclusive"].endswith("+05:00")
+    assert business["calendar_week"]["end"].endswith("+05:00")
     assert business["selected_period"] == "current_week"
     assert business["selected_period_window"]["start"].endswith("+05:00")
 
 
 def test_business_week_resolver_is_timezone_stable_at_monday_boundary():
-    start, end = business_week_bounds(datetime(2026, 8, 31, 18, 0, tzinfo=UTC))
+    start, end = business_week_bounds(datetime(2026, 9, 1, 6, 0, tzinfo=UTC))
 
-    assert start.isoformat() == "2026-08-31T00:00:00+05:00"
-    assert end.isoformat() == "2026-09-07T00:00:00+05:00"
+    assert start.isoformat() == "2026-08-26T00:00:00+05:00"
+    assert end.isoformat() == "2026-09-01T11:00:00+05:00"

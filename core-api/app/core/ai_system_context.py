@@ -50,7 +50,7 @@ class AISystemContextService:
         if selected_period in {"current_week", "this_week"}:
             selected_window = {
                 "start": week_start.isoformat(),
-                "end_exclusive": week_end.isoformat(),
+                "end": week_end.isoformat(),
             }
         elif selected_context.period_context.date_from and selected_context.period_context.date_to:
             selected_window = {
@@ -67,9 +67,9 @@ class AISystemContextService:
             "local_date": now.date().isoformat(),
             "local_now": now.isoformat(),
             "calendar_week": {
-                "definition": "Monday 00:00 through next Monday 00:00, business timezone",
+                "definition": "Rolling seven calendar dates including today; start at local midnight six days ago, end at current local time",
                 "start": week_start.isoformat(),
-                "end_exclusive": week_end.isoformat(),
+                "end": week_end.isoformat(),
             },
         }
         context: dict[str, Any] = {

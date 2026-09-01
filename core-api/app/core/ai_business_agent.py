@@ -418,7 +418,7 @@ class AIBusinessAgentService:
                     + "Do not query merely because "
                     "business terminology appears. Never invent business facts.\n"
                     "For absence claims, verify the dataset's authoritative event_date_column, business period, and organization scope before concluding that no records exist.\n"
-                    "Use the exact selected_period_window from system context for date filters; do not use CURRENT_DATE or database session timezone to derive it.\n"
+                    "Use the exact selected_period_window from system context for date filters; for rolling seven-day periods use start inclusive and end current-local-time, and do not use CURRENT_DATE or database session timezone to derive them.\n"
                     "Return exactly one JSON object per turn. For a final response use: "
                     '{"type":"final","content":"..."}. '
                     "To execute a listed capability, return an internal object with its exact name and arguments, "

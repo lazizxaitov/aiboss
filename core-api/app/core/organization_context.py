@@ -19,14 +19,14 @@ BUSINESS_TIMEZONE = "Asia/Tashkent"
 
 
 def business_week_bounds(now: datetime | None = None) -> tuple[datetime, datetime]:
-    """Return the product calendar week in the shared business timezone."""
+    """Return the rolling seven-day product period in business local time."""
 
     timezone = ZoneInfo(BUSINESS_TIMEZONE)
     local_now = (now or datetime.now(UTC)).astimezone(timezone)
-    monday = local_now.date() - timedelta(days=local_now.weekday())
+    start_date = local_now.date() - timedelta(days=6)
     return (
-        datetime.combine(monday, datetime.min.time(), tzinfo=timezone),
-        datetime.combine(monday + timedelta(days=7), datetime.min.time(), tzinfo=timezone),
+        datetime.combine(start_date, datetime.min.time(), tzinfo=timezone),
+        local_now,
     )
 
 
