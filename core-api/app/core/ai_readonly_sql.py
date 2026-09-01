@@ -223,6 +223,7 @@ class AIReadOnlySQLService:
         *,
         organization_id: UUID | str | None = None,
         organization_ids: list[UUID | str] | None = None,
+        statement_timeout_ms: int | None = None,
     ) -> dict[str, Any]:
         started_at = monotonic()
         validation_started = monotonic()
@@ -266,10 +267,14 @@ class AIReadOnlySQLService:
         elif view != "ai_organizations":
             raise AIReadOnlyQueryError("Для бизнес-данных требуется organization scope.")
         query_started = monotonic()
+        effective_timeout_ms = STATEMENT_TIMEOUT_MS if statement_timeout_ms is None else min(
+            STATEMENT_TIMEOUT_MS,
+            max(1, int(statement_timeout_ms)),
+        )
         rows = self.store.execute_ai_readonly_sql(
             query,
             params,
-            statement_timeout_ms=STATEMENT_TIMEOUT_MS,
+            statement_timeout_ms=effective_timeout_ms,
         )
         query_ms = (monotonic() - query_started) * 1000
         self.last_timing = {
@@ -277,6 +282,7 @@ class AIReadOnlySQLService:
             "postgres_query_ms": query_ms,
             "capability_result_ms": (monotonic() - query_started) * 1000,
             "total_ms": (monotonic() - started_at) * 1000,
+            "statement_timeout_ms": effective_timeout_ms,
         }
         return {
             "available": True,

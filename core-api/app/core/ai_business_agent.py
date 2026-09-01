@@ -13,6 +13,8 @@ from types import SimpleNamespace
 from typing import Awaitable, Callable
 from uuid import uuid4
 
+import httpx
+
 from app.core.ai_conversation import AIConversationService, AIConversationState
 from app.core.ai_capabilities import BUSINESS_QUERY_CAPABILITY, ai_capability_registry
 from app.core.ai_system_context import AISystemContextService
@@ -30,6 +32,25 @@ CHAT_MAX_ROUNDS = 4
 CHAT_TOOL_CALLS = 3
 LIGHTWEIGHT_ANALYSIS_MAX_ROUNDS = 6
 MAX_CONVERSATION_MESSAGES = 12
+
+
+class ResearchTimeoutError(TimeoutError):
+    """A timeout attributed to one stage of the bounded research loop."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage: str,
+        timings: dict[str, object] | None = None,
+        rounds: int = 0,
+        capability_calls: int = 0,
+    ) -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.timings = timings or {}
+        self.rounds = rounds
+        self.capability_calls = capability_calls
 
 
 def _tool_catalog(tools: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -354,14 +375,26 @@ class AIBusinessAgentService:
         started_at = monotonic()
         deadline = started_at + max_duration_seconds if max_duration_seconds is not None else None
 
-        def check_deadline() -> None:
+        def remaining_budget() -> float | None:
+            return deadline - monotonic() if deadline is not None else None
+
+        def check_deadline(stage: str = "research_deadline") -> float | None:
             if deadline is not None and monotonic() >= deadline:
-                raise TimeoutError("AI research достиг установленного лимита времени.")
+                raise ResearchTimeoutError(
+                    "AI research достиг установленного лимита времени.",
+                    stage=stage,
+                    timings=timings,
+                    rounds=rounds,
+                    capability_calls=total_tool_calls,
+                )
+            return remaining_budget()
 
         timings: dict[str, object] = {
             "model_calls": 0,
             "db_queries": 0,
             "provider_rounds_ms": {},
+            "round_telemetry": [],
+            "capability_telemetry": [],
         }
         candidates = router.resolve_candidates(
             task_type,
@@ -523,6 +556,7 @@ class AIBusinessAgentService:
         # Capability transport is selected by role permissions, never by model
         # name or by inspecting user text.
         structured_mode = False
+        structured_repair_used = False
         tool_choice_for_round = "auto"
         max_rounds = MAX_ROUNDS
         if task_type == "ai_chat":
@@ -546,7 +580,7 @@ class AIBusinessAgentService:
             provider: str,
             stream_final: bool = False,
         ):
-            check_deadline()
+            remaining_before = check_deadline("research_deadline")
             request_started = monotonic()
             timings["model_calls"] = int(timings.get("model_calls") or 0) + 1
             prompt_chars = sum(len(str(message.get("content") or "")) for message in messages)
@@ -571,6 +605,13 @@ class AIBusinessAgentService:
                 provider,
                 model,
             )
+            if task_type == "business_analytics":
+                logger.info(
+                    "AI_ANALYTICS_MODEL_ROUND_START analysis_id=%s round=%s remaining_budget_before=%.3f",
+                    request_id,
+                    round_number,
+                    remaining_before if remaining_before is not None else -1,
+                )
             if task_type == "business_analytics":
                 logger.info(
                     "BUSINESS_ANALYSIS_MODEL_REQUEST analysis_id=%s round=%s provider=%s model=%s",
@@ -612,6 +653,7 @@ class AIBusinessAgentService:
                         model=model,
                         provider=provider,
                         response_format=None,
+                        timeout_seconds=remaining_before,
                     ) as streamed_response:
                         if streamed_response.status_code >= 400:
                             await streamed_response.aread()
@@ -680,6 +722,7 @@ class AIBusinessAgentService:
                             model=model,
                             provider=provider,
                             response_format={"type": "json_object"} if capability_only else None,
+                            timeout_seconds=remaining_budget(),
                         )
                 else:
                     response = await _hermes_request(
@@ -693,7 +736,31 @@ class AIBusinessAgentService:
                         model=model,
                         provider=provider,
                         response_format={"type": "json_object"} if capability_only else None,
+                        timeout_seconds=remaining_before,
                     )
+            except httpx.TimeoutException as error:
+                round_telemetry = timings["round_telemetry"]
+                if isinstance(round_telemetry, list):
+                    round_telemetry.append({
+                        "round": round_number,
+                        "elapsed_ms": (monotonic() - request_started) * 1000,
+                        "status": "timeout",
+                        "remaining_budget_before": remaining_before,
+                        "remaining_budget_after": remaining_budget(),
+                    })
+                logger.info(
+                    "AI_ANALYTICS_TIMEOUT analysis_id=%s stage=provider_request round=%s elapsed_ms=%.2f",
+                    request_id,
+                    round_number,
+                    (monotonic() - request_started) * 1000,
+                )
+                raise ResearchTimeoutError(
+                    "AI model response exceeded available analysis time.",
+                    stage="provider_request",
+                    timings=timings,
+                    rounds=round_number - 1,
+                    capability_calls=total_tool_calls,
+                ) from error
             except Exception:
                 logger.info(
                     "AI_AGENT_MODEL_RESPONSE request_id=%s round=%s elapsed_ms=%.2f action=invalid",
@@ -702,6 +769,17 @@ class AIBusinessAgentService:
                     (monotonic() - request_started) * 1000,
                 )
                 raise
+            request_elapsed_ms = (monotonic() - request_started) * 1000
+            remaining_after = remaining_budget()
+            round_telemetry = timings["round_telemetry"]
+            if isinstance(round_telemetry, list):
+                round_telemetry.append({
+                    "round": round_number,
+                    "elapsed_ms": request_elapsed_ms,
+                    "status": "completed",
+                    "remaining_budget_before": remaining_before,
+                    "remaining_budget_after": remaining_after,
+                })
             action = "invalid"
             prompt_tokens = None
             completion_tokens = None
@@ -736,16 +814,24 @@ class AIBusinessAgentService:
                 "AI_AGENT_MODEL_RESPONSE request_id=%s round=%s elapsed_ms=%.2f prompt_tokens=%s completion_tokens=%s total_tokens=%s action=%s status=%s",
                 request_id,
                 round_number,
-                (monotonic() - request_started) * 1000,
+                request_elapsed_ms,
                 prompt_tokens,
                 completion_tokens,
                 total_tokens,
                 action,
                 response.status_code,
             )
+            if task_type == "business_analytics":
+                logger.info(
+                    "AI_ANALYTICS_MODEL_ROUND_DONE analysis_id=%s round=%s elapsed_ms=%.2f remaining_budget_after=%.3f status=completed",
+                    request_id,
+                    round_number,
+                    request_elapsed_ms,
+                    remaining_after if remaining_after is not None else -1,
+                )
             rounds_timing = timings.get("provider_rounds_ms")
             if isinstance(rounds_timing, dict):
-                rounds_timing[str(round_number)] = (monotonic() - request_started) * 1000
+                rounds_timing[str(round_number)] = request_elapsed_ms
             return response
 
         response = None
@@ -1055,10 +1141,19 @@ class AIBusinessAgentService:
                 not structured_mode,
             )
             for tool_call in tool_calls:
-                check_deadline()
+                capability_remaining_before = check_deadline("research_deadline")
+                capability_started = monotonic()
                 arguments = _tool_arguments(tool_call)
                 tool_name = str(tool_call.get("function", {}).get("name") or "")
                 query_executed = False
+                if task_type == "business_analytics":
+                    logger.info(
+                        "AI_ANALYTICS_CAPABILITY_START analysis_id=%s call=%s capability=%s remaining_budget_before=%.3f",
+                        request_id,
+                        total_tool_calls + 1,
+                        tool_name,
+                        capability_remaining_before if capability_remaining_before is not None else -1,
+                    )
                 if task_type == "business_analytics":
                     logger.info(
                         "BUSINESS_ANALYSIS_QUERY analysis_id=%s query_number=%s tool=%s args=%s",
@@ -1118,6 +1213,11 @@ class AIBusinessAgentService:
                                 sql_service.execute,
                                 str(arguments["sql"]),
                                 organization_id=conversation.organization_id,
+                                statement_timeout_ms=(
+                                    max(1, int(capability_remaining_before * 1000))
+                                    if capability_remaining_before is not None
+                                    else None
+                                ),
                             )
                         except AIReadOnlyQueryError as error:
                             tool_result = {
@@ -1126,6 +1226,19 @@ class AIBusinessAgentService:
                                 "message": str(error),
                             }
                         except Exception as error:  # noqa: BLE001 - feed DB errors back to the researcher
+                            if "statement timeout" in str(error).lower() or "canceling statement" in str(error).lower():
+                                logger.info(
+                                    "AI_ANALYTICS_TIMEOUT analysis_id=%s stage=business_query elapsed_ms=%.2f",
+                                    request_id,
+                                    (monotonic() - capability_started) * 1000,
+                                )
+                                raise ResearchTimeoutError(
+                                    "Business data query exceeded available analysis time.",
+                                    stage="business_query",
+                                    timings=timings,
+                                    rounds=rounds,
+                                    capability_calls=total_tool_calls,
+                                ) from error
                             logger.info(
                                 "AI_BUSINESS_QUERY_ERROR request_id=%s error_type=%s",
                                 request_id,
@@ -1231,6 +1344,31 @@ class AIBusinessAgentService:
                         request_id,
                         tool_name,
                         _row_count(tool_result),
+                    )
+                capability_telemetry = timings["capability_telemetry"]
+                if isinstance(capability_telemetry, list):
+                    capability_telemetry.append({
+                        "call": total_tool_calls,
+                        "name": tool_name,
+                        "dataset": arguments.get("dataset") or tool_name,
+                        "elapsed_ms": (monotonic() - capability_started) * 1000,
+                        "status": "error" if isinstance(tool_result, dict) and tool_result.get("available") is False else "completed",
+                        "row_count": _row_count(tool_result),
+                        "remaining_budget_before": capability_remaining_before,
+                        "remaining_budget_after": remaining_budget(),
+                        "cache_hit": cached_query,
+                    })
+                if task_type == "business_analytics":
+                    logger.info(
+                        "AI_ANALYTICS_CAPABILITY_DONE analysis_id=%s call=%s capability=%s elapsed_ms=%.2f status=%s row_count=%s remaining_budget_after=%.3f cache_hit=%s",
+                        request_id,
+                        total_tool_calls,
+                        tool_name,
+                        (monotonic() - capability_started) * 1000,
+                        "error" if isinstance(tool_result, dict) and tool_result.get("available") is False else "completed",
+                        _row_count(tool_result),
+                        remaining_budget() if remaining_budget() is not None else -1,
+                        cached_query,
                     )
                 if repeated_query:
                     return await final_synthesis(round_number=rounds + 1)

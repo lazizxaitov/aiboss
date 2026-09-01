@@ -507,6 +507,7 @@ async def _hermes_request(
     model: str | None = None,
     provider: str | None = None,
     response_format: dict[str, object] | None = None,
+    timeout_seconds: float | None = None,
 ) -> httpx.Response:
     body = _hermes_payload(
         messages=messages,
@@ -519,11 +520,8 @@ async def _hermes_request(
     )
     url = f"{settings.hermes_base_url.rstrip('/')}/chat/completions"
     headers = {"Authorization": f"Bearer {settings.hermes_api_key}"}
-    client = httpx.AsyncClient(timeout=None)
-    response = await client.post(url, headers=headers, json=body)
-    if not stream:
-        await client.aclose()
-    return response
+    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+        return await client.post(url, headers=headers, json=body)
 
 
 def _hermes_payload(
@@ -561,6 +559,7 @@ async def _hermes_stream(
     provider: str | None = None,
     tool_choice: str | dict[str, object] | None = None,
     response_format: dict[str, object] | None = None,
+    timeout_seconds: float | None = None,
 ) -> AsyncIterator[httpx.Response]:
     """Open the real provider stream; callers must consume it inside this context."""
 
@@ -575,7 +574,7 @@ async def _hermes_stream(
         provider=provider,
         response_format=response_format,
     )
-    async with httpx.AsyncClient(timeout=None) as client:
+    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
         stream_context = client.stream("POST", url, headers=headers, json=body)
         try:
             response = await stream_context.__aenter__()

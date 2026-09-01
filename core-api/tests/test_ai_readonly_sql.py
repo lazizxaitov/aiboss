@@ -53,6 +53,30 @@ def test_sql_research_defaults_to_all_accessible_organizations():
     assert params == ("org-a", "org-b")
 
 
+def test_sql_research_clamps_per_execution_timeout_to_safe_default():
+    store = FakeStore()
+
+    AIReadOnlySQLService(store).execute(
+        "SELECT organization_id FROM ai_sales",
+        organization_id="org-1",
+        statement_timeout_ms=2_500,
+    )
+
+    assert store.calls[0][2] == 2_500
+
+
+def test_sql_research_never_allows_timeout_above_safe_default():
+    store = FakeStore()
+
+    AIReadOnlySQLService(store).execute(
+        "SELECT organization_id FROM ai_sales",
+        organization_id="org-1",
+        statement_timeout_ms=60_000,
+    )
+
+    assert store.calls[0][2] == 20_000
+
+
 def test_sql_research_rejects_organization_outside_accessible_scope():
     class OrganizationStore(FakeStore):
         def list_canonical_organizations(self):

@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, ValidationError
 
-from app.core.ai_business_agent import AIBusinessAgentService
+from app.core.ai_business_agent import AIBusinessAgentService, ResearchTimeoutError
 from app.core.ai_conversation import AIConversationChannel, AIConversationMessage, AIConversationState
 from app.core.ai_routing import AITaskRouter
 from app.core.config import settings
@@ -254,6 +254,11 @@ class AutoAnalyticsRun(BaseModel):
     model_rounds: int = 0
     elapsed_ms: float | None = None
     failure_stage: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    total_budget_seconds: float | None = None
+    round_telemetry: list[dict[str, Any]] = Field(default_factory=list)
+    capability_telemetry: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class AutoAnalyticsStatus(BaseModel):
@@ -419,6 +424,8 @@ class AutoBusinessAnalyticsService:
             status="running",
             analysis_level=mode,
             data_version=data_version,
+            started_at=analysis_started,
+            total_budget_seconds=settings.ai_analytics_agent_timeout_seconds,
         )
         self._save(run)
         logger.info(
@@ -441,6 +448,7 @@ class AutoBusinessAnalyticsService:
             run.status = "failed"
             run.error = "Нет доступного агента для роли business_analytics."
             run.failure_stage = "model_request"
+            run.finished_at = datetime.now(UTC)
             self._save_status(AutoAnalyticsStatus(status="retry_wait", last_started_at=started_at, last_error=run.error, next_retry_at=datetime.now(UTC) + timedelta(minutes=5)))
             return self._save(run)
         instruction = (
@@ -503,6 +511,8 @@ class AutoBusinessAnalyticsService:
             )
             run.capability_calls = agent_result.tool_calls
             run.model_rounds = agent_result.rounds
+            run.round_telemetry = list(agent_result.runtime.get("timings", {}).get("round_telemetry", []))
+            run.capability_telemetry = list(agent_result.runtime.get("timings", {}).get("capability_telemetry", []))
             run.elapsed_ms = (datetime.now(UTC) - analysis_started).total_seconds() * 1000
             run.successful_business_queries = int(
                 agent_result.runtime.get("successful_business_queries") or 0
@@ -589,7 +599,24 @@ class AutoBusinessAnalyticsService:
         except Exception as error:  # noqa: BLE001 - failed runs must remain observable and persisted
             last_error = error
             run.elapsed_ms = (datetime.now(UTC) - analysis_started).total_seconds() * 1000
-            if run.failure_stage is None:
+            if isinstance(error, ResearchTimeoutError):
+                run.failure_stage = error.stage
+                run.model_rounds = error.rounds
+                run.capability_calls = error.capability_calls
+                telemetry = error.timings
+                if isinstance(telemetry.get("round_telemetry"), list):
+                    run.round_telemetry = list(telemetry["round_telemetry"])
+                if isinstance(telemetry.get("capability_telemetry"), list):
+                    run.capability_telemetry = list(telemetry["capability_telemetry"])
+                logger.info(
+                    "AI_ANALYTICS_TIMEOUT analysis_id=%s stage=%s elapsed_ms=%.2f model_rounds=%s capability_calls=%s",
+                    run.analysis_id,
+                    error.stage,
+                    run.elapsed_ms,
+                    run.model_rounds,
+                    run.capability_calls,
+                )
+            elif run.failure_stage is None:
                 run.failure_stage = "model_request"
             logger.info("BUSINESS_ANALYSIS_ERROR analysis_id=%s error=%s", run.analysis_id, str(error)[:300])
         if run.status != "completed":
@@ -623,6 +650,7 @@ class AutoBusinessAnalyticsService:
                 provider_id=run.provider_id,
                 model_id=run.model_id,
             ))
+        run.finished_at = run.finished_at or datetime.now(UTC)
         saved = self._save(run)
         successful_queries = (
             len(saved.structured_result.queries_executed)
