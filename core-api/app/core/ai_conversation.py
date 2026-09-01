@@ -59,6 +59,7 @@ class AIConversationState(BaseModel):
     source_channel: AIConversationChannel = AIConversationChannel.WEB
     target_channel: AIConversationTargetChannel | None = None
     telegram_chat_id: str | None = None
+    conversation_mode: Literal["general", "business"] = "general"
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

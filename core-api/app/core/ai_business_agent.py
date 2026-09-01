@@ -414,6 +414,22 @@ class AIBusinessAgentService:
         runtime["capability_executions"] = 0
         runtime["capability_cache_hits"] = 0
         sql_service = AIReadOnlySQLService(self.store)
+        role_allows_business_query = any(
+            capability.name == BUSINESS_QUERY_CAPABILITY
+            for capability in ai_capability_registry.for_role(task_type)
+        )
+        # A conversational turn must not pay the cost of the business schema
+        # unless the current message actually asks for business facts. Role
+        # permissions remain unchanged; this only controls request context.
+        business_context_enabled = role_allows_business_query and (
+            task_type != "ai_chat"
+            or _looks_business_related(user_text)
+            or (
+                conversation.conversation_mode == "business"
+                and not _looks_explicitly_general(user_text)
+            )
+        )
+        conversation.conversation_mode = "business" if business_context_enabled else "general"
         context_started = monotonic()
         system_context = AISystemContextService(self.store).build(
             role=task_type,
@@ -423,6 +439,7 @@ class AIBusinessAgentService:
             period=conversation.period,
             ui_context=ui_context,
             compact_business_data=True,
+            include_business_environment=business_context_enabled,
         )
         timings["context_build_ms"] = (monotonic() - context_started) * 1000
         database_context = (
@@ -430,7 +447,9 @@ class AIBusinessAgentService:
             if isinstance(system_context.get("database"), dict)
             else {}
         )
-        full_schema = database_context.get("schema") or sql_service.database_schema()
+        full_schema = database_context.get("schema") if business_context_enabled else {}
+        if business_context_enabled and not full_schema:
+            full_schema = sql_service.database_schema()
         schema_for_prompt = (
             sql_service.compact_schema(full_schema)
             if isinstance(full_schema, dict)
@@ -440,6 +459,15 @@ class AIBusinessAgentService:
             capability.name for capability in ai_capability_registry.for_role(task_type)
         }
         capability_only = BUSINESS_QUERY_CAPABILITY in allowed_capabilities
+        model_context = dict(system_context)
+        if not business_context_enabled:
+            allowed_capabilities.discard(BUSINESS_QUERY_CAPABILITY)
+            model_context["capabilities"] = [
+                capability
+                for capability in model_context.get("capabilities", [])
+                if isinstance(capability, dict) and capability.get("name") != BUSINESS_QUERY_CAPABILITY
+            ]
+        business_protocol_enabled = capability_only and business_context_enabled
         logger.info(
             "AI_AGENT_START request_id=%s provider=%s model=%s organization=%s period=%s source=%s",
             request_id,
@@ -450,7 +478,7 @@ class AIBusinessAgentService:
             source_channel,
         )
         baseline = None
-        if build_baseline and capability_only:
+        if build_baseline and business_context_enabled:
             try:
                 baseline = tools_service.build_business_context(
                     user_text,
@@ -466,24 +494,35 @@ class AIBusinessAgentService:
                 }
         routing_message = (
             f"Active AI role: {task_type}. Provider/model are selected by role routing. "
-            "Use only the capabilities granted to this role."
-            if capability_only
-            else _routing_context(router)
+            "This is a conversational response; do not inspect business data unless the current user message asks for it."
+            if not business_context_enabled and task_type == "ai_chat"
+            else (
+                f"Active AI role: {task_type}. Provider/model are selected by role routing. "
+                "Use only the capabilities granted to this role."
+                if capability_only
+                else _routing_context(router)
+            )
         )
-        model_context = dict(system_context)
-        if capability_only:
+        if business_context_enabled:
             model_context["database"] = {
                 "kind": database_context.get("kind", "published_read_only_views"),
                 "schema": schema_for_prompt,
                 "semantic_environment": database_context.get("semantic_environment", {}),
             }
+        effective_system_prompt = system_prompt
+        if not business_context_enabled and task_type == "ai_chat":
+            effective_system_prompt = (
+                "Ты AI-ассистент AI Business OS. Ответь кратко и естественно на текущий вопрос пользователя. "
+                "Это обычный разговорный запрос, не используй бизнес-данные, SQL или внутренние capabilities. "
+                "Не упоминай внутреннюю архитектуру и отвечай на языке пользователя."
+            )
         context_message = (
             "AI BUSINESS OS SYSTEM CONTEXT. Use only the exact published database column names, "
             "role permissions, organization scope, and period in this context.\n"
             + json.dumps(model_context, ensure_ascii=False, default=str)
         )
         messages: list[dict[str, object]] = [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": effective_system_prompt},
             {"role": "system", "content": memory_prompt},
             {"role": "system", "content": routing_message},
             {"role": "system", "content": context_message},
@@ -493,7 +532,7 @@ class AIBusinessAgentService:
             ],
         ]
         timings["round_1_sections"] = {
-            "base_instructions": len(system_prompt),
+            "base_instructions": len(effective_system_prompt),
             "memory": len(memory_prompt),
             "routing": len(routing_message),
             "system_context": len(context_message),
@@ -522,7 +561,7 @@ class AIBusinessAgentService:
                 },
             )
         tools = _tool_definitions()
-        available_capabilities = system_context.get("capabilities", [])
+        available_capabilities = model_context.get("capabilities", [])
         messages.insert(
             3,
             {
@@ -533,8 +572,8 @@ class AIBusinessAgentService:
                     "Answer directly when no external fact is needed. When authoritative business facts are needed, "
                     + (
                         "independently use business.query before making factual claims. "
-                        if capability_only
-                        else "do not access business data because this role is not granted business.query. "
+                        if business_context_enabled
+                        else "do not access business data for this conversational turn. "
                     )
                     + "Do not query merely because "
                     "business terminology appears. Never invent business facts.\n"
@@ -550,7 +589,7 @@ class AIBusinessAgentService:
                     + "\nFor a listed capability, emit its documented internal request format; do not tell the user to run it.\n"
                     "The exact database schema and semantic environment are in AI BUSINESS OS SYSTEM CONTEXT above; do not infer or recreate them."
                     + " Prefer aggregation, filtering, ordering and LIMIT in SQL for top/count/sum questions; return only the required evidence rows."
-                    if capability_only
+                    if business_context_enabled
                     else "Business analytical schema is not available to this role."
                 ),
             },
@@ -727,7 +766,7 @@ class AIBusinessAgentService:
                             tool_choice="none" if capability_only else tool_choice,
                             model=model,
                             provider=provider,
-                            response_format={"type": "json_object"} if capability_only else None,
+                            response_format={"type": "json_object"} if business_protocol_enabled else None,
                             timeout_seconds=remaining_budget(),
                         )
                 else:
@@ -741,7 +780,7 @@ class AIBusinessAgentService:
                         tool_choice="none" if capability_only else tool_choice,
                         model=model,
                         provider=provider,
-                        response_format={"type": "json_object"} if capability_only else None,
+                        response_format={"type": "json_object"} if business_protocol_enabled else None,
                         timeout_seconds=remaining_before,
                     )
             except httpx.TimeoutException as error:
@@ -1486,6 +1525,17 @@ def _looks_business_related(text: str) -> bool:
     }
     normalized = text.lower()
     return any(term in normalized for term in business_terms)
+
+
+def _looks_explicitly_general(text: str) -> bool:
+    """Allow an explicit conversational switch away from a business thread."""
+
+    general_terms = (
+        "привет", "здравств", "спасибо", "благодар", "погод", "как дела",
+        "до свидания", "пока", "доброе утро", "добрый день", "добрый вечер",
+    )
+    normalized = text.strip().lower()
+    return any(term in normalized for term in general_terms)
 
 
 def _looks_analytical_request(text: str) -> bool:

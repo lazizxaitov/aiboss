@@ -254,6 +254,14 @@ const AI_THOUGHTS_STORAGE_KEY = "ai-business-os:dashboard-ai-thoughts:v1";
 
 type AIThought = { label: string; title: string; text: string };
 
+type BusinessDataModal = { text: string };
+
+function shouldShowBusinessDataModal(text: string): boolean {
+  const normalized = text.toLocaleLowerCase("ru-RU");
+  return /(покаж|показывай|вывед|отобраз|таблиц|список)/u.test(normalized)
+    && /(продаж|выруч|заказ|товар|склад|остат|клиент|менеджер|продав|визит|бизнес|kpi|sales|revenue)/u.test(normalized);
+}
+
 function loadCachedAIThoughts(): AIThought[] {
   if (typeof window === "undefined") return [];
   try {
@@ -1036,6 +1044,7 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
   const [chatError, setChatError] = useState<string | null>(null);
   const [analysisStatus, setAnalysisStatus] = useState<"idle" | "running" | "completed" | "failed">("idle");
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [businessDataModal, setBusinessDataModal] = useState<BusinessDataModal | null>(null);
   const messageInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const chatSurfaceRef = useRef<HTMLDivElement | null>(null);
@@ -1354,13 +1363,16 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
     setMessage("");
     setPendingAttachments([]);
     setIsGenerating(true);
+    let streamedAssistantText = "";
     try {
       await streamAiChat(
         history.map((item) => ({ role: item.role, content: buildMessageContent(item) })),
-        (content) =>
+        (content) => {
+          streamedAssistantText += content;
           setChatMessages((current) =>
             current.map((item) => (item.id === assistantId ? { ...item, text: item.text + content } : item)),
-          ),
+          );
+        },
         undefined,
         taskType,
         taskType === "ai_chat" ? activeModel.providerId || undefined : undefined,
@@ -1382,6 +1394,9 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
         businessState.selectedOrganizationIds[0] ?? null,
         businessState.period.preset,
       );
+      if (taskType === "ai_chat" && shouldShowBusinessDataModal(text) && streamedAssistantText.trim()) {
+        setBusinessDataModal({ text: streamedAssistantText.trim() });
+      }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Не удалось получить ответ AI.";
       setChatError(errorMessage);
@@ -1437,6 +1452,41 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
 
   return (
     <>
+      {businessDataModal ? (
+        <div
+          className="fixed inset-0 z-[75] flex items-center justify-center bg-[#17191d]/75 p-4 backdrop-blur-sm sm:p-8"
+          onPointerDown={() => setBusinessDataModal(null)}
+          role="presentation"
+        >
+          <div
+            className="flex max-h-[min(760px,calc(100dvh-2rem))] w-full max-w-4xl flex-col overflow-hidden rounded-[28px] border border-[#454a53] bg-[#2a2d33] shadow-[0_24px_80px_rgba(0,0,0,0.45)]"
+            onPointerDown={(event) => event.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Данные AI Business OS"
+          >
+            <div className="flex shrink-0 items-center justify-between gap-4 border-b border-[#454a53] px-5 py-4 sm:px-7">
+              <div className="min-w-0">
+                <p className="text-[10px] uppercase tracking-[0.25em] text-slate-500">Данные AI Business OS</p>
+                <h2 className="mt-1 truncate text-[20px] font-semibold tracking-[-0.04em] text-[#f4f7fb]">
+                  Результат запроса
+                </h2>
+                <p className="mt-1 text-[12px] text-slate-400">Ответ AI по текущему бизнес-запросу</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setBusinessDataModal(null)}
+                className="shrink-0 rounded-full border border-[#4a4e56] px-4 py-2 text-[10px] uppercase tracking-[0.16em] text-slate-300 transition hover:border-[#FFF27A]/50 hover:text-[#FFF27A]"
+              >
+                Свернуть
+              </button>
+            </div>
+            <div className="min-h-0 overflow-y-auto px-5 py-6 sm:px-8 sm:py-8">
+              <p className="whitespace-pre-wrap text-[20px] leading-8 text-[#f4f7fb] sm:text-[24px] sm:leading-9">{businessDataModal.text}</p>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {fullScreen ? (
         <div
           className="fixed inset-0 z-[55] bg-[#17191d]/80 backdrop-blur-sm"

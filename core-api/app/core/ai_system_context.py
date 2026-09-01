@@ -34,6 +34,7 @@ class AISystemContextService:
         period: str | None = None,
         ui_context: dict[str, Any] | None = None,
         compact_business_data: bool = False,
+        include_business_environment: bool = True,
     ) -> dict[str, Any]:
         now = datetime.now(UTC).astimezone(ZoneInfo(BUSINESS_TIMEZONE))
         week = resolve_business_period("this_week", now)
@@ -111,7 +112,9 @@ class AISystemContextService:
             },
             "business_context": business_context,
         }
-        if any(capability.name == "business.query" for capability in self.registry.for_role(role)):
+        if include_business_environment and any(
+            capability.name == "business.query" for capability in self.registry.for_role(role)
+        ):
             sql_service = AIReadOnlySQLService(self.store)
             schema = sql_service.database_schema()
             context["database"] = {

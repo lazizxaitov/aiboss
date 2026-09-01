@@ -30,12 +30,12 @@ def response(content):
     return SimpleNamespace(status_code=200, json=lambda: {"choices": [{"message": {"content": content}}]})
 
 
-def run(responses, text="Привет", store=None):
+def run(responses, text="Привет", store=None, conversation=None):
     async def execute():
         with patch("app.api.routes.ai_chat._hermes_request", new_callable=AsyncMock) as request:
             request.side_effect = responses
             result = await AIBusinessAgentService(store or object()).run(
-                conversation=AIConversationState(
+                conversation=conversation or AIConversationState(
                     organization_id=UUID("11111111-1111-1111-1111-111111111111"),
                     messages=[],
                 ),
@@ -60,6 +60,68 @@ def test_greeting_uses_one_model_call_without_database_query():
     assert request.await_count == 1
     assert result.runtime["timings"]["model_calls"] == 1
     assert result.runtime["timings"]["db_queries"] == 0
+
+
+def test_non_business_turn_does_not_build_business_schema():
+    class Store:
+        def __init__(self):
+            self.schema_calls = 0
+
+        def describe_ai_views(self):
+            self.schema_calls += 1
+            return {"ai_sales": {"columns": [{"name": "revenue"}]}}
+
+    store = Store()
+    result, request = run([response('{"type":"final","content":"Хорошего дня!"}')], "Спасибо", store)
+
+    assert result.final_text == "Хорошего дня!"
+    assert request.await_count == 1
+    assert store.schema_calls == 0
+    assert "business.query" not in request.await_args.kwargs["messages"][3]["content"]
+
+
+def test_business_conversation_keeps_context_for_ambiguous_follow_up():
+    conversation = AIConversationState(
+        organization_id=UUID("11111111-1111-1111-1111-111111111111"),
+        conversation_mode="business",
+        messages=[],
+    )
+
+    async def execute():
+        with patch("app.api.routes.ai_chat._hermes_request", new_callable=AsyncMock) as request:
+            request.return_value = response('{"type":"final","content":"Проверяю данные."}')
+            result = await AIBusinessAgentService(object()).run(
+                conversation=conversation,
+                user_text="А почему?",
+                source_channel="web",
+                task_type="ai_chat",
+                router=Router(),
+                tools_service=Tools(),
+                widget_builder=object(),
+                memory_prompt="",
+                system_prompt="agent",
+            )
+            return result, request
+
+    result, request = asyncio.run(execute())
+
+    assert result.final_text == "Проверяю данные."
+    request_messages = request.await_args.kwargs["messages"]
+    assert any("database" in str(message.get("content")) for message in request_messages)
+    assert conversation.conversation_mode == "business"
+
+
+def test_explicit_general_message_leaves_business_context():
+    conversation = AIConversationState(conversation_mode="business", messages=[])
+    result, request = run(
+        [response('{"type":"final","content":"Хорошего дня!"}')],
+        "Спасибо",
+        conversation=conversation,
+    )
+
+    assert result.final_text == "Хорошего дня!"
+    assert request.await_count == 1
+    assert conversation.conversation_mode == "general"
 
 
 def test_successful_business_query_stops_on_next_final():
