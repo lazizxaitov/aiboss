@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from logging import getLogger
 from threading import Lock
 from typing import Any, Literal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -196,6 +196,11 @@ class DashboardWidgetPlan(BaseModel):
     insight: str
     priority: Literal["low", "medium", "high", "critical"] = "medium"
     size: str | None = None
+    dimensions: list[str] = Field(default_factory=list)
+    comparison_context: dict[str, Any] = Field(default_factory=dict)
+    organization_ids: list[str] = Field(default_factory=list)
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    display_intent: str | None = None
 
 
 class DashboardPlan(BaseModel):
@@ -828,7 +833,7 @@ def apply_dashboard_plan(manifest: Any, run: AutoAnalyticsRun | None) -> Any:
         "detailed_list": DashboardWidgetType.TABLE,
     }
     generated = []
-    for index, planned in enumerate(run.structured_result.dashboard_plan.widgets):
+    for index, planned in enumerate(_validated_dashboard_widgets(run)):
         try:
             widget_type = type_aliases.get(planned.widget_type)
             if widget_type is None:
@@ -847,11 +852,106 @@ def apply_dashboard_plan(manifest: Any, run: AutoAnalyticsRun | None) -> Any:
             "summary": planned.insight,
             "entity_type": planned.entity,
             "metric_keys": [planned.metric] if planned.metric else source.metric_keys,
-            "payload": {**source.payload, "ai_context": {"reason": planned.reason, "insight": planned.insight, "comparison": planned.comparison, "priority": planned.priority, "filters": planned.filters}},
+            "signal_ids": [f"analysis:{run.analysis_id}:widget:{index}"],
+            "organization_ids": [UUID(item) for item in planned.organization_ids],
+            "payload": {
+                **_safe_presentation_payload(source.payload),
+                "ai_context": {
+                    "analysis_id": run.analysis_id,
+                    "generated_at": run.structured_result.generated_at.isoformat(),
+                    "reason": planned.reason,
+                    "insight": planned.insight,
+                    "comparison": planned.comparison,
+                    "comparison_context": planned.comparison_context,
+                    "priority": planned.priority,
+                    "filters": planned.filters,
+                    "dimensions": planned.dimensions,
+                    "evidence": _safe_evidence(planned.evidence),
+                },
+            },
         }))
     if generated:
         manifest.widgets = [*generated, *[widget for widget in manifest.widgets if widget.source_type != DashboardWidgetSourceType.AI_DYNAMIC]]
     return manifest
+
+
+_MAX_AI_PLAN_WIDGETS = 8
+_MAX_AI_PLAN_TEXT = 1200
+_EXECUTABLE_PLAN_MARKERS = ("<script", "javascript:", "data:text/html", "execute_js")
+
+
+def _validated_dashboard_widgets(run: AutoAnalyticsRun) -> list[DashboardWidgetPlan]:
+    """Return only evidence-backed, bounded plan entries safe for presentation."""
+
+    from app.core.analytics.models import DashboardWidgetType
+
+    plan = run.structured_result.dashboard_plan if run.structured_result else None
+    if plan is None:
+        return []
+    allowed_scope = {str(item) for item in run.organization_scope}
+    validated: list[DashboardWidgetPlan] = []
+    for planned in plan.widgets[:_MAX_AI_PLAN_WIDGETS]:
+        if planned.widget_type not in {
+            *(item.value for item in DashboardWidgetType),
+            "area", "progress", "gauge", "comparison", "ranking", "detailed_list",
+        }:
+            continue
+        if not planned.title.strip() or len(planned.title) > _MAX_AI_PLAN_TEXT:
+            continue
+        if not planned.reason.strip() or len(planned.reason) > _MAX_AI_PLAN_TEXT:
+            continue
+        if not planned.insight.strip() or len(planned.insight) > _MAX_AI_PLAN_TEXT:
+            continue
+        if any(_contains_executable_text(value) for value in (planned.title, planned.reason, planned.insight)):
+            continue
+        if not planned.evidence:
+            # A declarative chart without a persisted evidence reference is not
+            # safe to render, even when its visualization type is recognized.
+            continue
+        if any(not isinstance(item, dict) for item in planned.evidence):
+            continue
+        if planned.organization_ids and (
+            not allowed_scope or not set(planned.organization_ids).issubset(allowed_scope)
+        ):
+            continue
+        try:
+            [UUID(item) for item in planned.organization_ids]
+        except (ValueError, TypeError):
+            continue
+        if any(
+            not isinstance(value, str) or len(value) > 200 or _contains_executable_text(value)
+            for value in [*planned.dimensions, *( [planned.metric] if planned.metric else [] )]
+        ):
+            continue
+        validated.append(planned)
+    return validated
+
+
+def _contains_executable_text(value: str) -> bool:
+    lowered = value.casefold()
+    return any(marker in lowered for marker in _EXECUTABLE_PLAN_MARKERS)
+
+
+def _safe_evidence(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Strip executable/query instructions before evidence reaches the browser."""
+
+    blocked = {"sql", "query", "command", "url", "href", "route"}
+
+    def clean(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: clean(item) for key, item in value.items() if str(key).casefold() not in blocked}
+        if isinstance(value, list):
+            return [clean(item) for item in value[:20]]
+        return value
+
+    return [clean(item) for item in evidence[:10]]
+
+
+def _safe_presentation_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    safe = _safe_evidence([payload])[0]
+    return safe if isinstance(safe, dict) else {}
 
 
 def _saved_analysis_card(item: Any, card_type: str) -> dict[str, Any]:

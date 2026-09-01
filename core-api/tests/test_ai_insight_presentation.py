@@ -13,6 +13,9 @@ from app.core.auto_business_analytics import (
     _analytical_content_count,
     _normalize_ai_result_payload,
     _unwrap_analytics_result,
+    _validated_dashboard_widgets,
+    DashboardPlan,
+    DashboardWidgetPlan,
 )
 from app.core.data_layer.entities import AppSetting
 from app.core.data_layer.service import InMemoryCoreDataLayer
@@ -134,6 +137,40 @@ def test_auto_analysis_normalizes_provider_result_variants_without_fake_metrics(
     assert result.top_opportunities == ["Вернуть клиентов"]
     assert result.dashboard_plan is None
     assert _analytical_content_count(result) == 2
+
+
+def test_dashboard_plan_requires_safe_type_scope_and_evidence():
+    run = _completed_run()
+    organization_id = "00000000-0000-0000-0000-000000000001"
+    run.organization_scope = [organization_id]
+    run.structured_result.dashboard_plan = DashboardPlan(widgets=[
+        DashboardWidgetPlan(
+            widget_type="bar_chart",
+            title="Продажи по продавцам",
+            reason="Подтверждённое сравнение",
+            insight="Показать ranking по результатам запроса.",
+            organization_ids=[organization_id],
+            evidence=[{"dataset": "ai_sales", "row_count": 2, "sql": "SELECT secret"}],
+        ),
+        DashboardWidgetPlan(
+            widget_type="execute_js",
+            title="Нельзя",
+            reason="Нельзя",
+            insight="Нельзя",
+            evidence=[{"dataset": "ai_sales"}],
+        ),
+        DashboardWidgetPlan(
+            widget_type="line_chart",
+            title="Без доказательств",
+            reason="Причина",
+            insight="Нет evidence",
+        ),
+    ])
+
+    widgets = _validated_dashboard_widgets(run)
+
+    assert len(widgets) == 1
+    assert widgets[0].widget_type == "bar_chart"
 
 
 def test_auto_analysis_unwraps_fenced_and_final_envelopes():
