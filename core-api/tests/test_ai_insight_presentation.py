@@ -1,4 +1,6 @@
+import asyncio
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock, patch
 
 from app.api.routes.ai_insights import get_dashboard_insights
 from app.core.ai_insight_presentation import AIInsightPresentationService
@@ -71,3 +73,30 @@ def test_running_dashboard_state_is_explicit():
 
     assert payload["status"] == "running"
     assert payload["message"] == "ИИ анализирует бизнес..."
+
+
+def test_startup_analysis_skips_when_canonical_data_is_not_ready():
+    store = InMemoryCoreDataLayer()
+    service = AutoBusinessAnalyticsService(store)
+
+    with patch.object(store, "list_canonical_organizations", return_value=[]), patch.object(
+        service, "run_widget_if_needed", new=AsyncMock()
+    ) as run_widget:
+        result = asyncio.run(service.run_startup_if_needed())
+
+    assert result is None
+    run_widget.assert_not_awaited()
+
+
+def test_startup_analysis_reuses_existing_widget_flow_when_data_is_ready():
+    store = InMemoryCoreDataLayer()
+    service = AutoBusinessAnalyticsService(store)
+    expected = _completed_run()
+
+    with patch.object(store, "list_canonical_organizations", return_value=[object()]), patch.object(
+        service, "run_widget_if_needed", new=AsyncMock(return_value=expected)
+    ) as run_widget:
+        result = asyncio.run(service.run_startup_if_needed())
+
+    assert result is expected
+    run_widget.assert_awaited_once()

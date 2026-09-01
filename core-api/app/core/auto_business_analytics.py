@@ -323,6 +323,14 @@ class AutoBusinessAnalyticsService:
         )
         self._save(run)
         logger.info(
+            "AI_ANALYTICS_RUN_START run_id=%s role=business_analytics provider=%s model=%s organization_scope=%s period=%s",
+            run.analysis_id,
+            run.provider_id,
+            run.model_id,
+            run.organization_scope,
+            run.period,
+        )
+        logger.info(
             "BUSINESS_ANALYSIS_START analysis_id=%s provider=%s model=%s organization=%s period=%s trigger=scheduled_or_sync",
             run.analysis_id,
             run.provider_id,
@@ -365,6 +373,12 @@ class AutoBusinessAnalyticsService:
                     role="user", content=instruction, source_channel=AIConversationChannel.WEB,
                 )],
             )
+            logger.info(
+                "AI_ANALYTICS_MODEL_REQUEST run_id=%s role=business_analytics provider=%s model=%s",
+                run.analysis_id,
+                run.provider_id,
+                run.model_id,
+            )
             agent_result = await AIBusinessAgentService(self.store).run(
                 conversation=conversation,
                 user_text=instruction,
@@ -386,8 +400,20 @@ class AutoBusinessAnalyticsService:
                 build_baseline=False,
                 tool_call_budget={"widget": 4, "daily": 6, "deep": 12}[mode],
             )
-            if int(agent_result.runtime.get("successful_business_queries") or 0) < 1:
+            successful_queries = int(agent_result.runtime.get("successful_business_queries") or 0)
+            logger.info(
+                "AI_ANALYTICS_CAPABILITY_EXECUTED run_id=%s capability_calls=%s successful_business_queries=%s",
+                run.analysis_id,
+                agent_result.tool_calls,
+                successful_queries,
+            )
+            if successful_queries < 1:
                 raise ValueError("Business Analytics не получила подтверждённые данные из business.query.")
+            logger.info(
+                "AI_ANALYTICS_EVIDENCE_READY run_id=%s successful_business_queries=%s",
+                run.analysis_id,
+                successful_queries,
+            )
             raw = agent_result.final_text.strip()
             if raw.startswith("```"):
                 raw = "\n".join(raw.splitlines()[1:-1]).strip()
@@ -434,6 +460,18 @@ class AutoBusinessAnalyticsService:
                 model_id=run.model_id,
                 next_retry_at=datetime.now(UTC) + timedelta(minutes=5),
             ))
+            logger.info(
+                "AI_ANALYTICS_RUN_FAILED run_id=%s role=business_analytics provider=%s model=%s "
+                "organization_scope=%s period=%s capability_calls=%s successful_business_queries=%s error=%s",
+                run.analysis_id,
+                run.provider_id,
+                run.model_id,
+                run.organization_scope,
+                run.period,
+                len(run.structured_result.queries_executed) if run.structured_result else 0,
+                0,
+                str(run.error)[:300],
+            )
         else:
             self._save_status(AutoAnalyticsStatus(
                 status="completed",
@@ -442,7 +480,31 @@ class AutoBusinessAnalyticsService:
                 provider_id=run.provider_id,
                 model_id=run.model_id,
             ))
-        return self._save(run)
+        saved = self._save(run)
+        successful_queries = (
+            len(saved.structured_result.queries_executed)
+            if saved.structured_result is not None
+            else 0
+        )
+        logger.info(
+            "AI_ANALYTICS_PERSISTED run_id=%s status=%s insight_count=%s successful_business_queries=%s",
+            saved.analysis_id,
+            saved.status,
+            len(saved.structured_result.findings) if saved.structured_result else 0,
+            successful_queries,
+        )
+        logger.info(
+            "AI_ANALYTICS_RUN_DONE run_id=%s status=%s provider=%s model=%s capability_calls=%s successful_business_queries=%s insight_count=%s error=%s",
+            saved.analysis_id,
+            saved.status,
+            saved.provider_id,
+            saved.model_id,
+            successful_queries,
+            successful_queries,
+            len(saved.structured_result.findings) if saved.structured_result else 0,
+            saved.error,
+        )
+        return saved
 
     def _data_version(self) -> str | None:
         """Return a stable version of configured SmartUp data for AI invalidation."""
@@ -465,6 +527,23 @@ class AutoBusinessAnalyticsService:
         if not list(self.store.list_canonical_organizations()):
             return None
         return await self.run("widget")
+
+    async def run_startup_if_needed(self) -> AutoAnalyticsRun | None:
+        """Run one non-blocking startup refresh when Core data is already usable.
+
+        SmartUp remains responsible for importing data and triggering refreshes
+        after sync. This one-shot check covers restarts where data already exists
+        or where the sync service was disabled, without adding another scheduler.
+        """
+
+        config = AITaskRouter(self.store).get_config()
+        if not config.business_analytics_auto_enabled:
+            logger.info("AI_ANALYTICS_RUN_SKIPPED reason=disabled")
+            return None
+        if not list(self.store.list_canonical_organizations()):
+            logger.info("AI_ANALYTICS_RUN_SKIPPED reason=no_canonical_data")
+            return None
+        return await self.run_widget_if_needed()
 
 
 def _queries_from_agent_messages(messages: list[dict[str, object]]) -> list[dict[str, Any]]:

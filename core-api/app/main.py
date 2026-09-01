@@ -1,5 +1,6 @@
 """FastAPI application entrypoint."""
 
+import asyncio
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -11,12 +12,24 @@ from fastapi.responses import JSONResponse
 
 from app.api.router import api_router
 from app.api.routes.auth import _session
+from app.core.auto_business_analytics import AutoBusinessAnalyticsService
 from app.core.config import settings
 from app.core.data_layer.factory import get_core_store
 from app.integrations.smartup.bootstrap import bootstrap_smartup_organizations_from_env
 from app.integrations.smartup.live_sync import SmartUpLiveSyncService
 
 logger = getLogger(__name__)
+
+
+async def _run_startup_auto_analysis(store) -> None:
+    """Refresh AI insights once from already materialized Core data."""
+
+    try:
+        await AutoBusinessAnalyticsService(store).run_startup_if_needed()
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:  # noqa: BLE001 - analytics must not affect readiness
+        logger.exception("AI_ANALYTICS_RUN_FAILED stage=startup error=%s", str(error)[:300])
 
 
 def configure_application_logging() -> None:
@@ -48,7 +61,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     live_sync = SmartUpLiveSyncService(store)
     live_sync.start()
     app.state.smartup_live_sync = live_sync
+    auto_analysis_task = asyncio.create_task(_run_startup_auto_analysis(store))
+    app.state.auto_analysis_task = auto_analysis_task
     yield
+    auto_analysis_task.cancel()
+    try:
+        await auto_analysis_task
+    except asyncio.CancelledError:
+        pass
     live_sync.stop()
 
 
