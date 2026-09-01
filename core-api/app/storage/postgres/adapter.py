@@ -89,7 +89,8 @@ from app.integrations.smartup.models import (
     SmartUpRawRecord,
     SyncCheckpoint,
 )
-from app.core.ai_readonly_sql import AI_ANALYTICAL_VIEW_DDL
+from app.core.ai_readonly_sql import AI_ANALYTICAL_VIEW_DDL, ALLOWED_VIEWS
+from app.integrations.meta.schema import META_DDL
 from app.storage.postgres.ddl import render_core_data_layer_ddl
 
 Row = dict[str, Any]
@@ -164,6 +165,7 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
         self._ensure_smartup_raw_record_compatibility()
         self._ensure_normalized_entity_compatibility()
         self._execute_many(render_core_data_layer_ddl())
+        self._execute_many(list(META_DDL))
         self._execute_many(list(AI_ANALYTICAL_VIEW_DDL))
 
     def _ensure_smartup_organization_compatibility(self) -> None:
@@ -1173,7 +1175,11 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
             CanonicalCustomerReturnItem,
             organization_id,
         )
-        return rows if organization_id is not None else deduplicate_cross_organization_return_items(rows)
+        return (
+            rows
+            if organization_id is not None
+            else deduplicate_cross_organization_return_items(rows)
+        )
 
     def get_canonical_inventory_balance(
         self,
@@ -3357,7 +3363,10 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
                     result = [dict(row) for row in rows]
                 else:
                     description = getattr(cursor, "description", None) or ()
-                    result = [dict(zip([column[0] for column in description], row, strict=False)) for row in rows]
+                    result = [
+                        dict(zip([column[0] for column in description], row, strict=False))
+                        for row in rows
+                    ]
             connection.rollback()
             return result
         except Exception:
@@ -3377,7 +3386,7 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
               AND table_name = ANY(%s)
             ORDER BY table_name, ordinal_position
             """,
-            (["ai_sales", "ai_sale_items", "ai_orders", "ai_products", "ai_customers", "ai_returns", "ai_visits", "ai_inventory", "ai_finance", "ai_organizations"],),
+            (list(ALLOWED_VIEWS),),
         )
         schema: dict[str, Any] = {}
         for row in rows:
@@ -3385,12 +3394,44 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
             column = str(row.get("column_name") or "")
             if not view or not column:
                 continue
-            schema.setdefault(view, {"columns": []})["columns"].append({
-                "name": column,
-                "type": str(row.get("data_type") or row.get("udt_name") or "unknown"),
-                "nullable": str(row.get("is_nullable") or "YES") == "YES",
-            })
+            schema.setdefault(view, {"columns": []})["columns"].append(
+                {
+                    "name": column,
+                    "type": str(row.get("data_type") or row.get("udt_name") or "unknown"),
+                    "nullable": str(row.get("is_nullable") or "YES") == "YES",
+                }
+            )
         return schema
+
+    def upsert_meta_record(
+        self, table: str, values: Mapping[str, Any], keys: tuple[str, ...]
+    ) -> None:
+        from app.integrations.meta.schema import META_TABLES
+
+        if table not in META_TABLES or not set(values).issubset(META_TABLES[table]):
+            raise ValueError("Unsupported Meta table or column")
+        columns = list(values)
+        placeholders = ", ".join(["%s"] * len(columns))
+        conflict = ", ".join(keys)
+        updates = ", ".join(
+            f"{column}=EXCLUDED.{column}" for column in columns if column not in keys
+        )
+        if not updates:
+            updates = f"{keys[0]}={table}.{keys[0]}"
+        sql = f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders}) ON CONFLICT ({conflict}) DO UPDATE SET {updates}"
+        self._execute(sql, self._adapt_params(values[column] for column in columns))
+
+    def list_meta_records(self, table: str, organization_id: str | None = None) -> list[Row]:
+        from app.integrations.meta.schema import META_TABLES
+
+        if table not in META_TABLES:
+            raise ValueError("Unsupported Meta table")
+        sql = f"SELECT * FROM {table}"
+        params: tuple[Any, ...] = ()
+        if "organization_id" in META_TABLES[table] and organization_id:
+            sql += " WHERE organization_id = %s"
+            params = (organization_id,)
+        return self._fetch_rows(sql, params)
 
     def _execute_many(self, statements: list[str]) -> None:
         connection = self.connection_factory()

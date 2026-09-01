@@ -78,6 +78,22 @@ export type DashboardOverviewFilters = {
   channel?: "meta_ads" | "youtube" | "telegram" | "other";
 };
 
+export type MetaResource = { id?: string; resource_type: string; external_id: string; name?: string | null; username?: string | null; currency?: string | null; timezone?: string | null };
+export type MetaStatus = { status: string; configured: boolean; last_success_at?: string | null; last_error?: string | null; resources: MetaResource[]; mappings: Array<{ organization_id: string; resource_type: string; external_id: string }> };
+
+export async function getMetaStatus(): Promise<MetaStatus> {
+  return requestJson<MetaStatus>("/api/v1/meta/status");
+}
+export async function connectMeta(): Promise<MetaStatus> {
+  return requestJson<MetaStatus>("/api/v1/meta/connect", { method: "POST" });
+}
+export async function mapMetaResource(payload: { organization_id: string; resource_type: string; external_id: string; display_name?: string }): Promise<unknown> {
+  return requestJson<unknown>("/api/v1/meta/mappings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+}
+export async function syncMeta(mode: "incremental" | "backfill" = "incremental", backfillDays = 7): Promise<MetaStatus & { sync_status?: string }> {
+  return requestJson<MetaStatus & { sync_status?: string }>("/api/v1/meta/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode, backfill_days: backfillDays }) });
+}
+
 export type AnalyticsDataStatus =
   | "AVAILABLE"
   | "PARTIAL"

@@ -14,6 +14,7 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from app.core.ai_readonly_sql import AI_ANALYTICAL_VIEW_SQLITE_DDL
+from app.integrations.meta.schema import META_SQLITE_DDL
 from app.core.data_layer.schema import CORE_DATA_LAYER_SCHEMA_V2
 from app.storage.postgres.adapter import PostgresCoreStore, Row
 from app.storage.sqlite.ddl import render_core_data_layer_ddl
@@ -124,6 +125,7 @@ class SQLiteCoreStore(PostgresCoreStore):
         """Create core tables and indexes if they do not exist."""
 
         self._execute_many(render_core_data_layer_ddl())
+        self._execute_many(list(META_SQLITE_DDL))
         self._execute_many(list(AI_ANALYTICAL_VIEW_SQLITE_DDL))
 
     def execute_ai_readonly_sql(
@@ -149,11 +151,13 @@ class SQLiteCoreStore(PostgresCoreStore):
                 cursor.execute(f"PRAGMA table_info({view})")
                 columns = []
                 for row in cursor.fetchall():
-                    columns.append({
-                        "name": str(row.get("name") or ""),
-                        "type": str(row.get("type") or "unknown"),
-                        "nullable": not bool(row.get("notnull")),
-                    })
+                    columns.append(
+                        {
+                            "name": str(row.get("name") or ""),
+                            "type": str(row.get("type") or "unknown"),
+                            "nullable": not bool(row.get("notnull")),
+                        }
+                    )
                 if columns:
                     schema[view] = {"columns": columns}
         return schema

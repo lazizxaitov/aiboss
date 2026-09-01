@@ -130,6 +130,7 @@ class InMemoryCoreDataLayer(CoreDataReader, CoreDataWriter):
     canonical_product_prices: dict[UUID, CanonicalProductPrice] = field(default_factory=dict)
     canonical_sales_reps: dict[UUID, CanonicalSalesRep] = field(default_factory=dict)
     canonical_working_zones: dict[UUID, CanonicalWorkingZone] = field(default_factory=dict)
+    meta_records: dict[tuple[str, str], dict[str, object]] = field(default_factory=dict)
     canonical_visits: dict[UUID, CanonicalVisit] = field(default_factory=dict)
     canonical_visit_stocks: dict[UUID, CanonicalVisitStock] = field(default_factory=dict)
     canonical_visit_quiz_answers: dict[UUID, CanonicalVisitQuizAnswer] = field(default_factory=dict)
@@ -793,7 +794,8 @@ class InMemoryCoreDataLayer(CoreDataReader, CoreDataWriter):
         from app.core.data_layer.visit_identity import deduplicate_cross_organization_returns
 
         rows = self._filter_by_organization(
-            self.canonical_customer_returns.values(), organization_id,
+            self.canonical_customer_returns.values(),
+            organization_id,
         )
         return deduplicate_cross_organization_returns(rows)
 
@@ -809,11 +811,15 @@ class InMemoryCoreDataLayer(CoreDataReader, CoreDataWriter):
     ) -> Iterable[CanonicalCustomerReturnItem]:
         from app.core.data_layer.visit_identity import deduplicate_cross_organization_return_items
 
-        return self._filter_by_organization(
-            self.canonical_customer_return_items.values(),
-            organization_id,
-        ) if organization_id is not None else deduplicate_cross_organization_return_items(
-            self.canonical_customer_return_items.values(),
+        return (
+            self._filter_by_organization(
+                self.canonical_customer_return_items.values(),
+                organization_id,
+            )
+            if organization_id is not None
+            else deduplicate_cross_organization_return_items(
+                self.canonical_customer_return_items.values(),
+            )
         )
 
     def get_canonical_inventory_balance(
@@ -1474,3 +1480,17 @@ class InMemoryCoreDataLayer(CoreDataReader, CoreDataWriter):
     ) -> CanonicalCrossOrgMovementItem:
         self.canonical_cross_org_movement_items[movement_item.id] = movement_item
         return movement_item
+
+    def upsert_meta_record(
+        self, table: str, values: dict[str, object], keys: tuple[str, ...]
+    ) -> None:
+        identity = "|".join(str(values.get(key, "")) for key in keys)
+        self.meta_records[(table, identity)] = dict(values)
+
+    def list_meta_records(
+        self, table: str, organization_id: str | None = None
+    ) -> list[dict[str, object]]:
+        rows = [row for (row_table, _), row in self.meta_records.items() if row_table == table]
+        if organization_id:
+            rows = [row for row in rows if str(row.get("organization_id")) == organization_id]
+        return rows

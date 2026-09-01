@@ -8,6 +8,7 @@ from app.core.ai_readonly_sql import (
     AI_ANALYTICAL_VIEW_SQLITE_DDL,
     AIReadOnlyQueryError,
     AIReadOnlySQLService,
+    ALLOWED_VIEWS,
 )
 from app.storage.sqlite.adapter import SQLiteCoreStore
 
@@ -80,7 +81,10 @@ def test_sql_research_never_allows_timeout_above_safe_default():
 def test_sql_research_rejects_organization_outside_accessible_scope():
     class OrganizationStore(FakeStore):
         def list_canonical_organizations(self):
-            return [SimpleNamespace(organization_id="org-a"), SimpleNamespace(organization_id="org-b")]
+            return [
+                SimpleNamespace(organization_id="org-a"),
+                SimpleNamespace(organization_id="org-b"),
+            ]
 
     with pytest.raises(AIReadOnlyQueryError, match="недоступна"):
         AIReadOnlySQLService(OrganizationStore()).execute(
@@ -90,12 +94,18 @@ def test_sql_research_rejects_organization_outside_accessible_scope():
 
 
 def test_database_specific_view_ddl_is_idempotent():
-    assert len(AI_ANALYTICAL_VIEW_DDL) == 11
+    assert len(AI_ANALYTICAL_VIEW_DDL) == len(ALLOWED_VIEWS) + 1
     assert AI_ANALYTICAL_VIEW_DDL[0].startswith("DROP VIEW IF EXISTS ai_")
     assert all(statement.startswith("CREATE VIEW ai_") for statement in AI_ANALYTICAL_VIEW_DDL[1:])
-    assert len(AI_ANALYTICAL_VIEW_SQLITE_DDL) == 20
-    assert all(statement.startswith("DROP VIEW IF EXISTS ai_") for statement in AI_ANALYTICAL_VIEW_SQLITE_DDL[:10])
-    assert all(statement.startswith("CREATE VIEW ai_") for statement in AI_ANALYTICAL_VIEW_SQLITE_DDL[10:])
+    assert len(AI_ANALYTICAL_VIEW_SQLITE_DDL) == len(ALLOWED_VIEWS) * 2
+    assert all(
+        statement.startswith("DROP VIEW IF EXISTS ai_")
+        for statement in AI_ANALYTICAL_VIEW_SQLITE_DDL[: len(ALLOWED_VIEWS)]
+    )
+    assert all(
+        statement.startswith("CREATE VIEW ai_")
+        for statement in AI_ANALYTICAL_VIEW_SQLITE_DDL[len(ALLOWED_VIEWS) :]
+    )
 
 
 def test_sql_research_uses_the_published_sqlite_view_schema():
@@ -106,17 +116,33 @@ def test_sql_research_uses_the_published_sqlite_view_schema():
 
     assert schema["ai_sales"]["columns"]
     assert {column["name"] for column in schema["ai_sales"]["columns"]} == {
-        "organization_id", "id", "sale_id", "sale_at", "closed_at", "sales_rep_id",
-        "sales_rep_external_id", "sales_rep_name", "customer_id", "customer_external_id",
-        "customer_name", "total_amount", "sold_quantity", "returned_quantity", "order_id",
-        "deal_id", "normalized_status", "currency_code",
+        "organization_id",
+        "id",
+        "sale_id",
+        "sale_at",
+        "closed_at",
+        "sales_rep_id",
+        "sales_rep_external_id",
+        "sales_rep_name",
+        "customer_id",
+        "customer_external_id",
+        "customer_name",
+        "total_amount",
+        "sold_quantity",
+        "returned_quantity",
+        "order_id",
+        "deal_id",
+        "normalized_status",
+        "currency_code",
     }
 
 
 def test_semantic_environment_is_grounded_in_published_columns():
     class SchemaStore:
         def describe_ai_views(self):
-            return {"ai_sales": {"columns": [{"name": "organization_id"}, {"name": "total_amount"}]}}
+            return {
+                "ai_sales": {"columns": [{"name": "organization_id"}, {"name": "total_amount"}]}
+            }
 
     environment = AIReadOnlySQLService(SchemaStore()).semantic_environment()
     sales = next(item for item in environment["datasets"] if item["name"] == "ai_sales")
@@ -146,8 +172,27 @@ def test_semantic_graph_covers_published_domains_and_compound_identity():
     datasets = {item["name"]: item for item in environment["datasets"]}
 
     assert set(datasets) == {
-        "ai_organizations", "ai_sales", "ai_sale_items", "ai_orders", "ai_products",
-        "ai_customers", "ai_returns", "ai_visits", "ai_inventory", "ai_finance",
+        "ai_organizations",
+        "ai_sales",
+        "ai_sale_items",
+        "ai_orders",
+        "ai_products",
+        "ai_customers",
+        "ai_returns",
+        "ai_visits",
+        "ai_inventory",
+        "ai_finance",
+    } | set(ALLOWED_VIEWS) - {
+        "ai_organizations",
+        "ai_sales",
+        "ai_sale_items",
+        "ai_orders",
+        "ai_products",
+        "ai_customers",
+        "ai_returns",
+        "ai_visits",
+        "ai_inventory",
+        "ai_finance",
     }
     assert datasets["ai_sales"]["identity"] == ["organization_id", "id"]
     assert "total_amount" in datasets["ai_sales"]["measures"]
@@ -160,7 +205,9 @@ def test_semantic_graph_covers_published_domains_and_compound_identity():
         and relationship["organization_scope"].startswith("compound organization_id")
         for relationship in environment["relationships"]
     )
-    assert all("canonical_" not in str(relationship) for relationship in environment["relationships"])
+    assert all(
+        "canonical_" not in str(relationship) for relationship in environment["relationships"]
+    )
 
 
 def test_schema_introspection_is_reused_for_one_store():
@@ -193,10 +240,7 @@ def test_semantic_environment_publishes_confirmed_cross_domain_links_and_visit_d
             }
 
     environment = AIReadOnlySQLService(SchemaStore()).semantic_environment()
-    assert {
-        (item["from"], item["to"])
-        for item in environment["relationships"]
-    } == {
+    assert {(item["from"], item["to"]) for item in environment["relationships"]} == {
         ("ai_sales.organization_id", "ai_organizations.organization_id"),
         ("ai_sales.(organization_id,id)", "ai_sale_items.(organization_id,sale_id)"),
     }
@@ -227,7 +271,11 @@ def test_sales_view_resolves_rep_name_within_organization_scope():
             ('org-b', 'sale-row-b', 'sale-b', '2026-08-30', NULL, NULL, 'seller-1', NULL, NULL, NULL, 200, 1, 0, NULL, NULL, 'realized', 'UZS');
         """
     )
-    sales_view = next(statement for statement in AI_ANALYTICAL_VIEW_SQLITE_DDL if "CREATE VIEW ai_sales AS" in statement)
+    sales_view = next(
+        statement
+        for statement in AI_ANALYTICAL_VIEW_SQLITE_DDL
+        if "CREATE VIEW ai_sales AS" in statement
+    )
     connection.execute(sales_view)
 
     rows = connection.execute(
@@ -237,12 +285,15 @@ def test_sales_view_resolves_rep_name_within_organization_scope():
     assert rows == [("org-a", "Seller A")]
 
 
-@pytest.mark.parametrize("query", [
-    "UPDATE ai_sales SET total_amount = 1",
-    "SELECT * FROM canonical_sales",
-    "SELECT * FROM ai_sales; SELECT * FROM ai_orders",
-    "SELECT * FROM ai_sales JOIN ai_orders ON true",
-])
+@pytest.mark.parametrize(
+    "query",
+    [
+        "UPDATE ai_sales SET total_amount = 1",
+        "SELECT * FROM canonical_sales",
+        "SELECT * FROM ai_sales; SELECT * FROM ai_orders",
+        "SELECT * FROM ai_sales JOIN ai_orders ON true",
+    ],
+)
 def test_sql_research_rejects_unsafe_or_non_analytical_queries(query):
     with pytest.raises(AIReadOnlyQueryError):
         AIReadOnlySQLService(SimpleNamespace()).validate(query)

@@ -9,6 +9,7 @@ from app.api.routes.ai_insights import router as ai_insights_router
 from app.api.routes.ai_routing import providers_router as ai_providers_router
 from app.api.routes.ai_routing import router as ai_routing_router
 from app.api.routes.analytics import router as analytics_router
+from app.api.routes.meta import router as meta_router
 from app.api.routes.context import router as context_router
 from app.api.routes.customers import router as customers_router
 from app.api.routes.dashboard import router as dashboard_router
@@ -30,6 +31,7 @@ api_router = APIRouter()
 api_router.include_router(context_router, tags=["Context"])
 api_router.include_router(health_router, tags=["Health"])
 api_router.include_router(analytics_router, tags=["Analytics"])
+api_router.include_router(meta_router, tags=["Meta Marketing"])
 api_router.include_router(ai_analytics_router, tags=["AI Analytics"])
 api_router.include_router(auth_router, tags=["Auth"])
 api_router.include_router(ai_chat_router, tags=["AI Chat"])
