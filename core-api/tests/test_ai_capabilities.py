@@ -3,7 +3,10 @@ from types import SimpleNamespace
 
 from app.core.ai_capabilities import ai_capability_registry
 from app.core.ai_system_context import AISystemContextService
-from app.core.organization_context import business_week_bounds
+from app.core.analytics.engine import _build_period_window
+from app.core.analytics.models import AnalyticsPeriodPreset, AnalyticsQuery
+from app.core.hermes_tools import HermesBusinessTools
+from app.core.organization_context import business_week_bounds, resolve_business_period
 
 
 def test_business_roles_receive_read_only_business_query_capability():
@@ -67,3 +70,19 @@ def test_business_week_resolver_is_timezone_stable_at_monday_boundary():
 
     assert start.isoformat() == "2026-08-26T00:00:00+05:00"
     assert end.isoformat() == "2026-09-01T11:00:00+05:00"
+
+
+def test_all_business_week_paths_use_the_same_rolling_seven_day_window():
+    fixed_now = datetime(2026, 9, 1, 6, 0, tzinfo=UTC)
+    shared = resolve_business_period("this_week", fixed_now)
+    query = AnalyticsQuery(period=AnalyticsPeriodPreset.LAST_7_DAYS)
+    analytics_window = _build_period_window(query, fixed_now)
+    hermes_start, hermes_end = HermesBusinessTools._week_dates(0, fixed_now)
+
+    expected_start = "2026-08-26T00:00:00+05:00"
+    expected_end = "2026-09-01T11:00:00+05:00"
+    assert shared.start.isoformat() == expected_start
+    assert shared.end.isoformat() == expected_end
+    assert analytics_window.current_start.isoformat() == expected_start
+    assert analytics_window.current_end.isoformat() == expected_end
+    assert (hermes_start.isoformat(), hermes_end.isoformat()) == ("2026-08-26", "2026-09-01")

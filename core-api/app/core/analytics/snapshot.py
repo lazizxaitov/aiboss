@@ -6,6 +6,7 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 from uuid import UUID
 
 from app.core.analytics.models import (
@@ -536,8 +537,14 @@ class BusinessAnalyticsSnapshotService:
         )
 
 
-def _period_window(period_key: str) -> AnalyticsPeriodWindow:
-    now = datetime.now(UTC)
+def _period_window(
+    period_key: str,
+    now: datetime | None = None,
+) -> AnalyticsPeriodWindow:
+    from app.core.organization_context import BUSINESS_TIMEZONE, resolve_business_period
+
+    timezone = ZoneInfo(BUSINESS_TIMEZONE)
+    now = (now or datetime.now(UTC)).astimezone(timezone)
     key = (period_key or "12m").strip().casefold()
     if key == "all":
         return AnalyticsPeriodWindow(
@@ -571,6 +578,19 @@ def _period_window(period_key: str) -> AnalyticsPeriodWindow:
             previous_end=current_start,
             label="за 90 дней",
             comparison_label="к предыдущим 90 дням",
+        )
+
+    if key in {"this_week", "current_week", "7d", "last_7_days", "эта_неделя", "текущая_неделя"}:
+        bounds = resolve_business_period("this_week", now)
+        previous_end = bounds.start - timedelta(microseconds=1)
+        previous_start = previous_end - timedelta(days=6)
+        return AnalyticsPeriodWindow(
+            current_start=bounds.start,
+            current_end=bounds.end,
+            previous_start=previous_start,
+            previous_end=previous_end,
+            label="за последние 7 дней",
+            comparison_label="к предыдущим 7 дням",
         )
 
     current_start = now - timedelta(days=365)

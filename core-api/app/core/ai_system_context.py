@@ -13,7 +13,7 @@ from app.core.organization_context import (
     BUSINESS_TIMEZONE,
     AnalyticsContextState,
     OrganizationContextService,
-    business_week_bounds,
+    resolve_business_period,
 )
 
 
@@ -35,7 +35,8 @@ class AISystemContextService:
         ui_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         now = datetime.now(UTC).astimezone(ZoneInfo(BUSINESS_TIMEZONE))
-        week_start, week_end = business_week_bounds(now)
+        week = resolve_business_period("this_week", now)
+        week_start, week_end = week.start, week.end
         context_service = OrganizationContextService(self.store)
         if callable(getattr(self.store, "get_app_setting", None)):
             selected_context = context_service.get_context()

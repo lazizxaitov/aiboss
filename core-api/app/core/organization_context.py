@@ -18,16 +18,51 @@ CONTEXT_SETTING_KEY = "global_analytics_context"
 BUSINESS_TIMEZONE = "Asia/Tashkent"
 
 
-def business_week_bounds(now: datetime | None = None) -> tuple[datetime, datetime]:
-    """Return the rolling seven-day product period in business local time."""
+@dataclass(frozen=True, slots=True)
+class BusinessPeriodBounds:
+    """Resolved product period bounds in the business timezone."""
+
+    period: str
+    start: datetime
+    end: datetime
+    timezone: str = BUSINESS_TIMEZONE
+
+
+def resolve_business_period(
+    period: str,
+    now: datetime | None = None,
+) -> BusinessPeriodBounds:
+    """Resolve the product-defined rolling week without calendar-week logic."""
+
+    normalized = str(period).strip().lower().replace(" ", "_")
+    if normalized not in {
+        "this_week",
+        "current_week",
+        "7d",
+        "last_7_days",
+        "эта_неделя",
+        "текущая_неделя",
+    }:
+        raise ValueError(f"Unsupported shared business period: {period}")
 
     timezone = ZoneInfo(BUSINESS_TIMEZONE)
-    local_now = (now or datetime.now(UTC)).astimezone(timezone)
+    candidate = now or datetime.now(UTC)
+    if candidate.tzinfo is None:
+        candidate = candidate.replace(tzinfo=timezone)
+    local_now = candidate.astimezone(timezone)
     start_date = local_now.date() - timedelta(days=6)
-    return (
-        datetime.combine(start_date, datetime.min.time(), tzinfo=timezone),
-        local_now,
+    return BusinessPeriodBounds(
+        period="this_week",
+        start=datetime.combine(start_date, datetime.min.time(), tzinfo=timezone),
+        end=local_now,
     )
+
+
+def business_week_bounds(now: datetime | None = None) -> tuple[datetime, datetime]:
+    """Backward-compatible tuple form of the shared rolling-week resolver."""
+
+    bounds = resolve_business_period("this_week", now)
+    return bounds.start, bounds.end
 
 
 class OrganizationContextMode(StrEnum):

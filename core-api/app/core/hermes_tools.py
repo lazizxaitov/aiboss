@@ -13,7 +13,7 @@ from app.core.data_layer.dashboard import build_dashboard_overview
 from app.core.organization_context import (
     AnalyticsContextState,
     OrganizationContextService,
-    business_week_bounds,
+    resolve_business_period,
 )
 
 
@@ -592,8 +592,7 @@ class HermesBusinessTools:
             "12m": AnalyticsPeriodPreset.ALL,
         }
         if normalized in {"this_week", "current_week", "текущая_неделя", "эта_неделя"}:
-            start, end = self._week_dates(0)
-            return AnalyticsPeriodPreset.CUSTOM, start, end
+            return AnalyticsPeriodPreset.LAST_7_DAYS, None, None
         if normalized in {"last_week", "previous_week", "прошлая_неделя"}:
             start, end = self._week_dates(-1)
             return AnalyticsPeriodPreset.CUSTOM, start, end
@@ -643,10 +642,10 @@ class HermesBusinessTools:
         return deduped[:12]
 
     @staticmethod
-    def _week_dates(offset: int) -> tuple[date, date]:
-        start, _ = business_week_bounds()
-        monday = (start + timedelta(days=offset * 7)).date()
-        return monday, monday + timedelta(days=6)
+    def _week_dates(offset: int, now: datetime | None = None) -> tuple[date, date]:
+        current = resolve_business_period("this_week", now)
+        start = current.start + timedelta(days=offset * 7)
+        return start.date(), start.date() + timedelta(days=6)
 
     @staticmethod
     def _infer_group_by(text: str) -> str | None:

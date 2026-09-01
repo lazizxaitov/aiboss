@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from app.core.analytics.models import (
     AnalyticsBusinessSnapshot,
@@ -2319,13 +2320,19 @@ VisitAnalyticsService = BusinessAnalyticsEngine
 FinanceAnalyticsService = BusinessAnalyticsEngine
 
 
-def _build_period_window(query: AnalyticsQuery) -> AnalyticsPeriodWindow:
-    now = datetime.now(UTC)
-    today = now.date()
+def _build_period_window(
+    query: AnalyticsQuery,
+    now: datetime | None = None,
+) -> AnalyticsPeriodWindow:
+    from app.core.organization_context import BUSINESS_TIMEZONE, resolve_business_period
+
+    timezone = ZoneInfo(BUSINESS_TIMEZONE)
+    local_now = (now or datetime.now(UTC)).astimezone(timezone)
+    today = local_now.date()
 
     if query.period == AnalyticsPeriodPreset.CUSTOM and query.date_from and query.date_to:
-        current_start = datetime.combine(query.date_from, time.min, tzinfo=UTC)
-        current_end = datetime.combine(query.date_to, time.max, tzinfo=UTC)
+        current_start = datetime.combine(query.date_from, time.min, tzinfo=timezone)
+        current_end = datetime.combine(query.date_to, time.max, tzinfo=timezone)
         span = max(1, (query.date_to - query.date_from).days + 1)
         previous_end = current_start - timedelta(seconds=1)
         previous_start = previous_end - timedelta(days=span - 1)
@@ -2339,24 +2346,24 @@ def _build_period_window(query: AnalyticsQuery) -> AnalyticsPeriodWindow:
         )
 
     if query.period == AnalyticsPeriodPreset.TODAY:
-        current_start = datetime.combine(today, time.min, tzinfo=UTC)
-        current_end = datetime.combine(today, time.max, tzinfo=UTC)
+        current_start = datetime.combine(today, time.min, tzinfo=timezone)
+        current_end = datetime.combine(today, time.max, tzinfo=timezone)
     elif query.period == AnalyticsPeriodPreset.YESTERDAY:
         target = today - timedelta(days=1)
-        current_start = datetime.combine(target, time.min, tzinfo=UTC)
-        current_end = datetime.combine(target, time.max, tzinfo=UTC)
+        current_start = datetime.combine(target, time.min, tzinfo=timezone)
+        current_end = datetime.combine(target, time.max, tzinfo=timezone)
     elif query.period == AnalyticsPeriodPreset.LAST_7_DAYS:
-        current_start = datetime.combine(today - timedelta(days=6), time.min, tzinfo=UTC)
-        current_end = datetime.combine(today, time.max, tzinfo=UTC)
+        week = resolve_business_period("this_week", local_now)
+        current_start, current_end = week.start, week.end
     elif query.period == AnalyticsPeriodPreset.CURRENT_MONTH:
-        current_start = datetime.combine(today.replace(day=1), time.min, tzinfo=UTC)
-        current_end = datetime.combine(today, time.max, tzinfo=UTC)
+        current_start = datetime.combine(today.replace(day=1), time.min, tzinfo=timezone)
+        current_end = datetime.combine(today, time.max, tzinfo=timezone)
     elif query.period == AnalyticsPeriodPreset.PREVIOUS_MONTH:
         month_start = today.replace(day=1)
         prev_end = month_start - timedelta(days=1)
         prev_start = prev_end.replace(day=1)
-        current_start = datetime.combine(prev_start, time.min, tzinfo=UTC)
-        current_end = datetime.combine(prev_end, time.max, tzinfo=UTC)
+        current_start = datetime.combine(prev_start, time.min, tzinfo=timezone)
+        current_end = datetime.combine(prev_end, time.max, tzinfo=timezone)
     elif query.period == AnalyticsPeriodPreset.ALL:
         return AnalyticsPeriodWindow(
             current_start=None,
@@ -2367,8 +2374,8 @@ def _build_period_window(query: AnalyticsQuery) -> AnalyticsPeriodWindow:
             comparison_label="not available",
         )
     else:
-        current_start = datetime.combine(today - timedelta(days=29), time.min, tzinfo=UTC)
-        current_end = datetime.combine(today, time.max, tzinfo=UTC)
+        current_start = datetime.combine(today - timedelta(days=29), time.min, tzinfo=timezone)
+        current_end = datetime.combine(today, time.max, tzinfo=timezone)
 
     span = max(1, (current_end.date() - current_start.date()).days + 1)
     previous_end = current_start - timedelta(seconds=1)
@@ -2377,8 +2384,8 @@ def _build_period_window(query: AnalyticsQuery) -> AnalyticsPeriodWindow:
     if query.comparison_mode == AnalyticsComparisonMode.PREVIOUS_MONTH:
         month_end = current_start.date().replace(day=1) - timedelta(days=1)
         month_start = month_end.replace(day=1)
-        previous_start = datetime.combine(month_start, time.min, tzinfo=UTC)
-        previous_end = datetime.combine(month_end, time.max, tzinfo=UTC)
+        previous_start = datetime.combine(month_start, time.min, tzinfo=timezone)
+        previous_end = datetime.combine(month_end, time.max, tzinfo=timezone)
         comparison_label = "previous month"
     elif query.comparison_mode == AnalyticsComparisonMode.PREVIOUS_YEAR:
         try:
