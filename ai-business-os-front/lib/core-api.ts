@@ -2617,8 +2617,46 @@ export type DashboardAIInsightsResponse = {
   items: DashboardAIInsight[];
 };
 
+function normalizeDashboardAIInsight(value: unknown): DashboardAIInsight | null {
+  if (!isRecord(value)) return null;
+  const priority = value.priority === "low" || value.priority === "medium" || value.priority === "high" || value.priority === "critical"
+    ? value.priority
+    : "medium";
+  const stringOrEmpty = (candidate: unknown) => typeof candidate === "string" ? candidate : "";
+  return {
+    type: stringOrEmpty(value.type) || "finding",
+    title: stringOrEmpty(value.title) || "AI insight",
+    description: stringOrEmpty(value.description),
+    priority,
+    reason: typeof value.reason === "string" ? value.reason : undefined,
+    affected_entity: typeof value.affected_entity === "string" ? value.affected_entity : null,
+    affected_metric: typeof value.affected_metric === "string" ? value.affected_metric : null,
+    evidence: Array.isArray(value.evidence) ? value.evidence.filter(isRecord) : [],
+  };
+}
+
 export async function getDashboardAIInsights(): Promise<DashboardAIInsightsResponse> {
-  return requestJson<DashboardAIInsightsResponse>("/api/v1/ai/insights/dashboard", {}, 10_000);
+  const payload = await requestJson<unknown>("/api/v1/ai/insights/dashboard", {}, 10_000);
+  const response = isRecord(payload) ? payload : {};
+  const rawItems = Array.isArray(response.items) ? response.items : [];
+  const items = rawItems
+    .map(normalizeDashboardAIInsight)
+    .filter((item): item is DashboardAIInsight => item !== null);
+  return {
+    analysis_id: typeof response.analysis_id === "string" ? response.analysis_id : null,
+    generated_at: typeof response.generated_at === "string" ? response.generated_at : null,
+    summary: typeof response.summary === "string" ? response.summary : null,
+    status: typeof response.status === "string" ? response.status : "empty",
+    message: typeof response.message === "string" ? response.message : undefined,
+    findings: Array.isArray(response.findings) ? response.findings.filter(isRecord) : [],
+    opportunities: Array.isArray(response.opportunities) ? response.opportunities.filter(isRecord) : [],
+    recommendations: Array.isArray(response.recommendations) ? response.recommendations.filter(isRecord) : [],
+    provider_id: typeof response.provider_id === "string" ? response.provider_id : null,
+    model_id: typeof response.model_id === "string" ? response.model_id : null,
+    organization_ids: Array.isArray(response.organization_ids) ? response.organization_ids.filter((item): item is string => typeof item === "string") : [],
+    period: isRecord(response.period) ? response.period : {},
+    items,
+  };
 }
 
 export async function runDashboardAIAnalysis(): Promise<unknown> {

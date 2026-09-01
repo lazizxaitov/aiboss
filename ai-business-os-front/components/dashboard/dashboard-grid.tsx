@@ -1048,7 +1048,7 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
         const summary = payload.summary
           ? [{ label: "AI Аналитик", title: "Краткая сводка", text: `${payload.summary}${payload.generated_at ? ` · ${new Date(payload.generated_at).toLocaleString("ru-RU")}` : ""}` }]
           : [];
-        const items = payload.items.map((item) => ({
+        const items = (Array.isArray(payload.items) ? payload.items : []).map((item) => ({
           label: item.type === "recommendation" ? "Рекомендует" : item.priority === "critical" || item.priority === "high" ? "Требует внимания" : "Наблюдение",
           title: item.title,
           text: [item.description, item.affected_entity, item.affected_metric].filter(Boolean).join(" · "),
