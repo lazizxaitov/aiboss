@@ -537,6 +537,16 @@ class AIBusinessAgentService:
             prompt_chars = sum(len(str(message.get("content") or "")) for message in messages)
             timings[f"round_{round_number}_prompt_chars"] = prompt_chars
             timings[f"round_{round_number}_input_tokens_estimate"] = max(1, prompt_chars // 4)
+            if round_number == 2 and len(messages) >= 4:
+                timings["round_2_sections"] = {
+                    "base_instructions": len(str(messages[0].get("content") or "")),
+                    "memory": len(str(messages[1].get("content") or "")),
+                    "routing": len(str(messages[2].get("content") or "")),
+                    "system_context": len(str(messages[3].get("content") or "")),
+                    "round1_and_evidence": sum(
+                        len(str(message.get("content") or "")) for message in messages[4:]
+                    ),
+                }
             logger.info(
                 "AI_AGENT_MODEL_REQUEST request_id=%s round=%s timestamp=%s tool_choice=%s provider=%s model=%s",
                 request_id,

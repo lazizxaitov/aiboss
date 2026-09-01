@@ -884,7 +884,7 @@ async def chat(
                 timings.setdefault("first_token_ms", None)
                 logger.info(
                     "AI_CHAT_LATENCY request_id=%s total_request_ms=%.2f model_calls=%s db_queries=%s "
-                    "round1_prompt_chars=%s round2_prompt_chars=%s postgres_query_ms=%s capability_result_ms=%s",
+                    "round1_prompt_chars=%s round2_prompt_chars=%s postgres_query_ms=%s capability_result_ms=%s sections=%s",
                     request_id,
                     timings["total_ms"],
                     timings.get("model_calls", 0),
@@ -893,6 +893,14 @@ async def chat(
                     timings.get("round_2_prompt_chars", 0),
                     timings.get("postgres_query_ms", 0),
                     timings.get("capability_result_ms", 0),
+                    json.dumps(
+                        {
+                            "round1": timings.get("round_1_sections", {}),
+                            "round2": timings.get("round_2_sections", {}),
+                        },
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
                 )
             conversation_service.append_message(
                 conversation,
