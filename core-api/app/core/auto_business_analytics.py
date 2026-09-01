@@ -9,7 +9,7 @@ from threading import Lock
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from app.core.ai_business_agent import AIBusinessAgentService
 from app.core.ai_conversation import AIConversationChannel, AIConversationMessage, AIConversationState
@@ -45,13 +45,24 @@ def _normalize_ai_result_payload(payload: dict[str, Any]) -> dict[str, Any]:
             return
         normalized: list[dict[str, Any]] = []
         for item in items:
-            item = {"title": item, "description": item} if isinstance(item, str) else dict(item) if isinstance(item, dict) else {}
+            if isinstance(item, str):
+                item = {"title": item, "description": item}
+            elif isinstance(item, dict):
+                item = dict(item)
+            else:
+                continue
             item.setdefault("title", "Вывод AI")
             item.setdefault("description", item["title"])
+            if not isinstance(item["title"], str):
+                item["title"] = str(item["title"])
+            if not isinstance(item["description"], str):
+                item["description"] = str(item["description"])
+            if item.get("priority") not in {"low", "medium", "high", "critical"}:
+                item["priority"] = "medium"
             if default_type is not None and item.get("type") not in {"positive", "warning", "critical", "info"}:
                 item["type"] = default_type
             evidence = item.get("evidence")
-            item["evidence"] = evidence if isinstance(evidence, list) else ([{"detail": evidence}] if evidence else [])
+            item["evidence"] = _normalize_evidence(evidence)
             normalized.append(item)
         payload[key] = normalized
 
@@ -66,14 +77,85 @@ def _normalize_ai_result_payload(payload: dict[str, Any]) -> dict[str, Any]:
     else:
         normalized_recommendations: list[dict[str, Any]] = []
         for item in recommendations:
-            item = {"title": item, "description": item} if isinstance(item, str) else dict(item) if isinstance(item, dict) else {}
+            if isinstance(item, str):
+                item = {"title": item, "description": item}
+            elif isinstance(item, dict):
+                item = dict(item)
+            else:
+                continue
             item.setdefault("title", "Рекомендация AI")
             item.setdefault("description", item["title"])
+            if not isinstance(item["title"], str):
+                item["title"] = str(item["title"])
+            if not isinstance(item["description"], str):
+                item["description"] = str(item["description"])
+            if item.get("priority") not in {"low", "medium", "high", "critical"}:
+                item["priority"] = "medium"
             evidence = item.get("evidence")
-            item["evidence"] = evidence if isinstance(evidence, list) else ([{"detail": evidence}] if evidence else [])
+            item["evidence"] = _normalize_evidence(evidence)
             normalized_recommendations.append(item)
         payload["recommendations"] = normalized_recommendations
+    payload["anomalies"] = _normalize_text_items(payload.get("anomalies"))
+    payload["top_opportunities"] = _normalize_text_items(payload.get("top_opportunities"))
+    kpis = payload.get("kpis")
+    payload["kpis"] = [dict(item) for item in kpis if isinstance(item, dict)] if isinstance(kpis, list) else []
+    dashboard_plan = payload.get("dashboard_plan")
+    if isinstance(dashboard_plan, dict):
+        # Dashboard plan is optional. Keep strict analytical findings even when
+        # a provider emits an incomplete optional widget definition.
+        try:
+            DashboardPlan.model_validate(dashboard_plan)
+        except ValidationError:
+            payload["dashboard_plan"] = None
+    elif dashboard_plan is not None:
+        payload["dashboard_plan"] = None
     return payload
+
+
+def _normalize_evidence(value: object) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [dict(item) for item in value if isinstance(item, dict)]
+    if isinstance(value, dict):
+        return [dict(value)]
+    return [{"detail": value}] if isinstance(value, str) and value.strip() else []
+
+
+def _normalize_text_items(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    normalized: list[str] = []
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            normalized.append(item)
+        elif isinstance(item, dict):
+            title = item.get("title") or item.get("description") or item.get("reason")
+            if isinstance(title, str) and title.strip():
+                normalized.append(title)
+    return normalized
+
+
+def _unwrap_analytics_result(raw: str) -> dict[str, Any]:
+    text = raw.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        text = "\n".join(lines[1:-1] if lines and lines[-1].strip() == "```" else lines[1:]).strip()
+    payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise ValueError("AI analytics result must be a JSON object.")
+    if payload.get("action") == "final" and isinstance(payload.get("answer"), str):
+        return _unwrap_analytics_result(payload["answer"])
+    if payload.get("type") == "final" and isinstance(payload.get("content"), str):
+        return _unwrap_analytics_result(payload["content"])
+    return payload
+
+
+def _analytical_content_count(result: AutoAnalyticsResult | None) -> int:
+    if result is None:
+        return 0
+    return sum(
+        len(items)
+        for items in (result.findings, result.insights, result.risks, result.recommendations)
+    )
 
 
 class AutoAnalyticsInsight(BaseModel):
@@ -161,6 +243,9 @@ class AutoAnalyticsRun(BaseModel):
     error: str | None = None
     analysis_level: Literal["widget", "daily", "deep"] = "deep"
     data_version: str | None = None
+    capability_calls: int = 0
+    successful_business_queries: int = 0
+    failure_stage: str | None = None
 
 
 class AutoAnalyticsStatus(BaseModel):
@@ -341,6 +426,7 @@ class AutoBusinessAnalyticsService:
         if not runtime.get("model_id"):
             run.status = "failed"
             run.error = "Нет доступного агента для роли business_analytics."
+            run.failure_stage = "model_request"
             self._save_status(AutoAnalyticsStatus(status="retry_wait", last_started_at=started_at, last_error=run.error, next_retry_at=datetime.now(UTC) + timedelta(minutes=5)))
             return self._save(run)
         instruction = (
@@ -400,6 +486,10 @@ class AutoBusinessAnalyticsService:
                 build_baseline=False,
                 tool_call_budget={"widget": 4, "daily": 6, "deep": 12}[mode],
             )
+            run.capability_calls = agent_result.tool_calls
+            run.successful_business_queries = int(
+                agent_result.runtime.get("successful_business_queries") or 0
+            )
             successful_queries = int(agent_result.runtime.get("successful_business_queries") or 0)
             logger.info(
                 "AI_ANALYTICS_CAPABILITY_EXECUTED run_id=%s capability_calls=%s successful_business_queries=%s",
@@ -408,19 +498,45 @@ class AutoBusinessAnalyticsService:
                 successful_queries,
             )
             if successful_queries < 1:
+                run.failure_stage = "evidence"
                 raise ValueError("Business Analytics не получила подтверждённые данные из business.query.")
             logger.info(
                 "AI_ANALYTICS_EVIDENCE_READY run_id=%s successful_business_queries=%s",
                 run.analysis_id,
                 successful_queries,
             )
-            raw = agent_result.final_text.strip()
-            if raw.startswith("```"):
-                raw = "\n".join(raw.splitlines()[1:-1]).strip()
-            payload = json.loads(raw)
-            if isinstance(payload, dict):
-                payload = _normalize_ai_result_payload(payload)
-            result = AutoAnalyticsResult.model_validate(payload)
+            payload: dict[str, Any] | None = None
+            try:
+                payload = _normalize_ai_result_payload(
+                    _unwrap_analytics_result(agent_result.final_text)
+                )
+                result = AutoAnalyticsResult.model_validate(payload)
+                if not result.summary.strip() or _analytical_content_count(result) < 1:
+                    raise ValueError("AI analytics result does not contain analytical findings.")
+            except (ValidationError, ValueError, TypeError, json.JSONDecodeError) as error:
+                run.failure_stage = "result_validation"
+                validation_errors = (
+                    [
+                        {
+                            "loc": list(item.get("loc", ())),
+                            "type": item.get("type"),
+                            "msg": item.get("msg"),
+                        }
+                        for item in error.errors()
+                    ]
+                    if isinstance(error, ValidationError)
+                    else [{"type": type(error).__name__, "msg": str(error)[:300]}]
+                )
+                top_level = list(payload.keys()) if isinstance(payload, dict) else []
+                output_shape = type(payload).__name__ if payload is not None else "unparsed"
+                logger.info(
+                    "AI_ANALYTICS_VALIDATION_FAILED run_id=%s validation_errors=%s parsed_top_level_keys=%s output_shape=%s",
+                    run.analysis_id,
+                    json.dumps(validation_errors, ensure_ascii=False, separators=(",", ":")),
+                    json.dumps(top_level, ensure_ascii=False),
+                    output_shape,
+                )
+                raise
             result.provider_id = str(agent_result.runtime.get("provider_id"))
             result.model_id = str(agent_result.runtime.get("model_id"))
             result.fallback_used = bool(agent_result.runtime.get("fallback_used"))
@@ -439,6 +555,13 @@ class AutoBusinessAnalyticsService:
             run.summary = result.summary
             run.structured_result = result
             logger.info(
+                "AI_ANALYTICS_RESULT_VALIDATED run_id=%s findings=%s provider=%s model=%s",
+                run.analysis_id,
+                _analytical_content_count(result),
+                run.provider_id,
+                run.model_id,
+            )
+            logger.info(
                 "BUSINESS_ANALYSIS_FINAL analysis_id=%s findings=%s provider=%s model=%s rounds=%s",
                 run.analysis_id,
                 len(result.insights) + len(result.recommendations),
@@ -448,6 +571,8 @@ class AutoBusinessAnalyticsService:
             )
         except Exception as error:  # noqa: BLE001 - failed runs must remain observable and persisted
             last_error = error
+            if run.failure_stage is None:
+                run.failure_stage = "model_request"
             logger.info("BUSINESS_ANALYSIS_ERROR analysis_id=%s error=%s", run.analysis_id, str(error)[:300])
         if run.status != "completed":
             run.status = "failed"
@@ -468,8 +593,8 @@ class AutoBusinessAnalyticsService:
                 run.model_id,
                 run.organization_scope,
                 run.period,
-                len(run.structured_result.queries_executed) if run.structured_result else 0,
-                0,
+                run.capability_calls,
+                run.successful_business_queries,
                 str(run.error)[:300],
             )
         else:
@@ -484,13 +609,13 @@ class AutoBusinessAnalyticsService:
         successful_queries = (
             len(saved.structured_result.queries_executed)
             if saved.structured_result is not None
-            else 0
+            else saved.successful_business_queries
         )
         logger.info(
             "AI_ANALYTICS_PERSISTED run_id=%s status=%s insight_count=%s successful_business_queries=%s",
             saved.analysis_id,
             saved.status,
-            len(saved.structured_result.findings) if saved.structured_result else 0,
+            _analytical_content_count(saved.structured_result),
             successful_queries,
         )
         logger.info(
@@ -499,9 +624,9 @@ class AutoBusinessAnalyticsService:
             saved.status,
             saved.provider_id,
             saved.model_id,
-            successful_queries,
-            successful_queries,
-            len(saved.structured_result.findings) if saved.structured_result else 0,
+            saved.capability_calls,
+            saved.successful_business_queries,
+            _analytical_content_count(saved.structured_result),
             saved.error,
         )
         return saved

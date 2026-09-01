@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
@@ -9,6 +10,9 @@ from app.core.auto_business_analytics import (
     AutoAnalyticsRun,
     AutoAnalyticsStatus,
     AutoBusinessAnalyticsService,
+    _analytical_content_count,
+    _normalize_ai_result_payload,
+    _unwrap_analytics_result,
 )
 from app.core.data_layer.entities import AppSetting
 from app.core.data_layer.service import InMemoryCoreDataLayer
@@ -100,3 +104,48 @@ def test_startup_analysis_reuses_existing_widget_flow_when_data_is_ready():
 
     assert result is expected
     run_widget.assert_awaited_once()
+
+
+def test_auto_analysis_normalizes_provider_result_variants_without_fake_metrics():
+    payload = _normalize_ai_result_payload({
+        "summary": "Есть риск снижения продаж.",
+        "status": "unexpected-provider-status",
+        "insights": [{
+            "title": "Снижение продаж",
+            "description": "Продажи ниже предыдущего периода.",
+            "type": "finding",
+            "priority": "urgent",
+            "evidence": "sales comparison",
+        }],
+        "recommendations": ["Проверить причины снижения."],
+        "anomalies": [{"title": "Резкое изменение"}],
+        "top_opportunities": [{"description": "Вернуть клиентов"}],
+        "dashboard_plan": {"widgets": [{"invalid": True}]},
+    })
+
+    result = AutoAnalyticsResult.model_validate(payload)
+
+    assert result.status == "normal"
+    assert result.insights[0].type == "info"
+    assert result.insights[0].priority == "medium"
+    assert result.insights[0].evidence == [{"detail": "sales comparison"}]
+    assert result.recommendations[0].title == "Проверить причины снижения."
+    assert result.anomalies == ["Резкое изменение"]
+    assert result.top_opportunities == ["Вернуть клиентов"]
+    assert result.dashboard_plan is None
+    assert _analytical_content_count(result) == 2
+
+
+def test_auto_analysis_unwraps_fenced_and_final_envelopes():
+    body = '{"summary":"Готово","findings":[{"title":"Факт"}]}'
+    envelope = json.dumps({"type": "final", "content": body}, ensure_ascii=False)
+    assert _unwrap_analytics_result(f"```json\n{envelope}\n```") == {
+        "summary": "Готово",
+        "findings": [{"title": "Факт"}],
+    }
+
+
+def test_auto_analysis_rejects_result_without_analytical_content():
+    result = AutoAnalyticsResult.model_validate({"summary": "Обзор завершён"})
+
+    assert _analytical_content_count(result) == 0
