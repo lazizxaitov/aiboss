@@ -22,15 +22,47 @@ fn bootstrap_services() {
         ("com.aiboss.backend", "com.aiboss.backend.plist"),
     ] {
         let service = format!("{domain}/{label}");
-        let loaded = std::process::Command::new("/bin/launchctl")
+        let service_status = std::process::Command::new("/bin/launchctl")
             .args(["print", &service])
             .output()
-            .map(|result| result.status.success())
+            .ok();
+        let loaded = service_status.as_ref().map(|result| result.status.success()).unwrap_or(false);
+        let running = service_status
+            .as_ref()
+            .map(|result| {
+                let output = String::from_utf8_lossy(&result.stdout);
+                output.contains("state = running") || output.contains("pid = ")
+            })
             .unwrap_or(false);
         if !loaded {
-            let path = format!("{home}/Library/LaunchAgents/{plist}");
+            let paths = [
+                format!("{home}/Library/LaunchAgents/{plist}"),
+                format!("{home}/Projects/aiboss/{plist}"),
+                format!("/Library/LaunchAgents/{plist}"),
+            ];
+            for path in paths {
+                if !std::path::Path::new(&path).exists() {
+                    continue;
+                }
+                let bootstrapped = std::process::Command::new("/bin/launchctl")
+                    .args(["bootstrap", &domain, &path])
+                    .output()
+                    .map(|result| result.status.success())
+                    .unwrap_or(false);
+                if !bootstrapped {
+                    let _ = std::process::Command::new("/bin/launchctl")
+                        .args(["load", &path])
+                        .output();
+                }
+                break;
+            }
+        }
+        // Do not restart healthy services when the user merely reopens Tauri.
+        // A stopped job is started, while an explicit restart uses the backend
+        // system-control endpoint and intentionally uses kickstart -k.
+        if !running {
             let _ = std::process::Command::new("/bin/launchctl")
-                .args(["bootstrap", &domain, &path])
+                .args(["kickstart", "-k", &service])
                 .output();
         }
     }
