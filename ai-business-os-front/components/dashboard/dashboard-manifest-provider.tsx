@@ -109,8 +109,15 @@ export function DashboardManifestProvider({ children }: { children: ReactNode })
         const cached = readCachedDashboardManifest(filters);
         setLoading(cached === null);
       }
-      const launcher = await getDashboardLauncherState();
-      const requestFilters = { ...filters, customWidgetIds: launcher.custom_widget_ids };
+      let customWidgetIds: string[] = [];
+      try {
+        const launcher = await getDashboardLauncherState();
+        customWidgetIds = launcher.custom_widget_ids;
+      } catch {
+        // Launcher layout is auxiliary. A startup timeout must not prevent the
+        // primary dashboard manifest from loading with its cached/default state.
+      }
+      const requestFilters = { ...filters, customWidgetIds };
       const next = await getDashboardManifest(requestFilters);
       setManifest(next);
       storeCachedDashboardManifest(requestFilters, next);

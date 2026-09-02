@@ -2908,7 +2908,9 @@ export async function getDashboardManifest(
 }
 
 export async function getDashboardLauncherState(): Promise<DashboardLauncherState> {
-  return requestJson<DashboardLauncherState>("/api/v1/dashboard/launcher-state");
+  // Launcher persistence can briefly contend with backend startup/sync. It is
+  // auxiliary state and should not use the short default data-request timeout.
+  return requestJson<DashboardLauncherState>("/api/v1/dashboard/launcher-state", {}, 10_000);
 }
 
 export async function saveDashboardLauncherState(payload: DashboardLauncherState): Promise<DashboardLauncherState> {
