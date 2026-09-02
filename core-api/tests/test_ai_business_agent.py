@@ -217,7 +217,7 @@ def test_internal_database_question_receives_business_data_capability():
     assert "ai_sales" in capability
 
 
-def test_business_text_without_tools_gets_generic_evidence_retry():
+def test_business_text_without_tools_gets_structured_protocol_retry():
     result, resolve, request = _run(
         "Какой менеджер продал на самую большую сумму за эту неделю? Покажи топ-5 менеджеров.",
         [
@@ -327,7 +327,7 @@ def test_structured_malformed_json_gets_one_repair_retry():
     assert len(request.await_args_list) == 3
 
 
-def test_required_evidence_round_without_tool_returns_controlled_error():
+def test_invalid_business_action_without_tool_returns_controlled_protocol_error():
     async def execute():
         with patch("app.api.routes.ai_chat._hermes_request", new_callable=AsyncMock) as request:
             request.side_effect = [
@@ -348,8 +348,84 @@ def test_required_evidence_round_without_tool_returns_controlled_error():
         raise AssertionError("expected controlled error")
 
     message, request = asyncio.run(execute())
-    assert message == "AI не выполнил обязательную проверку бизнес-данных."
+    assert message == "AI не вернул корректное structured business action."
     assert request.await_args_list[1].kwargs["tool_choice"] == "none"
+
+
+def test_successful_business_evidence_survives_later_query_error():
+    class SQLStore:
+        def __init__(self):
+            self.calls = 0
+
+        def execute_ai_readonly_sql(self, sql, params, *, statement_timeout_ms):
+            self.calls += 1
+            if self.calls == 1:
+                return [{"sales_rep_external_id": "123", "visit_count": 42}]
+            raise RuntimeError("temporary research query failure")
+
+    async def execute():
+        store = SQLStore()
+        with patch("app.api.routes.ai_chat._hermes_request", new_callable=AsyncMock) as request:
+            request.side_effect = [
+                _response({"content": '{"capability":"business.query","arguments":{"sql":"SELECT 42 FROM ai_visits"}}'}),
+                _response({"content": '{"capability":"business.query","arguments":{"sql":"SELECT broken FROM ai_visits"}}'}),
+                _response({"content": '{"type":"final","content":"Найдено 42 визита. Дополнительный запрос завершился ошибкой, поэтому вывод основан на подтвержденных данных."}'}),
+            ]
+            result = await AIBusinessAgentService(store).run(
+                conversation=AIConversationState(
+                    organization_id=UUID("11111111-1111-1111-1111-111111111111"),
+                    messages=_conversation("Дай анализ визитов за неделю").messages,
+                ),
+                user_text="Дай анализ визитов за неделю", source_channel="web", task_type="ai_chat",
+                router=FakeRouter(), tools_service=FakeTools(), widget_builder=object(),
+                memory_prompt="", system_prompt="agent",
+            )
+            return result, request
+
+    result, request = asyncio.run(execute())
+    assert result.final_text.startswith("Найдено 42 визита")
+    assert result.runtime["successful_business_queries"] == 1
+    assert result.runtime["business_data_verified"] is True
+    final_context = "\n".join(str(item.get("content")) for item in request.await_args_list[2].kwargs["messages"])
+    assert "visit_count" in final_context
+    assert "42" in final_context
+
+
+def test_repeated_capability_query_uses_cache_and_allows_final_synthesis():
+    class SQLStore:
+        def __init__(self):
+            self.calls = 0
+
+        def execute_ai_readonly_sql(self, sql, params, *, statement_timeout_ms):
+            self.calls += 1
+            return [{"visit_count": 42}]
+
+    async def execute():
+        store = SQLStore()
+        query = '{"capability":"business.query","arguments":{"sql":"SELECT visit_id FROM ai_visits LIMIT 10"}}'
+        with patch("app.api.routes.ai_chat._hermes_request", new_callable=AsyncMock) as request:
+            request.side_effect = [
+                _response({"content": query}),
+                _response({"content": query}),
+                _response({"content": '{"type":"final","content":"У Акрамовой Нигора 42 визита."}'}),
+            ]
+            result = await AIBusinessAgentService(store).run(
+                conversation=AIConversationState(
+                    organization_id=UUID("11111111-1111-1111-1111-111111111111"),
+                    messages=_conversation("Сколько визитов?").messages,
+                ),
+                user_text="Сколько визитов?",
+                source_channel="web", task_type="ai_chat", router=FakeRouter(), tools_service=FakeTools(),
+                widget_builder=object(), memory_prompt="", system_prompt="agent",
+            )
+            return store, result, request
+
+    store, result, request = asyncio.run(execute())
+    assert store.calls == 1
+    assert result.final_text == "У Акрамовой Нигора 42 визита."
+    assert result.runtime["capability_cache_hits"] == 1
+    assert result.runtime["business_data_verified"] is True
+    assert "capability" not in result.final_text
 
 
 def test_product_question_uses_product_aggregation():

@@ -198,6 +198,24 @@ def _looks_like_internal_capability(content: object) -> bool:
     )
 
 
+def _looks_like_capability_refusal(content: object) -> bool:
+    """Detect a model access claim that contradicts the role context."""
+
+    if not isinstance(content, str):
+        return False
+    normalized = content.casefold()
+    return any(
+        marker in normalized
+        for marker in (
+            "нет доступа к базе",
+            "не имею доступа к базе",
+            "данные недоступны",
+            "инструменты не подключены",
+            "инструмент недоступен",
+        )
+    )
+
+
 def _parse_final_request(content: object) -> str | None:
     """Unwrap the provider-independent final branch of the agent protocol."""
 
@@ -447,6 +465,7 @@ class AIBusinessAgentService:
         runtime = candidates[0]
         runtime["timings"] = timings
         runtime["successful_business_queries"] = 0
+        runtime["business_data_verified"] = False
         runtime["business_entities"] = []
         runtime["capability_attempts"] = 0
         runtime["capability_executions"] = 0
@@ -662,10 +681,11 @@ class AIBusinessAgentService:
         rounds = 0
         # Capability transport is selected by role permissions, never by model
         # name or by inspecting user text.
-        structured_mode = False
+        # Non-Hermes direct callers retain the existing structured adapter;
+        # production Web and Telegram requests use the capability envelope.
+        structured_mode = business_context_enabled and not isinstance(tools_service, HermesBusinessTools)
         structured_repair_used = False
         capability_repair_used = False
-        business_query_repair_used = False
         tool_choice_for_round = "auto"
         max_rounds = MAX_ROUNDS
         if task_type == "ai_chat":
@@ -978,21 +998,40 @@ class AIBusinessAgentService:
                     "If the evidence is insufficient, state exactly what is missing."
                 ),
             })
-            synthesis_response = await model_request(
-                messages=messages,
-                tool_choice="auto",
-                model=str(runtime["model_id"]),
-                provider=str(runtime["provider_id"]),
-                round_number=round_number,
-                stream_final=on_final_delta is not None,
-            )
-            if synthesis_response.status_code >= 400:
-                raise ValueError("AI provider не смог сформировать финальный ответ по полученным данным.")
-            assistant = _extract_assistant_message(synthesis_response.json())
-            if assistant is None or _parse_tool_calls(assistant):
+            assistant = None
+            for synthesis_attempt in range(2):
+                synthesis_response = await model_request(
+                    messages=messages,
+                    tool_choice="auto",
+                    model=str(runtime["model_id"]),
+                    provider=str(runtime["provider_id"]),
+                    round_number=round_number + synthesis_attempt,
+                    stream_final=on_final_delta is not None,
+                )
+                if synthesis_response.status_code >= 400:
+                    raise ValueError("AI provider не смог сформировать финальный ответ по полученным данным.")
+                assistant = _extract_assistant_message(synthesis_response.json())
+                if assistant is None or _parse_tool_calls(assistant):
+                    raise ValueError("AI не смог сформировать финальный ответ по полученным данным.")
+                if _parse_capability_request(assistant.get("content")) or _looks_like_internal_capability(assistant.get("content")):
+                    messages.append({
+                        "role": "assistant",
+                        "content": str(assistant.get("content") or ""),
+                    })
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "The research phase is complete. Do not emit a capability request, SQL, JSON envelope, "
+                            "or internal protocol. Synthesize the final answer from the authoritative evidence already "
+                            "present in this conversation. If evidence is insufficient, explain only what is missing."
+                        ),
+                    })
+                    continue
+                break
+            if assistant is None:
                 raise ValueError("AI не смог сформировать финальный ответ по полученным данным.")
             if _parse_capability_request(assistant.get("content")) or _looks_like_internal_capability(assistant.get("content")):
-                raise ValueError("AI вернул незавершённый внутренний capability-запрос.")
+                raise ValueError("AI не смог сформировать финальный ответ по полученным данным.")
             if structured_mode:
                 action, error = _parse_structured_action(assistant.get("content"), tool_names)
                 if action is None or action.get("action") != "final":
@@ -1032,6 +1071,7 @@ class AIBusinessAgentService:
                 raise ValueError("AI не вернул корректный ответ.")
             tool_calls = _parse_tool_calls(assistant_message)
             structured_action: dict[str, object] | None = None
+            parsed_capability_final = False
             if capability_only and tool_calls and isinstance(tools_service, HermesBusinessTools):
                 raise ValueError("AI вернул native tool call вместо capability business.query.")
             if capability_only and not tool_calls:
@@ -1064,6 +1104,7 @@ class AIBusinessAgentService:
                         final_request = _parse_action_final(assistant_message.get("content"))
                     if final_request is not None:
                         assistant_message = {**assistant_message, "content": final_request}
+                        parsed_capability_final = True
                     elif _raw_select(assistant_message.get("content")) is not None:
                         structured_action = {
                             "action": "capability",
@@ -1080,6 +1121,20 @@ class AIBusinessAgentService:
                         }]
                 timings["capability_parse_ms"] = (monotonic() - parse_started) * 1000
             if structured_mode and not tool_calls:
+                if parsed_capability_final:
+                    return AIBusinessAgentResult(
+                        final_text=str(assistant_message.get("content") or ""),
+                        messages=messages, runtime=runtime,
+                        rounds=rounds, tool_calls=total_tool_calls,
+                    )
+                final_request = _parse_final_request(assistant_message.get("content"))
+                if final_request is None:
+                    final_request = _parse_action_final(assistant_message.get("content"))
+                if final_request is not None:
+                    return AIBusinessAgentResult(
+                        final_text=final_request, messages=messages, runtime=runtime,
+                        rounds=rounds, tool_calls=total_tool_calls,
+                    )
                 if task_type != "business_analytics" and total_tool_calls:
                     payload = _parse_json_object(assistant_message.get("content"))
                     is_query_request = (
@@ -1216,6 +1271,35 @@ class AIBusinessAgentService:
                         raise ValueError("AI provider вернул ошибку при исправлении business capability.")
                     continue
             if not tool_calls:
+                if (
+                    business_context_enabled
+                    and total_tool_calls == 0
+                    and not capability_repair_used
+                    and _looks_like_capability_refusal(assistant_message.get("content"))
+                ):
+                    capability_repair_used = True
+                    messages.append({
+                        "role": "assistant",
+                        "content": str(assistant_message.get("content") or ""),
+                    })
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "Your previous response incorrectly claimed that business data or tools are unavailable. "
+                            "The current role has the listed business.query capability. Do not answer the user yet; "
+                            "request the relevant business.query capability using the exact published schema."
+                        ),
+                    })
+                    response = await model_request(
+                        messages=messages,
+                        tool_choice="auto",
+                        model=str(runtime["model_id"]),
+                        provider=str(runtime["provider_id"]),
+                        round_number=rounds + 1,
+                    )
+                    if response.status_code >= 400:
+                        raise ValueError("AI provider вернул ошибку при исправлении ответа о доступности данных.")
+                    continue
                 if capability_only and _looks_like_internal_capability(assistant_message.get("content")):
                     if not capability_repair_used:
                         capability_repair_used = True
@@ -1241,33 +1325,6 @@ class AIBusinessAgentService:
                         if response.status_code >= 400:
                             raise ValueError("AI provider вернул ошибку при исправлении capability-запроса.")
                         continue
-                        raise ValueError("AI вернул незавершённый внутренний capability-запрос.")
-                if business_context_enabled and int(runtime.get("successful_business_queries") or 0) == 0:
-                    if not business_query_repair_used:
-                        business_query_repair_used = True
-                        messages.append({
-                            "role": "assistant",
-                            "content": str(assistant_message.get("content") or ""),
-                        })
-                        messages.append({
-                            "role": "system",
-                            "content": (
-                                "This is a business-data question. Do not answer that data is unavailable and do not "
-                                "describe backend or database access. First execute exactly one relevant business.query "
-                                "capability using the published AI Business OS schema, then answer from its returned rows."
-                            ),
-                        })
-                        response = await model_request(
-                            messages=messages,
-                            tool_choice="auto",
-                            model=str(runtime["model_id"]),
-                            provider=str(runtime["provider_id"]),
-                            round_number=rounds + 1,
-                        )
-                        if response.status_code >= 400:
-                            raise ValueError("AI provider вернул ошибку при запросе бизнес-данных.")
-                        continue
-                    raise ValueError("AI не выполнил обязательную проверку бизнес-данных.")
                 if not structured_mode and total_tool_calls:
                     repeated_action = _parse_json_object(assistant_message.get("content"))
                     if isinstance(repeated_action, dict) and repeated_action.get("action") == "query":
@@ -1456,6 +1513,7 @@ class AIBusinessAgentService:
                     query_executed = tool_name in {"query_business_data", BUSINESS_QUERY_CAPABILITY}
                     if query_executed and isinstance(tool_result, dict) and tool_result.get("available") is not False:
                         runtime["successful_business_queries"] = int(runtime.get("successful_business_queries") or 0) + 1
+                        runtime["business_data_verified"] = True
                         entities = runtime.setdefault("business_entities", [])
                         if isinstance(entities, list):
                             entities.extend(_compact_business_entities(tool_result.get("rows")))
@@ -1564,13 +1622,15 @@ class AIBusinessAgentService:
                     )
                 if repeated_query:
                     logger.info(
-                        "AI_ANALYTICS_REPEATED_QUERY_GUARD analysis_id=%s capability=%s attempts=%s cache_hits=%s action=force_synthesis",
+                        "AI_ANALYTICS_REPEATED_QUERY_GUARD analysis_id=%s capability=%s attempts=%s cache_hits=%s action=continue_with_cache",
                         request_id,
                         tool_name,
                         runtime["capability_attempts"],
                         runtime["capability_cache_hits"],
                     )
-                    return await final_synthesis(round_number=rounds + 1)
+                    # The cache guard prevents another execution. Keep the
+                    # cached evidence in context and let the next model turn
+                    # synthesize normally.
             if rounds >= max_rounds:
                 return await final_synthesis(round_number=rounds + 1)
             tool_choice_for_round = "auto"
