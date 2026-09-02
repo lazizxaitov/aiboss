@@ -428,7 +428,8 @@ def test_repeated_capability_query_uses_cache_and_allows_final_synthesis():
     assert "capability" not in result.final_text
 
 
-def test_failed_cyrillic_query_is_not_cached_as_empty_verified_data():
+def test_failed_cyrillic_query_is_not_cached_as_empty_verified_data(caplog):
+    caplog.set_level(logging.INFO)
     class SQLStore:
         def __init__(self):
             self.calls = 0
@@ -473,6 +474,9 @@ def test_failed_cyrillic_query_is_not_cached_as_empty_verified_data():
     assert '"error_type": "UnicodeDecodeError"' in failed_context
     assert '"rows": []' not in failed_context
     assert result.final_text == "Акрамова Нигора — 3 визита."
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "AI_TOOL_RESULT" in log_text and "status=error" in log_text
+    assert "AI_TOOL_RESULT" in log_text and "rows=0" not in log_text
 
 
 def test_product_question_uses_product_aggregation():

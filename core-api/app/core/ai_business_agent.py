@@ -1375,6 +1375,7 @@ class AIBusinessAgentService:
                 arguments = _tool_arguments(tool_call)
                 tool_name = str(tool_call.get("function", {}).get("name") or "")
                 query_executed = False
+                query_started = capability_started
                 if task_type == "business_analytics":
                     logger.info(
                         "AI_ANALYTICS_CAPABILITY_START analysis_id=%s call=%s capability=%s remaining_budget_before=%.3f",
@@ -1423,10 +1424,26 @@ class AIBusinessAgentService:
                         runtime["capability_attempts"],
                         tool_name,
                     )
-                    logger.info("AI_TOOL_RESULT request_id=%s name=%s rows=%s cached=true", request_id, tool_name, _row_count(tool_result))
+                    if _result_failed(tool_result):
+                        logger.info(
+                            "AI_TOOL_RESULT request_id=%s name=%s status=error error_type=%s cached=true",
+                            request_id,
+                            tool_name,
+                            tool_result.get("error_type") if isinstance(tool_result, dict) else None,
+                        )
+                    else:
+                        logger.info(
+                            "AI_TOOL_RESULT request_id=%s name=%s status=success rows=%s cached=true",
+                            request_id,
+                            tool_name,
+                            _row_count(tool_result),
+                        )
                 elif total_tool_calls >= tool_call_budget:
                     tool_result = {
+                        "success": False,
                         "status": "tool_budget_exhausted",
+                        "error_type": "capability_budget_exhausted",
+                        "retryable": False,
                         "message": "Достигнут лимит business tool calls. Сформируйте вывод по уже полученным данным.",
                     }
                     logger.info("AI_TOOL_RESULT request_id=%s name=%s budget_exhausted=true", request_id, tool_name)
@@ -1532,20 +1549,35 @@ class AIBusinessAgentService:
                         and (tool_result.get("success") is False or tool_result.get("available") is False)
                     ):
                         result_cache[cache_key] = tool_result
-                    logger.info("AI_TOOL_RESULT request_id=%s name=%s rows=%s", request_id, tool_name, _row_count(tool_result))
-                    if tool_name in {"query_business_data", "aggregate_sales", "query_inventory", "query_products", "query_customers", "query_returns", "query_visits", "query_finance"}:
-                        logger.info(
-                            "AI_BUSINESS_QUERY_RESULT request_id=%s elapsed_ms=%.2f row_count=%s",
-                            request_id,
-                            (monotonic() - query_started) * 1000,
-                            _row_count(tool_result),
-                        )
-                    if tool_name == "search_entities":
-                        conversation_service = AIConversationService(self.store)
-                        conversation_service.remember_entities(
-                            conversation,
-                            _resolved_entities_from_search(tool_result, arguments),
-                        )
+                result_failed = _result_failed(tool_result)
+                if result_failed:
+                    logger.info(
+                        "AI_TOOL_RESULT request_id=%s name=%s status=error error_type=%s",
+                        request_id,
+                        tool_name,
+                        tool_result.get("error_type") if isinstance(tool_result, dict) else None,
+                    )
+                else:
+                    logger.info(
+                        "AI_TOOL_RESULT request_id=%s name=%s status=success rows=%s",
+                        request_id,
+                        tool_name,
+                        _row_count(tool_result),
+                    )
+                if tool_name in {"query_business_data", "aggregate_sales", "query_inventory", "query_products", "query_customers", "query_returns", "query_visits", "query_finance"}:
+                    logger.info(
+                        "AI_BUSINESS_QUERY_RESULT request_id=%s elapsed_ms=%.2f status=%s row_count=%s",
+                        request_id,
+                        (monotonic() - query_started) * 1000,
+                        "error" if result_failed else "success",
+                        None if result_failed else _row_count(tool_result),
+                    )
+                if tool_name == "search_entities":
+                    conversation_service = AIConversationService(self.store)
+                    conversation_service.remember_entities(
+                        conversation,
+                        _resolved_entities_from_search(tool_result, arguments),
+                    )
                 if not capability_only:
                     messages.append({
                         "role": "tool",
@@ -1567,7 +1599,7 @@ class AIBusinessAgentService:
                         + json.dumps(
                             {
                                 "capability": tool_name,
-                                "status": "success" if not (isinstance(tool_result, dict) and tool_result.get("available") is False) else "error",
+                                "status": "error" if result_failed else "success",
                                 "result": compact_tool_result,
                             },
                             ensure_ascii=False,
@@ -1614,8 +1646,8 @@ class AIBusinessAgentService:
                         "name": tool_name,
                         "dataset": arguments.get("dataset") or tool_name,
                         "elapsed_ms": (monotonic() - capability_started) * 1000,
-                        "status": "error" if isinstance(tool_result, dict) and tool_result.get("available") is False else "completed",
-                        "row_count": _row_count(tool_result),
+                        "status": "error" if result_failed else "completed",
+                        "row_count": None if result_failed else _row_count(tool_result),
                         "remaining_budget_before": capability_remaining_before,
                         "remaining_budget_after": remaining_budget(),
                         "cache_hit": cached_query,
@@ -1628,8 +1660,8 @@ class AIBusinessAgentService:
                         runtime["capability_attempts"],
                         tool_name,
                         (monotonic() - capability_started) * 1000,
-                        "error" if isinstance(tool_result, dict) and tool_result.get("available") is False else "completed",
-                        _row_count(tool_result),
+                        "error" if result_failed else "completed",
+                        None if result_failed else _row_count(tool_result),
                         remaining_budget() if remaining_budget() is not None else -1,
                         cached_query,
                     )
@@ -1717,6 +1749,14 @@ def _row_count(result: object) -> int:
             if nested_count:
                 return nested_count
     return 0
+
+
+def _result_failed(result: object) -> bool:
+    """Keep execution failures distinct from successful empty results."""
+
+    return isinstance(result, dict) and (
+        result.get("success") is False or result.get("available") is False
+    )
 
 
 def _looks_business_related(text: str) -> bool:
