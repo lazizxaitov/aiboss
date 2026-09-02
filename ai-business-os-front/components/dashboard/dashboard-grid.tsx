@@ -69,7 +69,7 @@ import {
   type DashboardManifestWidget,
   type DashboardWidgetType,
 } from "@/lib/core-api";
-import { confirmWidgetBuilder, getAiProviders, getAiRouting, getDashboardAIAnalysisStatus, getDashboardAIInsights, getDashboardLauncherState, getDashboardManifest, getWidgetBuilderContext, runDashboardAIAnalysis, runWidgetBuilderChat, saveDashboardLauncherState, streamAiChat, type AiProvider } from "@/lib/core-api";
+import { confirmWidgetBuilder, deleteWidgetBuilderWidget, getAiProviders, getAiRouting, getDashboardAIAnalysisStatus, getDashboardAIInsights, getDashboardLauncherState, getDashboardManifest, getWidgetBuilderContext, runDashboardAIAnalysis, runWidgetBuilderChat, saveDashboardLauncherState, streamAiChat, type AiProvider } from "@/lib/core-api";
 
 type SerializedMetricValue = AnalyticsMetricValue;
 
@@ -4220,35 +4220,46 @@ export function DashboardGrid() {
                 {savedWidgetConfigs.length === 0 ? (
                   <p className="mt-3 text-sm leading-6 text-slate-400">Здесь появятся виджеты после сохранения. Они не добавляются на Dashboard автоматически.</p>
                 ) : (
-                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <div className="mt-3 divide-y divide-[#3a3d43] overflow-hidden rounded-2xl border border-[#3a3d43] bg-[#2E3137]">
                     {savedWidgetConfigs.map((config) => {
                       const widgetId = typeof config.widget_id === "string" ? config.widget_id : "";
                       const isVisible = visibleCustomWidgetIds.includes(widgetId);
                       const preview = config.preview && typeof config.preview === "object" ? config.preview as Record<string, unknown> : null;
                       return (
-                        <div key={widgetId || String(config.config_id)} className="rounded-[20px] border border-[#3a3d43] bg-[#2E3137] p-3">
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
+                        <div key={widgetId || String(config.config_id)} className="flex flex-col gap-3 p-4 lg:flex-row lg:items-center lg:justify-between">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
                               <p className="truncate text-sm font-semibold text-[#f4f7fb]">{String(config.title ?? "Виджет")}</p>
-                              <p className="mt-1 text-xs text-slate-400">{String(config.metric ?? config.widget_type ?? "Показатель")}</p>
+                              <Badge variant={isVisible ? "accent" : "neutral"}>{isVisible ? "На Dashboard" : "Скрыт"}</Badge>
                             </div>
-                            <Badge variant={isVisible ? "accent" : "neutral"}>{isVisible ? "На Dashboard" : "Сохранён"}</Badge>
+                            <p className="mt-1 text-xs text-slate-400">{String(config.description ?? preview?.subtitle ?? config.metric ?? config.widget_type ?? "Показатель")}</p>
                           </div>
-                          <div className="mt-3 h-20 overflow-hidden rounded-xl border border-[#3a3d43] bg-[#26292e] p-2">
-                            <div className="h-full rounded-lg bg-gradient-to-br from-white/[0.08] to-transparent p-2">
-                              <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{String(config.widget_type ?? "widget")}</p>
-                              <p className="mt-2 text-sm font-semibold text-slate-200">{String(preview?.subtitle ?? "Актуальные данные")}</p>
-                            </div>
+                          <div className="flex shrink-0 flex-wrap gap-2">
+                            <Button
+                              size="sm"
+                              variant={isVisible ? "soft" : "secondary"}
+                              disabled={!widgetId}
+                              onClick={() => void setSavedWidgetVisible(widgetId, !isVisible)}
+                            >
+                              {isVisible ? "Скрыть" : "Добавить"}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              disabled={!widgetId}
+                              onClick={() => {
+                                if (!window.confirm(`Удалить виджет «${String(config.title ?? "Виджет")}» полностью?`)) return;
+                                setLibraryError(null);
+                                void deleteWidgetBuilderWidget(widgetId).then(async () => {
+                                  setSavedWidgetConfigs((current) => current.filter((item) => item.widget_id !== widgetId));
+                                  setVisibleCustomWidgetIds((current) => current.filter((id) => id !== widgetId));
+                                  await reloadDashboardManifest();
+                                }).catch((error) => setLibraryError(error instanceof Error ? error.message : "Не удалось удалить виджет."));
+                              }}
+                            >
+                              Удалить
+                            </Button>
                           </div>
-                          <Button
-                            size="sm"
-                            variant={isVisible ? "soft" : "secondary"}
-                            className="mt-3 w-full"
-                            disabled={!widgetId}
-                            onClick={() => void setSavedWidgetVisible(widgetId, !isVisible)}
-                          >
-                            {isVisible ? "Скрыть на Dashboard" : "Показать на Dashboard"}
-                          </Button>
                         </div>
                       );
                     })}

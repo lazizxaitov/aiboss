@@ -2805,6 +2805,14 @@ export async function confirmWidgetBuilder(payload: {
   }, 30_000);
 }
 
+export async function deleteWidgetBuilderWidget(widgetId: string): Promise<void> {
+  await requestJson("/api/v1/dashboard/widget-builder/delete", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ widget_id: widgetId }),
+  }, 15_000);
+}
+
 export async function streamAiChat(
   messages: AiChatMessage[],
   onChunk: (content: string) => void,
