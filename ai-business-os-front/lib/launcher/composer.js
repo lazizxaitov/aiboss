@@ -138,11 +138,11 @@ export function composeLauncherLayout({ state, widgets, columns }) {
         x,
         y,
         w: entry.w,
-        h: currentRowHeight,
+        h: entry.preferredHeight,
         minW: entry.w,
         maxW: entry.w,
-        minH: currentRowHeight,
-        maxH: currentRowHeight,
+        minH: entry.preferredHeight,
+        maxH: entry.preferredHeight,
         static: locked.has(entry.id),
         isDraggable: !locked.has(entry.id),
         isResizable: false,
@@ -165,7 +165,7 @@ export function composeLauncherLayout({ state, widgets, columns }) {
       flushRow();
     }
 
-    currentRow.push({ id, w });
+    currentRow.push({ id, w, preferredHeight });
     currentWidth += w;
     currentRowHeight = Math.max(currentRowHeight, preferredHeight);
 
@@ -200,6 +200,40 @@ export function deriveLauncherOrder(layout, previousOrder) {
     ...visibleOrder,
     ...previousOrder.filter((id) => !visibleOrder.includes(id)),
   ]);
+}
+
+function overlapArea(left, right) {
+  const width = Math.max(0, Math.min(left.x + left.w, right.x + right.w) - Math.max(left.x, right.x));
+  const height = Math.max(0, Math.min(left.y + left.h, right.y + right.h) - Math.max(left.y, right.y));
+  return width * height;
+}
+
+function layoutDistance(left, right) {
+  const leftCenterX = left.x + left.w / 2;
+  const leftCenterY = left.y + left.h / 2;
+  const rightCenterX = right.x + right.w / 2;
+  const rightCenterY = right.y + right.h / 2;
+  return Math.hypot(leftCenterX - rightCenterX, leftCenterY - rightCenterY);
+}
+
+export function swapLauncherOrder(layout, previousOrder, draggedId) {
+  const dragged = layout.find((item) => item.i === draggedId);
+  if (!dragged) return deriveLauncherOrder(layout, previousOrder);
+
+  const target = layout
+    .filter((item) => item.i !== draggedId && !item.static)
+    .sort((left, right) => {
+      const overlapDiff = overlapArea(right, dragged) - overlapArea(left, dragged);
+      return overlapDiff || layoutDistance(dragged, left) - layoutDistance(dragged, right);
+    })[0];
+  if (!target) return previousOrder;
+
+  const nextOrder = [...previousOrder];
+  const draggedIndex = nextOrder.indexOf(draggedId);
+  const targetIndex = nextOrder.indexOf(target.i);
+  if (draggedIndex < 0 || targetIndex < 0 || draggedIndex === targetIndex) return nextOrder;
+  [nextOrder[draggedIndex], nextOrder[targetIndex]] = [nextOrder[targetIndex], nextOrder[draggedIndex]];
+  return nextOrder;
 }
 
 export function launcherLayoutsOverlap(layout) {

@@ -36,10 +36,10 @@ import {
   breakpointForWidth,
   composeResponsiveLauncherLayouts,
   createDefaultLauncherState,
-  deriveLauncherOrder,
   LAUNCHER_BREAKPOINTS,
   LAUNCHER_COLUMNS,
   normalizeLauncherState,
+  swapLauncherOrder,
   updateLauncherWidgetSize,
 } from "@/lib/launcher/composer";
 import {
@@ -3398,6 +3398,7 @@ export function DashboardGrid() {
   const [widgetsColumnRef, containerWidth] = useMeasuredWidth<HTMLDivElement>();
   const launcherStateLoaded = useRef(false);
   const launcherBackendStateLoaded = useRef(false);
+  const draggedWidgetIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     const handleOpenWidgetBuilder = () => {
@@ -3720,7 +3721,8 @@ export function DashboardGrid() {
     });
   }, [updateSemanticState]);
 
-  const handleDragStart = useCallback(() => {
+  const handleDragStart = useCallback((item?: LayoutItem | null) => {
+    draggedWidgetIdRef.current = item?.i ?? null;
     setInteractionLayouts(cloneResponsiveLayouts(currentLayoutsWithBounds));
   }, [currentLayoutsWithBounds]);
 
@@ -3733,7 +3735,7 @@ export function DashboardGrid() {
   }, [activeBreakpoint, currentLayoutsWithBounds]);
 
   const handleDragStop = useCallback((currentLayout: ReadonlyArray<LayoutItem>) => {
-    const order = deriveLauncherOrder(currentLayout, effectiveState.order);
+    const order = swapLauncherOrder(currentLayout, effectiveState.order, draggedWidgetIdRef.current);
     const nextState = normalizeLauncherState({
       ...effectiveState,
       order,
@@ -3744,6 +3746,7 @@ export function DashboardGrid() {
       },
     }, allWidgets) as LauncherState;
     setInteractionLayouts(null);
+    draggedWidgetIdRef.current = null;
     setLauncherState(nextState);
     saveLauncherState(nextState);
   }, [allWidgets, effectiveState]);
@@ -4011,9 +4014,9 @@ export function DashboardGrid() {
           preventCollision={false}
           isResizable={false}
           isDraggable={editMode}
-          onDragStart={() => {
+          onDragStart={(_layout, item) => {
             if (!editMode) return;
-            handleDragStart();
+            handleDragStart(item);
           }}
           onDrag={(currentLayout) => {
             if (!editMode) return;
@@ -4234,18 +4237,18 @@ export function DashboardGrid() {
                           <div className="min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
                               <p className="truncate text-sm font-semibold text-[#f4f7fb]">{String(config.title ?? "Виджет")}</p>
-                              <Badge variant={isVisible ? "accent" : "neutral"}>{isVisible ? "На Dashboard" : "Скрыт"}</Badge>
+                              <Badge variant={isVisible ? "accent" : "neutral"}>{isVisible ? "Добавлен" : "Не добавлен"}</Badge>
                             </div>
                             <p className="mt-1 text-xs text-slate-400">{String(config.description ?? preview?.subtitle ?? config.metric ?? config.widget_type ?? "Показатель")}</p>
                           </div>
                           <div className="flex shrink-0 flex-wrap gap-2">
                             <Button
                               size="sm"
-                              variant={isVisible ? "soft" : "secondary"}
-                              disabled={!widgetId}
-                              onClick={() => void setSavedWidgetVisible(widgetId, !isVisible)}
+                              variant="secondary"
+                              disabled={!widgetId || isVisible}
+                              onClick={() => void setSavedWidgetVisible(widgetId, true)}
                             >
-                              {isVisible ? "Скрыть" : "Добавить"}
+                              Добавить
                             </Button>
                             <Button
                               size="sm"
@@ -4257,6 +4260,14 @@ export function DashboardGrid() {
                                 void deleteWidgetBuilderWidget(widgetId).then(async () => {
                                   setSavedWidgetConfigs((current) => current.filter((item) => item.widget_id !== widgetId));
                                   setVisibleCustomWidgetIds((current) => current.filter((id) => id !== widgetId));
+                                  setCustomWidgets((current) => current.filter((widget) => widget.widget_id !== widgetId));
+                                  updateSemanticState((current) => ({
+                                    ...current,
+                                    order: current.order.filter((id) => id !== widgetId),
+                                    hidden: (current.hidden ?? []).filter((id) => id !== widgetId),
+                                    locked: (current.locked ?? []).filter((id) => id !== widgetId),
+                                    sizes: Object.fromEntries(Object.entries(current.sizes).filter(([id]) => id !== widgetId)),
+                                  }));
                                   await reloadDashboardManifest();
                                 }).catch((error) => setLibraryError(error instanceof Error ? error.message : "Не удалось удалить виджет."));
                               }}

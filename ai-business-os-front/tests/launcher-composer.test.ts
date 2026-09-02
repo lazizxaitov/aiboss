@@ -9,6 +9,7 @@ import {
   deriveLauncherOrder,
   launcherLayoutsOverlap,
   normalizeLauncherState,
+  swapLauncherOrder,
 } from "../lib/launcher/composer.js";
 import { launcherSemanticSizeOptions } from "../lib/launcher/size-mapping.js";
 import {
@@ -54,7 +55,7 @@ test("12 columns pack four small widgets into one complete row", () => {
   ]);
 });
 
-test("row normalization gives widgets in the same row the same y and row height", () => {
+test("widgets in one row keep their own fixed contract height", () => {
   const layout = composeWidgets([
     { id: "a", type: "alert", size: "medium", priority: 1 },
     { id: "b", type: "visit_summary", size: "medium", priority: 2 },
@@ -63,7 +64,7 @@ test("row normalization gives widgets in the same row the same y and row height"
   assert.deepEqual(
     layout.map(({ i, x, y, w, h }) => ({ i, x, y, w, h })),
     [
-      { i: "a", x: 0, y: 0, w: 6, h: 4 },
+      { i: "a", x: 0, y: 0, w: 6, h: 3 },
       { i: "b", x: 6, y: 0, w: 6, h: 4 },
     ],
   );
@@ -80,7 +81,7 @@ test("next row starts only after the previous row height finishes", () => {
   const summary = layout.find((item) => item.i === "summary");
   const revenue = layout.find((item) => item.i === "revenue");
 
-  assert.equal(lead?.h, 4);
+  assert.equal(lead?.h, 3);
   assert.equal(summary?.h, 4);
   assert.equal(lead?.y, 0);
   assert.equal(summary?.y, 0);
@@ -135,6 +136,16 @@ test("drag result changes semantic order and recomposes predictably", () => {
     { i: "c", x: 9, y: 0, w: 3, h: 2 },
   ];
   assert.deepEqual(deriveLauncherOrder(dropped, previous), ["a", "d", "b", "c"]);
+});
+
+test("drag swaps only the dragged widget with its drop target", () => {
+  const layout = [
+    { i: "a", x: 0, y: 0, w: 3, h: 2 },
+    { i: "b", x: 0, y: 0, w: 3, h: 2 },
+    { i: "c", x: 6, y: 0, w: 3, h: 2 },
+    { i: "d", x: 9, y: 0, w: 3, h: 2 },
+  ];
+  assert.deepEqual(swapLauncherOrder(layout, ["a", "b", "c", "d"], "a"), ["b", "a", "c", "d"]);
 });
 
 test("responsive composition is regenerated independently for 12, 8, and 4 columns", () => {
