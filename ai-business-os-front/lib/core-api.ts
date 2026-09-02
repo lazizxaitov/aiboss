@@ -8,6 +8,27 @@ export type DashboardCard = {
   change?: string | null;
 };
 
+export type TelegramLinkStatus = {
+  connected: boolean;
+  chats: string[];
+  token?: string | null;
+  deep_link?: string | null;
+  instructions?: string | null;
+  expires_at?: string | null;
+};
+
+export async function getTelegramLinkStatus(): Promise<TelegramLinkStatus> {
+  return requestJson<TelegramLinkStatus>("/api/v1/telegram/link/status");
+}
+
+export async function createTelegramLink(): Promise<TelegramLinkStatus> {
+  return requestJson<TelegramLinkStatus>("/api/v1/telegram/link/create", { method: "POST" });
+}
+
+export async function disconnectTelegram(): Promise<TelegramLinkStatus> {
+  return requestJson<TelegramLinkStatus>("/api/v1/telegram/link/disconnect", { method: "POST" });
+}
+
 export type DashboardMetric = DashboardCard;
 
 export type DashboardSignal = {

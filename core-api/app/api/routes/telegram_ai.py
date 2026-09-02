@@ -5,9 +5,10 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import AliasChoices, BaseModel, Field
 
+from app.api.routes.auth import _session, _token_from_request
 from app.core.ai_business_agent import AIBusinessAgentService
 from app.core.ai_conversation import (
     AIConversationChannel,
@@ -17,10 +18,12 @@ from app.core.ai_conversation import (
 from app.core.ai_routing import AITaskRouter
 from app.core.ai_shared_memory import SharedMemoryService
 from app.core.analytics.widget_builder import WidgetBuilderService
+from app.core.config import settings
 from app.core.data_layer.contracts import CoreDataStore
 from app.core.data_layer.factory import get_core_store
 from app.core.hermes_model_registry import hermes_model_registry
 from app.core.hermes_tools import HermesBusinessTools
+from app.core.telegram_link import TelegramLinkService
 
 router = APIRouter(prefix="/telegram")
 
@@ -28,6 +31,15 @@ router = APIRouter(prefix="/telegram")
 class TelegramLinkRequest(BaseModel):
     telegram_chat_id: str = Field(min_length=1)
     user_id: str = Field(min_length=1)
+
+
+class TelegramLinkResponse(BaseModel):
+    connected: bool
+    chats: list[str] = Field(default_factory=list)
+    token: str | None = None
+    deep_link: str | None = None
+    instructions: str | None = None
+    expires_at: str | None = None
 
 
 class TelegramChatRequest(BaseModel):
@@ -162,21 +174,18 @@ def _telegram_confirmation(text: str) -> str:
 def link_telegram_chat(
     request: TelegramLinkRequest,
     store: Annotated[CoreDataStore, Depends(get_core_store)],
+    authorization: str | None = Header(default=None),
 ) -> ConversationHistoryResponse:
+    session = _require_owner(authorization, store)
     service = AIConversationService(store)
-    service.link_telegram_chat(request.telegram_chat_id, request.user_id)
+    # Keep the legacy endpoint for trusted internal callers, but never accept
+    # an identity supplied by the client.
+    service.link_telegram_chat(request.telegram_chat_id, session.login)
     conversation = service.resolve_or_create_conversation(
         source_channel=AIConversationChannel.TELEGRAM,
-        user_id=request.user_id,
+        user_id=session.login,
         telegram_chat_id=request.telegram_chat_id,
     )
-    if conversation.telegram_chat_id != request.telegram_chat_id:
-        conversation = service.update_context(
-            conversation,
-            source_channel=AIConversationChannel.TELEGRAM,
-            telegram_chat_id=request.telegram_chat_id,
-            user_id=request.user_id,
-        )
     return ConversationHistoryResponse(
         conversation_id=conversation.conversation_id,
         user_id=conversation.user_id,
@@ -185,6 +194,72 @@ def link_telegram_chat(
         messages=service.conversation_history(conversation),
         target_channel=conversation.target_channel,
     )
+
+
+def _require_owner(authorization: str | None, store: CoreDataStore):
+    session = _session(_token_from_request(None, authorization), store)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Сессия недействительна")
+    return session
+
+
+@router.get("/link/status", response_model=TelegramLinkResponse)
+def telegram_link_status(
+    store: Annotated[CoreDataStore, Depends(get_core_store)],
+    authorization: str | None = Header(default=None),
+) -> TelegramLinkResponse:
+    session = _require_owner(authorization, store)
+    return TelegramLinkResponse(**TelegramLinkService(store).status(session.login))
+
+
+@router.post("/link/create", response_model=TelegramLinkResponse)
+def create_telegram_link(
+    store: Annotated[CoreDataStore, Depends(get_core_store)],
+    authorization: str | None = Header(default=None),
+) -> TelegramLinkResponse:
+    session = _require_owner(authorization, store)
+    result = TelegramLinkService(store).create(session.login, bot_username=settings.telegram_bot_username)
+    import logging
+    logging.getLogger(__name__).info("TELEGRAM_LINK_CREATED identity=%s", session.login)
+    return TelegramLinkResponse(
+        connected=False,
+        token=result["token"],
+        deep_link=result.get("deep_link"),
+        expires_at=result["expires_at"],
+        instructions=f"Откройте Telegram и отправьте боту команду /start {result['token']}",
+    )
+
+
+@router.post("/link/disconnect", response_model=TelegramLinkResponse)
+def disconnect_telegram(
+    store: Annotated[CoreDataStore, Depends(get_core_store)],
+    authorization: str | None = Header(default=None),
+) -> TelegramLinkResponse:
+    session = _require_owner(authorization, store)
+    chats = AIConversationService(store).unlink_telegram_identity(session.login)
+    import logging
+    logging.getLogger(__name__).info("TELEGRAM_LINK_REVOKED identity=%s chats=%s", session.login, len(chats))
+    return TelegramLinkResponse(connected=False, chats=[])
+
+
+def complete_telegram_link(store: CoreDataStore, token: str, telegram_chat_id: str) -> bool:
+    identity = TelegramLinkService(store).consume(token, telegram_chat_id)
+    if identity is None:
+        import logging
+        logging.getLogger(__name__).info("TELEGRAM_LINK_FAILED reason=invalid_or_expired")
+        return False
+    service = AIConversationService(store)
+    service.link_telegram_chat(telegram_chat_id, identity)
+    service.resolve_or_create_conversation(
+        source_channel=AIConversationChannel.TELEGRAM,
+        user_id=identity,
+        telegram_chat_id=telegram_chat_id,
+    )
+    import logging
+    logging.getLogger(__name__).info("TELEGRAM_LINK_COMPLETED identity=%s", identity)
+    return True
+
+
 
 
 @router.get("/conversations/{conversation_id}", response_model=ConversationHistoryResponse)

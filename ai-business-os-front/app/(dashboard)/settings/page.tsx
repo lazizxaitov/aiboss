@@ -11,6 +11,7 @@ import { MetaIntegrationCard } from "@/components/settings/meta-integration-card
 import { YouTubeIntegrationCard } from "@/components/settings/youtube-integration-card";
 import { MarketingMeasurementCard } from "@/components/settings/marketing-measurement-card";
 import { MobileAccessCard } from "@/components/settings/mobile-access-card";
+import { TelegramLinkCard } from "@/components/settings/telegram-link-card";
 import { useOwnerSessionState } from "@/components/auth/session-lock-guard";
 import {
   getSmartUpLiveSyncStatus,
@@ -112,6 +113,10 @@ export default function Page() {
 
       <SettingsBlockBoundary fallback="Не удалось загрузить мобильный доступ.">
         <MobileAccessCard />
+      </SettingsBlockBoundary>
+
+      <SettingsBlockBoundary fallback="Не удалось загрузить Telegram.">
+        <TelegramLinkCard />
       </SettingsBlockBoundary>
 
       <SettingsBlockBoundary fallback="Не удалось загрузить обновление системы.">

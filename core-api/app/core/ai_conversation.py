@@ -138,6 +138,19 @@ class AIConversationService:
 
         return self.get_index().telegram_chat_to_identity.get(str(telegram_chat_id))
 
+    def telegram_chats_for_identity(self, identity: str) -> list[str]:
+        return [chat_id for chat_id, mapped in self.get_index().telegram_chat_to_identity.items() if mapped == identity]
+
+    def unlink_telegram_identity(self, identity: str) -> list[str]:
+        index = self.get_index()
+        chats = [chat_id for chat_id, mapped in index.telegram_chat_to_identity.items() if mapped == identity]
+        for chat_id in chats:
+            index.telegram_chat_to_identity.pop(chat_id, None)
+            index.telegram_chat_targets.pop(chat_id, None)
+        index.active_by_identity.pop(f"{AIConversationChannel.TELEGRAM.value}:{identity}", None)
+        self.save_index(index)
+        return chats
+
     def set_telegram_target(
         self,
         telegram_chat_id: str,
