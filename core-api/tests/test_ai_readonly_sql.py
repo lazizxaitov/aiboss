@@ -165,6 +165,34 @@ def test_semantic_environment_can_omit_duplicate_column_catalog_for_agent_prompt
     assert sales["grain"] == "one realized sale fact"
 
 
+def test_compact_domain_index_is_derived_from_published_contract():
+    class SchemaStore:
+        def describe_ai_views(self):
+            return {"ai_sales": {"columns": [
+                {"name": "organization_id"},
+                {"name": "sale_at"},
+                {"name": "sales_rep_name"},
+                {"name": "total_amount"},
+            ]}}
+
+    index = AIReadOnlySQLService(SchemaStore()).semantic_domain_index()
+    sales = next(item for item in index["datasets"] if item["view"] == "ai_sales")
+
+    assert sales["primary_time"] == "sale_at"
+    assert "sales_rep_name" in sales["dimensions"]
+    assert "total_amount" in sales["measures"]
+    assert "columns" not in sales
+
+
+def test_semantic_discovery_returns_only_requested_dataset_details():
+    service = AIReadOnlySQLService(SimpleNamespace())
+    result = service.describe_semantic(domain="sales")
+
+    assert result["available"] is True
+    assert result["dataset"]["name"] == "ai_sales"
+    assert "columns" in result["dataset"]
+
+
 def test_semantic_graph_covers_published_domains_and_compound_identity():
     environment = AIReadOnlySQLService(SimpleNamespace()).semantic_environment(
         include_columns=False,

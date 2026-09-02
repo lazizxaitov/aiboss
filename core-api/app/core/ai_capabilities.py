@@ -7,6 +7,7 @@ from typing import Literal
 
 CapabilityName = Literal[
     "business.query",
+    "business.describe",
     "system.inspect",
     "ui.inspect",
     "code.search",
@@ -42,6 +43,20 @@ _CAPABILITIES: tuple[AICapability, ...] = (
             "additionalProperties": False,
         },
     ),
+    AICapability(
+        "business.describe",
+        "Describe the exact published fields and relationships for a requested business domain or view.",
+        "read",
+        arguments={
+            "type": "object",
+            "properties": {
+                "domain": {"type": "string"},
+                "entity": {"type": "string"},
+                "detail": {"type": "string", "enum": ["schema", "relationships"]},
+            },
+            "additionalProperties": False,
+        },
+    ),
     AICapability("system.inspect", "Inspect approved AI Business OS system state and service metadata.", "read"),
     AICapability("ui.inspect", "Inspect the current page, widget and visible UI context when supplied.", "read"),
     AICapability("code.search", "Search approved project source locations.", "read"),
@@ -54,10 +69,10 @@ _CAPABILITIES: tuple[AICapability, ...] = (
 BUSINESS_QUERY_CAPABILITY = "business.query"
 
 _ROLE_CAPABILITIES: dict[str, tuple[CapabilityName, ...]] = {
-    "business_analytics": ("business.query", "system.inspect", "ui.inspect"),
-    "ai_chat": ("business.query", "system.inspect", "ui.inspect"),
-    "system_action": ("business.query", "system.inspect", "ui.inspect", "dashboard.configure"),
-    "communications": ("business.query", "system.inspect"),
+    "business_analytics": ("business.query", "business.describe", "system.inspect", "ui.inspect"),
+    "ai_chat": ("business.query", "business.describe", "system.inspect", "ui.inspect"),
+    "system_action": ("business.query", "business.describe", "system.inspect", "ui.inspect", "dashboard.configure"),
+    "communications": ("business.query", "business.describe", "system.inspect"),
     "system_developer": ("system.inspect", "ui.inspect", "code.search", "code.read"),
 }
 

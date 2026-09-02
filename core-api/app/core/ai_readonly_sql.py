@@ -235,6 +235,79 @@ class AIReadOnlySQLService:
             },
         }
 
+    def semantic_domain_index(self, schema: dict[str, object] | None = None) -> dict[str, object]:
+        """Return the compact model-facing index derived from the live graph."""
+
+        environment = self.semantic_environment(schema, include_columns=False)
+        datasets: list[dict[str, object]] = []
+        for dataset in environment.get("datasets", []):
+            if not isinstance(dataset, dict):
+                continue
+            names = [
+                *dataset.get("identity", []),
+                *dataset.get("dimensions", []),
+                *dataset.get("measures", []),
+                *dataset.get("labels", []),
+            ]
+            date_semantics = dataset.get("date_semantics")
+            if isinstance(date_semantics, dict) and isinstance(date_semantics.get("event_date_column"), str):
+                names.append(date_semantics["event_date_column"])
+            datasets.append({
+                "view": dataset.get("name"),
+                "domain": dataset.get("domain"),
+                "purpose": dataset.get("meaning"),
+                "grain": dataset.get("grain"),
+                "primary_time": date_semantics.get("event_date_column") if isinstance(date_semantics, dict) else None,
+                "dimensions": list(dict.fromkeys(item for item in names if isinstance(item, str))),
+                "measures": list(dict.fromkeys(item for item in dataset.get("measures", []) if isinstance(item, str))),
+                "drilldown": bool(dataset.get("identity") or dataset.get("dimensions")),
+            })
+        return {
+            "datasets": datasets,
+            "rules": [
+                "Use the exact view and field names from this index.",
+                "Request business.describe when a required field or relationship is not listed.",
+            ],
+        }
+
+    def describe_semantic(
+        self,
+        *,
+        domain: str | None = None,
+        entity: str | None = None,
+        detail: str | None = None,
+    ) -> dict[str, object]:
+        """Return detailed metadata only for the model-selected dataset."""
+
+        schema = self.database_schema()
+        environment = self.semantic_environment(schema, include_columns=True)
+        requested = (entity or domain or "").strip().lower()
+        matches = [
+            item for item in environment.get("datasets", [])
+            if isinstance(item, dict)
+            and requested in {
+                str(item.get("name", "")).lower(),
+                str(item.get("name", "")).lower().removeprefix("ai_"),
+                str(item.get("domain", "")).lower(),
+            }
+        ]
+        if not matches:
+            return {
+                "available": False,
+                "reason": "Requested business domain or entity is not published.",
+                "requested": requested,
+            }
+        selected = dict(matches[0])
+        if detail == "relationships":
+            selected.pop("columns", None)
+            selected["relationships"] = [
+                relationship for relationship in environment.get("relationships", [])
+                if isinstance(relationship, dict)
+                and (str(relationship.get("from", "")).lower().startswith(str(selected.get("name", "")).lower() + ".")
+                     or str(relationship.get("to", "")).lower().startswith(str(selected.get("name", "")).lower() + "."))
+            ]
+        return {"available": True, "dataset": selected}
+
     def validate(self, sql: str) -> tuple[str, str, tuple[Any, ...]]:
         if not isinstance(sql, str) or not sql.strip():
             raise AIReadOnlyQueryError("AI не передал SQL-запрос.")

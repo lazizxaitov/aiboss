@@ -152,6 +152,17 @@ def _parse_capability_request(content: object) -> dict[str, object] | None:
     capability = payload.get("capability") or payload.get("name")
     if payload.get("type") == "capability" or payload.get("action") == "capability":
         capability = capability or payload.get("tool")
+    if capability == "business.describe" and isinstance(arguments, dict):
+        if any(isinstance(arguments.get(key), str) and arguments[key].strip() for key in ("domain", "entity")):
+            return {
+                "action": "capability",
+                "capability": "business.describe",
+                "arguments": {
+                    key: value for key, value in arguments.items()
+                    if key in {"domain", "entity", "detail"} and isinstance(value, str)
+                },
+                "approved": True,
+            }
     if capability == BUSINESS_QUERY_CAPABILITY and isinstance(arguments, dict):
         sql = arguments.get("sql")
         if isinstance(sql, str) and sql.strip():
@@ -277,6 +288,14 @@ def _validate_tool_arguments(
     """Apply the catalog's top-level required/property contract before execution."""
 
     if tool_name in {"query_business_data", BUSINESS_QUERY_CAPABILITY} and isinstance(arguments.get("sql"), str):
+        return None
+    if tool_name == "business.describe":
+        if not any(isinstance(arguments.get(key), str) and arguments[key].strip() for key in ("domain", "entity")):
+            return "business.describe требует domain или entity."
+        if set(arguments) - {"domain", "entity", "detail"}:
+            return "business.describe получил неизвестные аргументы."
+        if arguments.get("detail") not in {None, "schema", "relationships"}:
+            return "Недопустимое значение аргумента detail."
         return None
 
     definition = next(
@@ -447,13 +466,12 @@ class AIBusinessAgentService:
             if isinstance(system_context.get("database"), dict)
             else {}
         )
-        full_schema = database_context.get("schema") if business_context_enabled else {}
-        if business_context_enabled and not full_schema:
-            full_schema = sql_service.database_schema()
         schema_for_prompt = (
-            sql_service.compact_schema(full_schema)
-            if isinstance(full_schema, dict)
-            else full_schema
+            database_context.get("domain_index")
+            if business_context_enabled and isinstance(database_context.get("domain_index"), dict)
+            else sql_service.compact_schema(database_context.get("schema", {}))
+            if business_context_enabled and isinstance(database_context.get("schema"), dict)
+            else {}
         )
         allowed_capabilities = {
             capability.name for capability in ai_capability_registry.for_role(task_type)
@@ -506,8 +524,7 @@ class AIBusinessAgentService:
         if business_context_enabled:
             model_context["database"] = {
                 "kind": database_context.get("kind", "published_read_only_views"),
-                "schema": schema_for_prompt,
-                "semantic_environment": database_context.get("semantic_environment", {}),
+                "domain_index": schema_for_prompt,
             }
         effective_system_prompt = system_prompt
         if not business_context_enabled and task_type == "ai_chat":
@@ -562,6 +579,17 @@ class AIBusinessAgentService:
             )
         tools = _tool_definitions()
         available_capabilities = model_context.get("capabilities", [])
+        semantic_index_chars = len(json.dumps(schema_for_prompt, ensure_ascii=False, default=str))
+        timings["semantic_index_chars"] = semantic_index_chars
+        timings["semantic_detail_chars"] = 0
+        timings["capability_schema_chars"] = len(json.dumps(available_capabilities, ensure_ascii=False, default=str))
+        business_context_payload = model_context.get("business_context")
+        timings["organization_scope_chars"] = len(json.dumps(
+            business_context_payload.get("organization_scope", {})
+            if isinstance(business_context_payload, dict) else {},
+            ensure_ascii=False,
+            default=str,
+        ))
         messages.insert(
             3,
             {
@@ -587,7 +615,8 @@ class AIBusinessAgentService:
                     "AVAILABLE BUSINESS OS CAPABILITIES (executable):\n"
                     + json.dumps(available_capabilities, ensure_ascii=False, default=str)
                     + "\nFor a listed capability, emit its documented internal request format; do not tell the user to run it.\n"
-                    "The exact database schema and semantic environment are in AI BUSINESS OS SYSTEM CONTEXT above; do not infer or recreate them."
+                    "The compact business domain index is in AI BUSINESS OS SYSTEM CONTEXT. "
+                    "Use business.describe for exact fields or relationships not listed there."
                     + " Prefer aggregation, filtering, ordering and LIMIT in SQL for top/count/sum questions; return only the required evidence rows."
                     if business_context_enabled
                     else "Business analytical schema is not available to this role."
@@ -640,6 +669,10 @@ class AIBusinessAgentService:
                     "round1_and_evidence": sum(
                         len(str(message.get("content") or "")) for message in messages[4:]
                     ),
+                    "semantic_index_chars": int(timings.get("semantic_index_chars") or 0),
+                    "semantic_detail_chars": int(timings.get("semantic_detail_chars") or 0),
+                    "capability_schema_chars": int(timings.get("capability_schema_chars") or 0),
+                    "organization_scope_chars": int(timings.get("organization_scope_chars") or 0),
                 }
             logger.info(
                 "AI_AGENT_MODEL_REQUEST request_id=%s round=%s timestamp=%s tool_choice=%s provider=%s model=%s",
@@ -1314,6 +1347,13 @@ class AIBusinessAgentService:
                             key: value for key, value in sql_service.last_timing.items()
                             if key in {"sql_validation_ms", "postgres_query_ms", "capability_result_ms"}
                         })
+                    elif tool_name == "business.describe":
+                        tool_result = await asyncio.to_thread(
+                            sql_service.describe_semantic,
+                            domain=str(arguments.get("domain")) if arguments.get("domain") else None,
+                            entity=str(arguments.get("entity")) if arguments.get("entity") else None,
+                            detail=str(arguments.get("detail")) if arguments.get("detail") else None,
+                        )
                     else:
                         tool_result = await _resolve_tool_result(
                             tool_name,
@@ -1322,6 +1362,8 @@ class AIBusinessAgentService:
                             widget_builder,
                             router,
                         )
+                    if tool_name == "business.describe":
+                        timings["semantic_detail_chars"] = len(json.dumps(tool_result, ensure_ascii=False, default=str))
                     query_executed = tool_name in {"query_business_data", BUSINESS_QUERY_CAPABILITY}
                     if query_executed and isinstance(tool_result, dict) and tool_result.get("available") is not False:
                         runtime["successful_business_queries"] = int(runtime.get("successful_business_queries") or 0) + 1

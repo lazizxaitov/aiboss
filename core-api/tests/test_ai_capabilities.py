@@ -13,7 +13,7 @@ def test_business_roles_receive_read_only_business_query_capability():
     capabilities = ai_capability_registry.describe("business_analytics")
 
     assert {item["name"] for item in capabilities} == {
-        "business.query", "system.inspect", "ui.inspect",
+        "business.query", "business.describe", "system.inspect", "ui.inspect",
     }
     assert all(item["access"] == "read" for item in capabilities)
     business_query = next(item for item in capabilities if item["name"] == "business.query")

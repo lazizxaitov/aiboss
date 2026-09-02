@@ -119,10 +119,13 @@ class AISystemContextService:
             schema = sql_service.database_schema()
             context["database"] = {
                 "kind": "published_read_only_views",
-                "schema": schema,
-                "semantic_environment": sql_service.semantic_environment(
-                    schema,
-                    include_columns=not compact_business_data,
+                **(
+                    {"domain_index": sql_service.semantic_domain_index(schema)}
+                    if compact_business_data
+                    else {
+                        "schema": schema,
+                        "semantic_environment": sql_service.semantic_environment(schema),
+                    }
                 ),
             }
         if ui_context:
