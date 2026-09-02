@@ -97,6 +97,7 @@ class WidgetBuilderDraft(BaseModel):
 
     widget_id: str = Field(default_factory=lambda: str(uuid4()))
     title: str = ""
+    description: str | None = None
     widget_type: WidgetBuilderType = WidgetBuilderType.KPI
     metric: str | None = None
     period: str | None = None
@@ -136,6 +137,7 @@ class WidgetBuilderUpdatePatch(BaseModel):
     """Partial widget-config update payload."""
 
     title: str | None = None
+    description: str | None = None
     widget_type: WidgetBuilderType | None = None
     metric: str | None = None
     period: str | None = None
@@ -748,7 +750,7 @@ class WidgetBuilderService:
             state="ready" if metric.data_status == AnalyticsDataStatus.AVAILABLE else "partial",
             widget_type=WidgetBuilderType.KPI,
             title=draft.title or self._default_title(draft),
-            subtitle=metric.note,
+            subtitle=draft.description or metric.note,
             data_status=metric.data_status,
             payload={
                 "metric": metric.model_dump(mode="json"),
@@ -773,7 +775,7 @@ class WidgetBuilderService:
             state=state,
             widget_type=WidgetBuilderType.DETAILED_LIST,
             title=draft.title or self._default_title(draft),
-            subtitle=payload.get("subtitle"),
+            subtitle=draft.description or payload.get("subtitle"),
             data_status=data_status,
             payload=payload,
             notes=[] if rows else ["No rows available for the selected scope."],
@@ -800,7 +802,7 @@ class WidgetBuilderService:
             state=state,
             widget_type=WidgetBuilderType.LINE_CHART,
             title=draft.title or self._default_title(draft),
-            subtitle=report.period.label,
+            subtitle=draft.description or report.period.label,
             data_status=report.data_quality.overall_status,
             payload={"series": series, "period": self._period_payload(query)},
             notes=[] if series else ["No time-series data available."],
@@ -820,7 +822,7 @@ class WidgetBuilderService:
             state=state,
             widget_type=WidgetBuilderType.BAR_CHART,
             title=draft.title or self._default_title(draft),
-            subtitle=payload.get("subtitle"),
+            subtitle=draft.description or payload.get("subtitle"),
             data_status=self._payload_status(payload),
             payload=payload,
             notes=[] if rows else ["No bar-chart data available."],
@@ -848,7 +850,7 @@ class WidgetBuilderService:
             state=state,
             widget_type=WidgetBuilderType.DONUT,
             title=draft.title or self._default_title(draft),
-            subtitle=payload.get("subtitle"),
+            subtitle=draft.description or payload.get("subtitle"),
             data_status=self._payload_status(payload),
             payload={"slices": slices, "period": self._period_payload(query)},
             notes=[] if slices else ["No composition data available."],
@@ -869,7 +871,7 @@ class WidgetBuilderService:
             state=state,
             widget_type=WidgetBuilderType.RANKING,
             title=draft.title or self._default_title(draft),
-            subtitle=payload.get("subtitle"),
+            subtitle=draft.description or payload.get("subtitle"),
             data_status=self._payload_status(payload),
             payload=payload,
             notes=[] if rows else ["No ranking data available."],
@@ -908,7 +910,7 @@ class WidgetBuilderService:
             state="ready" if rows else "no_data",
             widget_type=WidgetBuilderType.COMPARISON,
             title=draft.title or self._default_title(draft),
-            subtitle=summary.period.label,
+            subtitle=draft.description or summary.period.label,
             data_status=summary.data_quality.overall_status,
             payload={"rows": rows, "period": self._period_payload(query)},
             notes=[] if rows else ["No comparison data available."],

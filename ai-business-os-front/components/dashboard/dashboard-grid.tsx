@@ -3802,10 +3802,10 @@ export function DashboardGrid() {
       widget_id: "ai-builder-preview",
       widget_type: widgetType,
       title: String(aiWidgetBuilderDraft.title ?? "Новый виджет"),
-      subtitle: String(aiWidgetBuilderPreview?.subtitle ?? "Актуальные данные"),
+      subtitle: String(aiWidgetBuilderDraft.description ?? aiWidgetBuilderPreview?.subtitle ?? "Актуальные данные"),
       semantic_size: "L",
       priority: 0,
-      summary: String(aiWidgetBuilderDraft.metric ?? "Показатель бизнеса"),
+      summary: String(aiWidgetBuilderDraft.description ?? aiWidgetBuilderDraft.metric ?? "Показатель бизнеса"),
       payload,
     });
   }, [aiWidgetBuilderDraft, aiWidgetBuilderPreview, selectedOrganizationName]);
@@ -3952,20 +3952,18 @@ export function DashboardGrid() {
                   open={suggestionsDrawerOpen}
                   onClick={openSuggestionsDrawer}
                 />
-                {hiddenCount > 0 ? (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => {
-                      setLibraryError(null);
-                      setLibrarySelectedType((current) => current ?? widgetCatalog[0]?.widget_type ?? "kpi");
-                      setLibrarySelectedOrganizationId((current) => current || businessState.selectedOrganizationIds[0] || availableOrganizations[0]?.id || "");
-                      setWidgetLibraryOpen(true);
-                    }}
-                  >
-                    Добавить виджеты
-                  </Button>
-                ) : null}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    setLibraryError(null);
+                    setLibrarySelectedType((current) => current ?? widgetCatalog[0]?.widget_type ?? "kpi");
+                    setLibrarySelectedOrganizationId((current) => current || businessState.selectedOrganizationIds[0] || availableOrganizations[0]?.id || "");
+                    setWidgetLibraryOpen(true);
+                  }}
+                >
+                  Добавить виджеты
+                </Button>
                 <Button variant="secondary" size="sm" onClick={resetLayouts}>
                   Сбросить раскладку
                 </Button>
@@ -4119,6 +4117,7 @@ export function DashboardGrid() {
                 <p className="mt-2">Тип: {String(aiWidgetBuilderDraft.widget_type ?? "не указан")}</p>
                 <p>Метрика: {String(aiWidgetBuilderDraft.metric ?? "будет определена AI")}</p>
                 <p>Период: {String(aiWidgetBuilderDraft.period ?? businessState.period.preset)}</p>
+                {aiWidgetBuilderDraft.description ? <p className="mt-2 text-slate-300">{String(aiWidgetBuilderDraft.description)}</p> : null}
                 {aiWidgetBuilderClarification ? <p className="mt-2 text-amber-200">Нужно уточнение перед сохранением.</p> : null}
               </div>
             ) : null}

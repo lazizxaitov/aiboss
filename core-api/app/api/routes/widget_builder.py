@@ -134,6 +134,8 @@ async def widget_builder_chat(
         "After sufficient evidence, return a final JSON object only, with this shape:\n"
         '{"assistant_message":"...","widget_draft":{...}|null,"clarification_required":false,"clarification_options":[]}\n'
         "The widget_draft must use the existing WidgetBuilderDraft schema and must match the requested metric, organization, period and widget type.\n"
+        "The widget_type controls only the visual presentation, not the meaning of the widget. Always generate a concise, user-facing title from USER_WIDGET_REQUEST and its resolved entities; never use a generic type or metric title when the request provides a subject. For example, a KPI about seller Bekzod's sales should be titled 'Продажи Бекзода'.\n"
+        "If the requested widget can show supporting text, also generate a short user-facing description in widget_draft.description explaining exactly what the widget tracks, including the selected entity and period when known. Do not copy technical field names or IDs into title or description.\n"
         "If evidence is insufficient or the request is ambiguous, return widget_draft=null and clarification_required=true.\n"
         "Never invent data, columns, SQL results, organizations, or widget fields.\n"
         f"USER_WIDGET_REQUEST: {json.dumps(widget_goal, ensure_ascii=False, default=str)}\n"
