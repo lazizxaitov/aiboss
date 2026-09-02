@@ -14,5 +14,11 @@ def test_explicit_proactive_budget_overrides_default():
     assert settings.ai_analytics_agent_timeout_seconds == 180.0
 
 
+def test_widget_analysis_has_a_short_independent_budget():
+    settings = Settings(_env_file=None, debug=True)
+
+    assert settings.ai_analytics_widget_timeout_seconds == 60.0
+
+
 def test_ordinary_chat_limits_are_not_changed_by_proactive_budget():
     assert CHAT_MAX_ROUNDS == 4

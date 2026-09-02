@@ -15,6 +15,14 @@ router = APIRouter(prefix="/ai/insights")
 _MANUAL_ANALYSIS_TASKS: dict[int, asyncio.Task[AutoAnalyticsRun]] = {}
 
 
+async def _run_analysis_in_worker(store: CoreDataStore) -> AutoAnalyticsRun:
+    """Run the synchronous-storage analytics flow outside the API event loop."""
+
+    return await asyncio.to_thread(
+        lambda: asyncio.run(AutoBusinessAnalyticsService(store).run()),
+    )
+
+
 def _forget_manual_task(store_key: int, task: asyncio.Task[AutoAnalyticsRun]) -> None:
     if _MANUAL_ANALYSIS_TASKS.get(store_key) is task:
         _MANUAL_ANALYSIS_TASKS.pop(store_key, None)
@@ -59,7 +67,7 @@ async def run_dashboard_analysis(
             else AutoAnalyticsRun(status="running")
         )
 
-    task = asyncio.create_task(AutoBusinessAnalyticsService(store).run())
+    task = asyncio.create_task(_run_analysis_in_worker(store))
     _MANUAL_ANALYSIS_TASKS[store_key] = task
     task.add_done_callback(lambda completed: _forget_manual_task(store_key, completed))
     latest = AutoBusinessAnalyticsService(store).latest()

@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     ai_analytics_language: str = "ru"
     ai_analytics_timeout_seconds: float = 8.0
     ai_analytics_agent_timeout_seconds: float = 300.0
+    ai_analytics_widget_timeout_seconds: float = 60.0
     ai_analytics_prompt_version: str = "phase-3c-v1"
     ai_analytics_cache_ttl_seconds: int = 300
     ai_chat_timeout_seconds: float = 45.0

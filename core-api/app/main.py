@@ -27,7 +27,12 @@ async def _run_startup_auto_analysis(store) -> None:
     """Refresh AI insights once from already materialized Core data."""
 
     try:
-        await AutoBusinessAnalyticsService(store).run_startup_if_needed()
+        # The analytics service combines async provider calls with synchronous
+        # Core storage access. Keep that optional startup work off the API
+        # event loop so chat/SSE and ordinary data endpoints stay responsive.
+        await asyncio.to_thread(
+            lambda: asyncio.run(AutoBusinessAnalyticsService(store).run_startup_if_needed()),
+        )
     except asyncio.CancelledError:
         raise
     except Exception as error:  # noqa: BLE001 - analytics must not affect readiness

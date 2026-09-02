@@ -122,6 +122,28 @@ def test_stale_analyzing_status_enters_retry_state_instead_of_running_forever():
     assert "допустимый срок" in payload["message"]
 
 
+def test_stale_widget_analysis_uses_its_persisted_budget():
+    store = InMemoryCoreDataLayer()
+    now = datetime.now(UTC)
+    run = AutoAnalyticsRun(
+        analysis_id="running-widget",
+        status="running",
+        analysis_level="widget",
+        total_budget_seconds=60.0,
+        started_at=now - timedelta(seconds=130),
+    )
+    AutoBusinessAnalyticsService(store)._save(run)
+    store.upsert_app_setting(AppSetting(
+        setting_key="ai_business_analytics:status:v1",
+        setting_value=AutoAnalyticsStatus(status="analyzing", last_started_at=now - timedelta(seconds=130)).model_dump(mode="json"),
+        metadata={},
+        created_at=now,
+        updated_at=now,
+    ))
+
+    assert AutoBusinessAnalyticsService(store).status().status == "retry_wait"
+
+
 def test_manual_analysis_starts_in_background_and_deduplicates_requests():
     store = InMemoryCoreDataLayer()
     started = asyncio.Event()

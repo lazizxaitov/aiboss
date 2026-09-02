@@ -319,7 +319,16 @@ class AutoBusinessAnalyticsService:
                 status = AutoAnalyticsStatus.model_validate(setting.setting_value)
                 if status.status == "analyzing" and status.last_started_at is not None:
                     age_seconds = (datetime.now(UTC) - status.last_started_at).total_seconds()
-                    stale_after = max(60.0, settings.ai_analytics_agent_timeout_seconds) + 60.0
+                    latest_run = self.latest()
+                    configured_budget = (
+                        latest_run.total_budget_seconds
+                        if latest_run is not None and latest_run.status == "running"
+                        else None
+                    )
+                    stale_after = max(
+                        60.0,
+                        configured_budget or settings.ai_analytics_agent_timeout_seconds,
+                    ) + 60.0
                     if age_seconds > stale_after:
                         stale = AutoAnalyticsStatus(
                             status="retry_wait",
@@ -408,7 +417,9 @@ class AutoBusinessAnalyticsService:
 
     async def _run_locked(self, mode: Literal["widget", "daily", "deep"]) -> AutoAnalyticsRun:
         analysis_started = datetime.now(UTC)
-        await hermes_model_registry.get_providers(refresh=True)
+        # The registry is TTL-cached. A forced network refresh here made every
+        # automatic insight run pay an avoidable provider-discovery round-trip.
+        await hermes_model_registry.get_providers()
         router = AITaskRouter(self.store)
         candidates = router.resolve_candidates("business_analytics")
         runtime = candidates[0] if candidates else {}
@@ -443,7 +454,11 @@ class AutoBusinessAnalyticsService:
             analysis_level=mode,
             data_version=data_version,
             started_at=analysis_started,
-            total_budget_seconds=settings.ai_analytics_agent_timeout_seconds,
+            total_budget_seconds=(
+                settings.ai_analytics_widget_timeout_seconds
+                if mode == "widget"
+                else settings.ai_analytics_agent_timeout_seconds
+            ),
         )
         self._save(run)
         logger.info(
@@ -525,7 +540,7 @@ class AutoBusinessAnalyticsService:
                 model_id=None,
                 build_baseline=False,
                 tool_call_budget={"widget": 4, "daily": 6, "deep": 12}[mode],
-                max_duration_seconds=settings.ai_analytics_agent_timeout_seconds,
+                max_duration_seconds=run.total_budget_seconds,
             )
             run.capability_calls = agent_result.tool_calls
             run.capability_attempts = int(agent_result.runtime.get("capability_attempts") or 0)
