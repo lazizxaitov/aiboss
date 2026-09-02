@@ -9,6 +9,7 @@ from app.core.ai_readonly_sql import (
     AIReadOnlyQueryError,
     AIReadOnlySQLService,
     ALLOWED_VIEWS,
+    _escape_percent_literals,
 )
 from app.storage.sqlite.adapter import SQLiteCoreStore
 
@@ -36,6 +37,24 @@ def test_sql_research_is_scoped_limited_and_read_only():
     assert params == ("org-1",)
     assert timeout == 20_000
     assert "LIMIT 100" in sql
+
+
+def test_sql_research_escapes_percent_wildcards_before_psycopg_bind_formatting():
+    store = FakeStore()
+
+    AIReadOnlySQLService(store).execute(
+        "SELECT sales_rep_name FROM ai_visits WHERE sales_rep_name ILIKE '%Акрамова Нигора%'",
+        organization_id="org-1",
+    )
+
+    sql, params, _ = store.calls[0]
+    assert "ILIKE '%%Акрамова Нигора%%'" in sql
+    assert params == ("org-1",)
+
+
+def test_percent_literal_escaping_does_not_change_non_literal_sql():
+    sql = "SELECT total_amount % 2 AS remainder FROM ai_sales"
+    assert _escape_percent_literals(sql) == sql
 
 
 def test_sql_research_defaults_to_all_accessible_organizations():

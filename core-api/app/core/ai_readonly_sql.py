@@ -71,6 +71,36 @@ class AIReadOnlyQueryError(ValueError):
     """Raised when a model-generated SQL query is outside the safe contract."""
 
 
+def _escape_percent_literals(sql: str) -> str:
+    """Escape pyformat markers inside SQL string literals for bound queries.
+
+    Psycopg treats ``%`` as a parameter marker when a parameter tuple is
+    supplied, even when the character is inside a PostgreSQL LIKE/ILIKE
+    literal. Doubling percent signs only while inside quoted literals keeps
+    wildcard semantics after psycopg formatting and leaves SQL operators
+    untouched.
+    """
+
+    output: list[str] = []
+    in_literal = False
+    index = 0
+    while index < len(sql):
+        character = sql[index]
+        if character == "'":
+            output.append(character)
+            if in_literal and index + 1 < len(sql) and sql[index + 1] == "'":
+                output.append("'")
+                index += 2
+                continue
+            in_literal = not in_literal
+        elif character == "%" and in_literal:
+            output.append("%%")
+        else:
+            output.append(character)
+        index += 1
+    return "".join(output)
+
+
 @dataclass(frozen=True, slots=True)
 class AIQueryResult:
     rows: list[dict[str, Any]]
@@ -387,6 +417,7 @@ class AIReadOnlySQLService:
             if replacements != 1:
                 raise AIReadOnlyQueryError("Не удалось применить organization scope к запросу.")
             params = tuple(scope)
+            query = _escape_percent_literals(query)
         elif view != "ai_organizations":
             raise AIReadOnlyQueryError("Для бизнес-данных требуется organization scope.")
         query_started = monotonic()
