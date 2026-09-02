@@ -16,6 +16,7 @@ from app.api.routes.auth import _session
 from app.core.auto_business_analytics import AutoBusinessAnalyticsService
 from app.core.config import settings
 from app.core.data_layer.factory import get_core_store, initialize_core_store
+from app.core.telegram_transport import run_telegram_transport
 from app.integrations.smartup.bootstrap import bootstrap_smartup_organizations_from_env
 from app.integrations.smartup.live_sync import SmartUpLiveSyncService
 
@@ -86,11 +87,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         else None
     )
     app.state.auto_analysis_task = auto_analysis_task
+    telegram_transport_task = (
+        asyncio.create_task(run_telegram_transport(store))
+        if settings.telegram_transport_enabled and settings.telegram_bot_token
+        else None
+    )
+    app.state.telegram_transport_task = telegram_transport_task
     yield
     if auto_analysis_task is not None:
         auto_analysis_task.cancel()
         try:
             await auto_analysis_task
+        except asyncio.CancelledError:
+            pass
+    if telegram_transport_task is not None:
+        telegram_transport_task.cancel()
+        try:
+            await telegram_transport_task
         except asyncio.CancelledError:
             pass
     live_sync.stop()

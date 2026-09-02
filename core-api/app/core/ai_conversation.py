@@ -133,6 +133,11 @@ class AIConversationService:
         target = self.get_index().telegram_chat_targets.get(str(telegram_chat_id))
         return dict(target) if isinstance(target, dict) else None
 
+    def get_telegram_identity(self, telegram_chat_id: str) -> str | None:
+        """Return the explicitly linked Business OS identity for a Telegram chat."""
+
+        return self.get_index().telegram_chat_to_identity.get(str(telegram_chat_id))
+
     def set_telegram_target(
         self,
         telegram_chat_id: str,
@@ -229,6 +234,33 @@ class AIConversationService:
         index.active_by_identity[channel_identity] = conversation.conversation_id
         if telegram_chat_id:
             index.telegram_chat_to_identity[str(telegram_chat_id)] = identity
+        self.save_index(index)
+        return self.save_conversation(conversation)
+
+    def start_new_telegram_conversation(
+        self,
+        *,
+        telegram_chat_id: str,
+        user_id: str,
+        organization_id: UUID | None = None,
+        period: str | None = None,
+    ) -> AIConversationState:
+        """Start a fresh chat while preserving the Telegram identity and model target."""
+
+        index = self.get_index()
+        identity = index.telegram_chat_to_identity.get(str(telegram_chat_id)) or user_id
+        channel_identity = f"{AIConversationChannel.TELEGRAM.value}:{identity}"
+        current_id = index.active_by_identity.get(channel_identity)
+        current = self.get_conversation(current_id) if current_id else None
+        conversation = AIConversationState(
+            user_id=identity,
+            organization_id=organization_id if organization_id is not None else (current.organization_id if current else None),
+            period=period if period is not None else (current.period if current else None),
+            source_channel=AIConversationChannel.TELEGRAM,
+            telegram_chat_id=telegram_chat_id,
+        )
+        index.active_by_identity[channel_identity] = conversation.conversation_id
+        index.telegram_chat_to_identity[str(telegram_chat_id)] = identity
         self.save_index(index)
         return self.save_conversation(conversation)
 

@@ -204,8 +204,7 @@ def get_conversation_history(
     )
 
 
-@router.post("/chat", response_model=TelegramChatResponse)
-async def telegram_chat(
+async def handle_telegram_chat(
     request: TelegramChatRequest,
     store: Annotated[CoreDataStore, Depends(get_core_store)],
 ) -> TelegramChatResponse:
@@ -234,6 +233,25 @@ async def telegram_chat(
 
     user_text = _message_text(request.message)
     command, argument = _command_parts(user_text)
+    if command == "/new":
+        linked_identity = service.get_telegram_identity(request.telegram_chat_id)
+        if not linked_identity:
+            return _command_result(
+                conversation=conversation,
+                service=service,
+                text="Этот Telegram-чат ещё не подключён к AI Business OS.",
+            )
+        conversation = service.start_new_telegram_conversation(
+            telegram_chat_id=request.telegram_chat_id,
+            user_id=linked_identity,
+            organization_id=request.organization_id,
+            period=request.period,
+        )
+        return _command_result(
+            conversation=conversation,
+            service=service,
+            text="Новый диалог начат. Подключение и выбранная модель сохранены.",
+        )
     if command in {"/ai", "/model", "/current", "/organization", "/period"}:
         if command == "/ai":
             if not argument:
@@ -322,12 +340,9 @@ async def telegram_chat(
     target = service.get_telegram_target(request.telegram_chat_id)
     explicit_provider = request.provider_id or (target or {}).get("provider_id")
     explicit_model = request.model_id or (target or {}).get("model_id")
-    lowered_text = user_text.lower()
+    # Telegram conversations use the configured conversational role. The shared
+    # Agent Core decides whether a capability is needed from the model context.
     task_type = "ai_chat"
-    if "свеж" in lowered_text and "анализ" in lowered_text:
-        task_type = "business_analytics"
-    elif any(word in lowered_text for word in ("добавь виджет", "удали виджет", "измени виджет", "создай виджет")):
-        task_type = "system_action"
     candidates = router.resolve_candidates(
         task_type,
         provider_id=explicit_provider if task_type == "ai_chat" else None,
@@ -381,3 +396,13 @@ async def telegram_chat(
         model_id=str(result.runtime.get("model_id")),
         fallback_used=bool(result.runtime.get("fallback_used", False)),
     )
+
+
+@router.post("/chat", response_model=TelegramChatResponse)
+async def telegram_chat(
+    request: TelegramChatRequest,
+    store: Annotated[CoreDataStore, Depends(get_core_store)],
+) -> TelegramChatResponse:
+    """HTTP adapter for the shared Telegram application service."""
+
+    return await handle_telegram_chat(request, store)
