@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     telegram_transport_enabled: bool = True
     telegram_poll_timeout_seconds: int = 25
     telegram_request_timeout_seconds: float = 35.0
+    telegram_ai_timeout_seconds: float = 120.0
     telegram_bot_username: str | None = None
     telegram_max_media_bytes: int = 20 * 1024 * 1024
     telegram_media_dir: str = "/tmp/aiboss-telegram-media"
