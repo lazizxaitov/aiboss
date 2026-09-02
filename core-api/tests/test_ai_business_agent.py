@@ -213,9 +213,8 @@ def test_internal_database_question_receives_business_data_capability():
     assert result.final_text == "Ответ подтвержден внутренними данными."
     first_messages = request.await_args_list[0].kwargs["messages"]
     capability = "\n".join(str(message.get("content")) for message in first_messages)
-    assert "INTERNAL AI BUSINESS OS DATA ACCESS IS CONNECTED" in capability
+    assert "business.query" in capability
     assert "ai_sales" in capability
-    assert "query_business_data" not in capability
 
 
 def test_business_text_without_tools_gets_generic_evidence_retry():
@@ -231,6 +230,45 @@ def test_business_text_without_tools_gets_generic_evidence_retry():
     assert resolve.await_count == 1
     assert request.await_args_list[0].kwargs["tool_choice"] == "none"
     assert all(call.kwargs["tool_choice"] == "none" for call in request.await_args_list)
+
+
+def test_business_chat_refusal_is_retried_through_business_query():
+    class SQLStore:
+        def execute_ai_readonly_sql(self, sql, params, *, statement_timeout_ms):
+            return [{"manager": "Bekzod", "revenue": 500000}]
+
+    async def execute():
+        from app.core.hermes_tools import HermesBusinessTools
+
+        with patch("app.api.routes.ai_chat._hermes_request", new_callable=AsyncMock) as request:
+            request.side_effect = [
+                _response({"content": "Я не имею доступа к базе данных продаж."}),
+                _response({"content": '{"capability":"business.query","arguments":{"sql":"SELECT 1 FROM ai_sales LIMIT 1"}}'}),
+                _response({"content": "Лидер — Bekzod, 500 000 сум."}),
+            ]
+            result = await AIBusinessAgentService(SQLStore()).run(
+                conversation=AIConversationState(
+                    organization_id=UUID("11111111-1111-1111-1111-111111111111"),
+                    messages=[AIConversationMessage(
+                        role="user", content="Кто больше всех продал за эту неделю?",
+                        source_channel=AIConversationChannel.TELEGRAM,
+                    )],
+                ),
+                user_text="Кто больше всех продал за эту неделю?",
+                source_channel="telegram",
+                task_type="ai_chat",
+                router=FakeRouter(),
+                tools_service=HermesBusinessTools(SQLStore()),
+                widget_builder=object(),
+                memory_prompt="memory",
+                system_prompt="agent",
+            )
+            return result, request
+
+    result, request = asyncio.run(execute())
+
+    assert result.final_text == "Лидер — Bekzod, 500 000 сум."
+    assert request.await_count == 3
 
 
 def test_seller_lookup_with_past_tense_enters_structured_business_flow():

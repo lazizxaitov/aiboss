@@ -646,6 +646,7 @@ class AIBusinessAgentService:
         structured_mode = False
         structured_repair_used = False
         capability_repair_used = False
+        business_query_repair_used = False
         tool_choice_for_round = "auto"
         max_rounds = MAX_ROUNDS
         if task_type == "ai_chat":
@@ -1221,7 +1222,33 @@ class AIBusinessAgentService:
                         if response.status_code >= 400:
                             raise ValueError("AI provider вернул ошибку при исправлении capability-запроса.")
                         continue
-                    raise ValueError("AI вернул незавершённый внутренний capability-запрос.")
+                        raise ValueError("AI вернул незавершённый внутренний capability-запрос.")
+                if business_context_enabled and int(runtime.get("successful_business_queries") or 0) == 0:
+                    if not business_query_repair_used:
+                        business_query_repair_used = True
+                        messages.append({
+                            "role": "assistant",
+                            "content": str(assistant_message.get("content") or ""),
+                        })
+                        messages.append({
+                            "role": "system",
+                            "content": (
+                                "This is a business-data question. Do not answer that data is unavailable and do not "
+                                "describe backend or database access. First execute exactly one relevant business.query "
+                                "capability using the published AI Business OS schema, then answer from its returned rows."
+                            ),
+                        })
+                        response = await model_request(
+                            messages=messages,
+                            tool_choice="auto",
+                            model=str(runtime["model_id"]),
+                            provider=str(runtime["provider_id"]),
+                            round_number=rounds + 1,
+                        )
+                        if response.status_code >= 400:
+                            raise ValueError("AI provider вернул ошибку при запросе бизнес-данных.")
+                        continue
+                    raise ValueError("AI не выполнил обязательную проверку бизнес-данных.")
                 if not structured_mode and total_tool_calls:
                     repeated_action = _parse_json_object(assistant_message.get("content"))
                     if isinstance(repeated_action, dict) and repeated_action.get("action") == "query":
