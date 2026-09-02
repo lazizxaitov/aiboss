@@ -3537,6 +3537,10 @@ export function DashboardGrid() {
     () => availableOrganizations.find((item) => item.id === librarySelectedOrganizationId)?.name ?? null,
     [availableOrganizations, librarySelectedOrganizationId],
   );
+  const effectiveLibraryOrganizationId = librarySelectedOrganizationId
+    || businessState.selectedOrganizationIds[0]
+    || availableOrganizations[0]?.id
+    || "";
   const previewWidget = useMemo(() => {
     if (!selectedCatalogItem) return null;
     const orgName = selectedOrganizationName ?? "Организация";
@@ -3822,7 +3826,7 @@ export function DashboardGrid() {
 
   const addLibraryWidget = useCallback(async () => {
     if (!selectedCatalogItem) return;
-    const organizationId = librarySelectedOrganizationId || businessState.selectedOrganizationIds[0] || availableOrganizations[0]?.id || "";
+    const organizationId = effectiveLibraryOrganizationId;
     if (!organizationId) {
       setLibraryError("Выберите организацию для этого виджета.");
       return;
@@ -3904,7 +3908,7 @@ export function DashboardGrid() {
     } finally {
       setLibraryLoading(false);
     }
-  }, [allWidgets, availableOrganizations, businessState.period.dateFrom, businessState.period.dateTo, businessState.period.preset, businessState.selectedOrganizationIds, librarySelectedOrganizationId, selectedCatalogItem, updateSemanticState]);
+  }, [allWidgets, availableOrganizations, businessState.period.dateFrom, businessState.period.dateTo, businessState.period.preset, businessState.selectedOrganizationIds, effectiveLibraryOrganizationId, selectedCatalogItem, updateSemanticState]);
 
   const setSavedWidgetVisible = useCallback(async (widgetId: string, visible: boolean) => {
     const nextIds = visible
@@ -4363,7 +4367,7 @@ export function DashboardGrid() {
                   />
                   <Select
                     label="Организация"
-                    value={librarySelectedOrganizationId}
+                    value={effectiveLibraryOrganizationId}
                     options={availableOrganizations.map((item) => ({ value: item.id, label: item.name }))}
                     onChange={setLibrarySelectedOrganizationId}
                     placeholder="Выберите организацию"
@@ -4374,7 +4378,7 @@ export function DashboardGrid() {
                   {libraryError ? <p className="text-sm text-rose-300">{libraryError}</p> : null}
                   <Button
                     className="w-full"
-                    disabled={libraryLoading || !librarySelectedOrganizationId}
+                    disabled={libraryLoading || !effectiveLibraryOrganizationId}
                     onClick={() => {
                       void addLibraryWidget();
                     }}

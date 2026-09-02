@@ -11,6 +11,7 @@ import {
 } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
+import { useOwnerSessionState } from "@/components/auth/session-lock-guard";
 import {
   getCachedSmartUpOrganizations,
   getOrganizationContext,
@@ -162,6 +163,7 @@ export function BusinessContextProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const session = useOwnerSessionState();
   const [state, setState] = useState<BusinessContextState>(DEFAULT_STATE);
   const [availableOrganizations, setAvailableOrganizations] = useState<BusinessContextOrganizationOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -181,14 +183,23 @@ export function BusinessContextProvider({ children }: { children: ReactNode }) {
           }))
           .sort((left, right) => left.name.localeCompare(right.name, "ru")),
       );
+    }
+
+    if (!session.hydrated || !session.authenticated || session.locked) {
       return () => {
         active = false;
       };
     }
 
-    void getSmartUpOrganizations()
-      .then((items) => {
-        if (!active || items.length === 0) return;
+    let retryTimer: number | undefined;
+    let attempt = 0;
+    const maxAttempts = 8;
+    const load = async () => {
+      try {
+        const items = await getSmartUpOrganizations({
+          forceRefresh: !cachedOrganizations || cachedOrganizations.length === 0,
+        });
+        if (!active) return;
         setAvailableOrganizations(
           items
             .map((item) => ({
@@ -197,15 +208,20 @@ export function BusinessContextProvider({ children }: { children: ReactNode }) {
             }))
             .sort((left, right) => left.name.localeCompare(right.name, "ru")),
         );
-      })
-      .catch(() => {
-        if (!active) return;
-      });
+      } catch {
+        if (!active || attempt >= maxAttempts) return;
+        attempt += 1;
+        retryTimer = window.setTimeout(() => void load(), Math.min(5_000, 750 * attempt));
+      }
+    };
+
+    void load();
 
     return () => {
       active = false;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
     };
-  }, []);
+  }, [session.authenticated, session.hydrated, session.locked]);
 
   useEffect(() => {
     if (initialised.current) return;
