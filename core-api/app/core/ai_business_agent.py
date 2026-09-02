@@ -1081,9 +1081,9 @@ class AIBusinessAgentService:
             )
 
         for rounds in range(1, max_rounds + 1):
-            # The initial provider response is already available and must be
-            # parsed before the research cutoff is evaluated for later turns.
-            check_deadline("initial_model" if rounds == 1 else "research_deadline")
+            # `response` was produced by the preceding provider call. Deadline
+            # checks belong before starting work, never before accepting a
+            # response that has already completed successfully.
             logger.info(
                 "AI_AGENT_ROUND request_id=%s round=%s tool_calls=%s tool_choice=%s",
                 request_id,
