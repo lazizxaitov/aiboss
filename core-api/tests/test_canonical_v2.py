@@ -3,6 +3,7 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 from app.core.data_layer.migrations import SmartUpCanonicalV2FoundationService
 from app.core.data_layer.canonical_v2 import CanonicalDataQualityStatus
@@ -855,6 +856,13 @@ def test_canonical_v2_phase2d_materializes_visits_from_visit_headers() -> None:
     assert visit.working_zone_id is not None
     assert visit.normalized_status == "completed"
     assert visit.is_planned is True
+    assert visit.visit_start_time == datetime(
+        2026, 8, 10, 9, 0, tzinfo=ZoneInfo("Asia/Tashkent")
+    )
+    assert visit.visit_end_time == datetime(
+        2026, 8, 10, 9, 15, tzinfo=ZoneInfo("Asia/Tashkent")
+    )
+    assert visit.visited_at == visit.visit_start_time
     assert visit.duration_seconds == 900
     assert visit.derived_duration_seconds == 900
     assert visit.note == "Shelf checked"
@@ -889,6 +897,36 @@ def test_canonical_v2_parse_source_datetime_supports_real_smartup_formats() -> N
     )
     assert service._parse_source_datetime("2026-08-05T15:18:00") == datetime(
         2026, 8, 5, 15, 18, 0, tzinfo=UTC
+    )
+
+
+def test_canonical_v2_visit_datetimes_preserve_business_local_wall_clock() -> None:
+    service = SmartUpCanonicalV2FoundationService(InMemoryCoreDataLayer())
+    tashkent = ZoneInfo("Asia/Tashkent")
+
+    start = service._parse_visit_datetime("02.09.2026 21:25:43")
+    end = service._parse_visit_datetime("02.09.2026 21:26:36")
+
+    assert start == datetime(2026, 9, 2, 21, 25, 43, tzinfo=tashkent)
+    assert end == datetime(2026, 9, 2, 21, 26, 36, tzinfo=tashkent)
+    assert (end - start).total_seconds() == 53
+    assert start.date() == datetime(2026, 9, 2).date()
+
+    # Explicit timezone input already identifies an instant and must not be
+    # reinterpreted as a naive Asia/Tashkent wall-clock value.
+    assert service._parse_visit_datetime("2026-09-02T21:25:43+00:00") == datetime(
+        2026, 9, 2, 21, 25, 43, tzinfo=UTC
+    )
+    assert service._parse_visit_datetime(datetime(2026, 9, 2, 21, 25, 43)) == start
+
+
+def test_canonical_v2_visit_date_keeps_date_only_contract() -> None:
+    service = SmartUpCanonicalV2FoundationService(InMemoryCoreDataLayer())
+
+    # Date-only fields remain on the existing canonical date contract. The
+    # local wall-clock fix applies only to event start/end timestamps.
+    assert service._parse_source_datetime("02.09.2026") == datetime(
+        2026, 9, 2, tzinfo=UTC
     )
 
 

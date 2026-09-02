@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from app.core.data_layer.canonical_v2 import (
     CanonicalCustomer,
@@ -71,6 +72,7 @@ from app.integrations.smartup.models import (
 
 _SAFE_RAW_STATUSES = {"CONSISTENT", "LEGACY_MISSING_REQUEST_CONTEXT"}
 _SOURCE_IDENTIFIER_MISSING = "SMARTUP_SOURCE_IDENTIFIER_MISSING"
+_BUSINESS_TIMEZONE = ZoneInfo("Asia/Tashkent")
 
 
 @dataclass(slots=True)
@@ -2305,8 +2307,11 @@ class SmartUpCanonicalV2FoundationService:
         sales_rep_external_id = self._first_text(row, "sales_manager_id", "sales_manager_code")
         working_zone_external_id = self._first_text(row, "room_id", "room_code", "room_name")
         visit_date = self._parse_source_datetime(row.get("visit_date"))
-        visit_start_time = self._parse_source_datetime(row.get("visit_start_time"))
-        visit_end_time = self._parse_source_datetime(row.get("visit_end_time"))
+        # SmartUp visit start/end values are business-local wall-clock values.
+        # Keep the generic UTC parser for other canonical domains and only
+        # apply the visit timestamp contract at this boundary.
+        visit_start_time = self._parse_visit_datetime(row.get("visit_start_time"))
+        visit_end_time = self._parse_visit_datetime(row.get("visit_end_time"))
         source_duration = self._parse_optional_int(
             row.get("time_at_retail_outlet_sec") or row.get("spent_time"),
         )
@@ -4715,6 +4720,41 @@ class SmartUpCanonicalV2FoundationService:
             except ValueError:
                 continue
             return parsed.replace(tzinfo=UTC)
+        return None
+
+    @staticmethod
+    def _parse_visit_datetime(value: object | None) -> datetime | None:
+        """Parse visit event times as Asia/Tashkent wall-clock values.
+
+        SmartUp exports visit times without an offset, and those values are
+        local business time rather than UTC. Explicitly zoned inputs retain
+        their supplied instant instead of being reinterpreted as local time.
+        ``visit_date`` intentionally continues using the date-field contract
+        in ``_parse_source_datetime``; it is a business date, not an event
+        timestamp.
+        """
+
+        if isinstance(value, datetime):
+            return value.replace(tzinfo=_BUSINESS_TIMEZONE) if value.tzinfo is None else value
+        text = SmartUpCanonicalV2FoundationService._clean_text(value)
+        if text is None:
+            return None
+        iso_text = text[:-1] + "+00:00" if text.endswith("Z") else text
+        try:
+            parsed = datetime.fromisoformat(iso_text)
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            return parsed.replace(tzinfo=_BUSINESS_TIMEZONE) if parsed.tzinfo is None else parsed
+        for fmt in (
+            "%d.%m.%Y %H:%M:%S",
+            "%d.%m.%y %H:%M:%S",
+            "%Y-%m-%d %H:%M:%S",
+        ):
+            try:
+                return datetime.strptime(text, fmt).replace(tzinfo=_BUSINESS_TIMEZONE)
+            except ValueError:
+                continue
         return None
 
     def _customer_candidate_rows(
