@@ -146,6 +146,48 @@ def test_successful_business_query_stops_on_next_final():
     assert result.runtime["timings"]["db_queries"] == 1
 
 
+def test_research_deadline_preserves_reserved_final_synthesis_budget():
+    class Store:
+        def execute_ai_readonly_sql(self, sql, params, *, statement_timeout_ms):
+            return [{"visit_count": 32, "sales_rep_name": "Акрамова Нигора"}]
+
+    async def execute():
+        calls = []
+
+        async def model_request(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                await asyncio.sleep(1.2)
+                content = '{"capability":"business.query","arguments":{"sql":"SELECT visit_count FROM ai_visits"}}'
+            else:
+                content = '{"type":"final","content":"Акрамова Нигора — 32 визита."}'
+            return response(content)
+
+        with patch("app.api.routes.ai_chat._hermes_request", side_effect=model_request):
+            result = await AIBusinessAgentService(Store()).run(
+                conversation=AIConversationState(
+                    organization_id=UUID("11111111-1111-1111-1111-111111111111"),
+                    conversation_mode="business",
+                    messages=[],
+                ),
+                user_text="Дай подробный анализ визитов Акрамовой Нигоры",
+                source_channel="web",
+                task_type="ai_chat",
+                router=Router(),
+                tools_service=Tools(),
+                widget_builder=object(),
+                memory_prompt="",
+                system_prompt="agent",
+                max_duration_seconds=6.0,
+            )
+        return result, calls
+
+    result, calls = asyncio.run(execute())
+    assert result.final_text == "Акрамова Нигора — 32 визита."
+    assert len(calls) == 2
+    assert calls[1]["timeout_seconds"] > 4.0
+
+
 def test_final_on_first_round_does_not_start_second_round():
     result, request = run([response('{"action":"final","answer":"Готово."}')])
 

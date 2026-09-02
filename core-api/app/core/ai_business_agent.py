@@ -33,6 +33,9 @@ CHAT_MAX_ROUNDS = 4
 CHAT_TOOL_CALLS = 3
 LIGHTWEIGHT_ANALYSIS_MAX_ROUNDS = 6
 MAX_CONVERSATION_MESSAGES = 12
+FINAL_SYNTHESIS_RESERVE_RATIO = 0.25
+FINAL_SYNTHESIS_RESERVE_MIN_SECONDS = 5.0
+FINAL_SYNTHESIS_RESERVE_MAX_SECONDS = 15.0
 
 
 class ResearchTimeoutError(TimeoutError):
@@ -430,12 +433,26 @@ class AIBusinessAgentService:
         request_id = request_id or str(uuid4())
         started_at = monotonic()
         deadline = started_at + max_duration_seconds if max_duration_seconds is not None else None
+        final_synthesis_reserve = (
+            min(
+                FINAL_SYNTHESIS_RESERVE_MAX_SECONDS,
+                max(FINAL_SYNTHESIS_RESERVE_MIN_SECONDS, max_duration_seconds * FINAL_SYNTHESIS_RESERVE_RATIO),
+            )
+            if max_duration_seconds is not None
+            else 0.0
+        )
+        research_deadline = (
+            deadline - final_synthesis_reserve
+            if deadline is not None and final_synthesis_reserve < max_duration_seconds
+            else deadline
+        )
 
         def remaining_budget() -> float | None:
             return deadline - monotonic() if deadline is not None else None
 
         def check_deadline(stage: str = "research_deadline") -> float | None:
-            if deadline is not None and monotonic() >= deadline:
+            active_deadline = deadline if stage in {"initial_model", "final_synthesis"} else research_deadline
+            if active_deadline is not None and monotonic() >= active_deadline:
                 raise ResearchTimeoutError(
                     "AI research достиг установленного лимита времени.",
                     stage=stage,
@@ -443,11 +460,13 @@ class AIBusinessAgentService:
                     rounds=rounds,
                     capability_calls=total_tool_calls,
                 )
-            return remaining_budget()
+            return (active_deadline - monotonic()) if active_deadline is not None else None
 
         timings: dict[str, object] = {
             "model_calls": 0,
             "db_queries": 0,
+            "analysis_budget_seconds": max_duration_seconds,
+            "final_synthesis_reserve_seconds": final_synthesis_reserve,
             "provider_rounds_ms": {},
             "round_telemetry": [],
             "capability_telemetry": [],
@@ -708,8 +727,17 @@ class AIBusinessAgentService:
             model: str,
             provider: str,
             stream_final: bool = False,
+            final_synthesis: bool = False,
         ):
-            remaining_before = check_deadline("research_deadline")
+            if final_synthesis:
+                deadline_stage = "final_synthesis"
+            elif round_number == 1 and int(timings.get("model_calls") or 0) == 0:
+                # The first turn must be allowed to decide whether a capability
+                # is needed. The research cutoff applies after that decision.
+                deadline_stage = "initial_model"
+            else:
+                deadline_stage = "research_deadline"
+            remaining_before = check_deadline(deadline_stage)
             request_started = monotonic()
             timings["model_calls"] = int(timings.get("model_calls") or 0) + 1
             prompt_chars = sum(len(str(message.get("content") or "")) for message in messages)
@@ -1007,6 +1035,7 @@ class AIBusinessAgentService:
                     provider=str(runtime["provider_id"]),
                     round_number=round_number + synthesis_attempt,
                     stream_final=on_final_delta is not None,
+                    final_synthesis=True,
                 )
                 if synthesis_response.status_code >= 400:
                     raise ValueError("AI provider не смог сформировать финальный ответ по полученным данным.")
@@ -1052,7 +1081,9 @@ class AIBusinessAgentService:
             )
 
         for rounds in range(1, max_rounds + 1):
-            check_deadline()
+            # The initial provider response is already available and must be
+            # parsed before the research cutoff is evaluated for later turns.
+            check_deadline("initial_model" if rounds == 1 else "research_deadline")
             logger.info(
                 "AI_AGENT_ROUND request_id=%s round=%s tool_calls=%s tool_choice=%s",
                 request_id,
@@ -1368,7 +1399,12 @@ class AIBusinessAgentService:
                 not structured_mode,
             )
             for tool_call in tool_calls:
-                capability_remaining_before = check_deadline("research_deadline")
+                capability_stage = (
+                    "initial_model"
+                    if total_tool_calls == 0 and int(timings.get("model_calls") or 0) == 1
+                    else "research_deadline"
+                )
+                capability_remaining_before = check_deadline(capability_stage)
                 capability_started = monotonic()
                 runtime["capability_attempts"] = int(runtime.get("capability_attempts") or 0) + 1
                 timings["capability_attempts"] = int(timings.get("capability_attempts") or 0) + 1
@@ -1677,6 +1713,8 @@ class AIBusinessAgentService:
                     # cached evidence in context and let the next model turn
                     # synthesize normally.
             if rounds >= max_rounds:
+                return await final_synthesis(round_number=rounds + 1)
+            if research_deadline is not None and monotonic() >= research_deadline:
                 return await final_synthesis(round_number=rounds + 1)
             tool_choice_for_round = "auto"
             if structured_mode:
