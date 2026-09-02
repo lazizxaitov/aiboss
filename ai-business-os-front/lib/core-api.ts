@@ -18,7 +18,7 @@ export type TelegramLinkStatus = {
 };
 
 export async function getTelegramLinkStatus(): Promise<TelegramLinkStatus> {
-  return requestJson<TelegramLinkStatus>("/api/v1/telegram/link/status");
+  return requestJson<TelegramLinkStatus>("/api/v1/telegram/link/status", {}, fastReadTimeoutMs);
 }
 
 export async function createTelegramLink(): Promise<TelegramLinkStatus> {
@@ -103,7 +103,7 @@ export type MetaResource = { id?: string; resource_type: string; external_id: st
 export type MetaStatus = { status: string; configured: boolean; last_success_at?: string | null; last_error?: string | null; resources: MetaResource[]; mappings: Array<{ organization_id: string; resource_type: string; external_id: string }> };
 
 export async function getMetaStatus(): Promise<MetaStatus> {
-  return requestJson<MetaStatus>("/api/v1/meta/status");
+  return requestJson<MetaStatus>("/api/v1/meta/status", {}, fastReadTimeoutMs);
 }
 export async function connectMeta(): Promise<MetaStatus> {
   return requestJson<MetaStatus>("/api/v1/meta/connect", { method: "POST" });
@@ -116,12 +116,12 @@ export async function syncMeta(mode: "incremental" | "backfill" = "incremental",
 }
 
 export type YouTubeStatus = { status: string; configured: boolean; last_success_at?: string | null; last_error?: string | null; channels: Array<{ external_id: string; title?: string | null; subscriber_count?: string | null; video_count?: string | null }>; mappings: Array<{ organization_id: string; channel_id: string }> };
-export async function getYouTubeStatus(): Promise<YouTubeStatus> { return requestJson<YouTubeStatus>("/api/v1/youtube/status"); }
+export async function getYouTubeStatus(): Promise<YouTubeStatus> { return requestJson<YouTubeStatus>("/api/v1/youtube/status", {}, fastReadTimeoutMs); }
 export async function connectYouTube(): Promise<YouTubeStatus> { return requestJson<YouTubeStatus>("/api/v1/youtube/connect", { method: "POST" }); }
 export async function mapYouTubeChannel(payload: { organization_id: string; channel_id: string; display_name?: string }): Promise<unknown> { return requestJson<unknown>("/api/v1/youtube/mappings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); }
 export async function syncYouTube(mode: "incremental" | "backfill" = "incremental", backfillDays = 7): Promise<YouTubeStatus & { sync_status?: string }> { return requestJson<YouTubeStatus & { sync_status?: string }>("/api/v1/youtube/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode, backfill_days: backfillDays }) }); }
 export type MarketingAttributionStatus = { evidence_available: boolean; confirmed_attribution_available: boolean; evidence_count: number; attributed_outcome_count: number; message: string };
-export async function getMarketingAttributionStatus(): Promise<MarketingAttributionStatus> { return requestJson<MarketingAttributionStatus>("/api/v1/marketing/attribution/status"); }
+export async function getMarketingAttributionStatus(): Promise<MarketingAttributionStatus> { return requestJson<MarketingAttributionStatus>("/api/v1/marketing/attribution/status", {}, fastReadTimeoutMs); }
 
 export type AnalyticsDataStatus =
   | "AVAILABLE"
@@ -2485,7 +2485,24 @@ export type FinanceWorkspaceFilters = {
 const coreApiBaseUrl = typeof window === "undefined"
   ? (process.env.CORE_API_URL ?? "http://127.0.0.1:8000")
   : "";
-const requestTimeoutMs = 3_500;
+// Ordinary API reads must tolerate local load and the domain proxy hop.
+// AI Chat streaming has a separate lifecycle and never uses this timeout.
+const fastReadTimeoutMs = 12_000;
+const requestTimeoutMs = 20_000;
+
+export type CoreApiRequestErrorKind = "timeout" | "http" | "network" | "aborted";
+
+export class CoreApiRequestError extends Error {
+  readonly kind: CoreApiRequestErrorKind;
+  readonly status?: number;
+
+  constructor(message: string, kind: CoreApiRequestErrorKind, status?: number) {
+    super(message);
+    this.name = "CoreApiRequestError";
+    this.kind = kind;
+    this.status = status;
+  }
+}
 
 function ownerSessionToken() {
   if (typeof document === "undefined") return null;
@@ -3552,8 +3569,10 @@ async function requestJson<T>(
 
     if (!response.ok) {
       const message = await response.text();
-      throw new Error(
+      throw new CoreApiRequestError(
         `${path} responded with ${response.status}${message ? `: ${message}` : ""}`,
+        "http",
+        response.status,
       );
     }
 
@@ -3563,7 +3582,13 @@ async function requestJson<T>(
       return createFallbackOverview() as T;
     }
     if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error(`Request to ${path} was aborted by timeout`);
+      throw new CoreApiRequestError(`Request to ${path} was aborted by timeout`, "timeout");
+    }
+    if (error instanceof CoreApiRequestError) {
+      throw error;
+    }
+    if (error instanceof TypeError) {
+      throw new CoreApiRequestError(`Request to ${path} failed because of a network error`, "network");
     }
     if (error instanceof Error) {
       throw error;
