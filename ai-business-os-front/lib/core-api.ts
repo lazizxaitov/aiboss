@@ -3514,8 +3514,8 @@ async function requestJson<T>(
   try {
     const response = await fetch(`${coreApiBaseUrl}${path}`, {
       cache: "no-store",
-      headers: authenticatedHeaders(init.headers),
       ...init,
+      headers: authenticatedHeaders(init.headers),
       signal: controller.signal,
     });
 

@@ -1109,7 +1109,7 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
       const payload = await getDashboardAIAnalysisStatus();
       if (payload.status === "analyzing") {
         setAnalysisStatus("running");
-        if (attempt < 40) {
+        if (attempt < 110) {
           analysisPollTimerRef.current = window.setTimeout(() => void pollAnalysisStatus(attempt + 1), 3_000);
         } else {
           setAnalysisStatus("failed");

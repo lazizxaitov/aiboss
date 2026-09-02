@@ -32,7 +32,7 @@ class AIInsightPresentationService:
         if run is None or run.structured_result is None:
             status = "empty"
             message = "ИИ-анализ ещё не выполнен"
-            if analytics_status.status == "analyzing" or latest_run and latest_run.status == "running":
+            if analytics_status.status == "analyzing":
                 status = "running"
                 message = "ИИ анализирует бизнес..."
             elif analytics_status.status in {"error", "retry_wait"} or latest_run and latest_run.status == "failed":

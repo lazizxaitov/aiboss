@@ -1,6 +1,6 @@
 import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 from app.api.routes import ai_insights
@@ -100,6 +100,26 @@ def test_running_dashboard_state_is_explicit():
 
     assert payload["status"] == "running"
     assert payload["message"] == "ИИ анализирует бизнес..."
+
+
+def test_stale_analyzing_status_enters_retry_state_instead_of_running_forever():
+    store = InMemoryCoreDataLayer()
+    now = datetime.now(UTC)
+    store.upsert_app_setting(AppSetting(
+        setting_key="ai_business_analytics:status:v1",
+        setting_value=AutoAnalyticsStatus(
+            status="analyzing",
+            last_started_at=now - timedelta(seconds=500),
+        ).model_dump(mode="json"),
+        metadata={},
+        created_at=now,
+        updated_at=now,
+    ))
+
+    payload = asyncio.run(get_dashboard_insights(store))
+
+    assert payload["status"] == "error"
+    assert "допустимый срок" in payload["message"]
 
 
 def test_manual_analysis_starts_in_background_and_deduplicates_requests():

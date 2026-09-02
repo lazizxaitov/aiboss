@@ -316,7 +316,22 @@ class AutoBusinessAnalyticsService:
         setting = self.store.get_app_setting(AUTO_ANALYTICS_STATUS_KEY)
         if setting is not None:
             try:
-                return AutoAnalyticsStatus.model_validate(setting.setting_value)
+                status = AutoAnalyticsStatus.model_validate(setting.setting_value)
+                if status.status == "analyzing" and status.last_started_at is not None:
+                    age_seconds = (datetime.now(UTC) - status.last_started_at).total_seconds()
+                    stale_after = max(60.0, settings.ai_analytics_agent_timeout_seconds) + 60.0
+                    if age_seconds > stale_after:
+                        stale = AutoAnalyticsStatus(
+                            status="retry_wait",
+                            last_started_at=status.last_started_at,
+                            last_error="Автоанализ не завершился в допустимый срок. Повторная попытка будет выполнена автоматически.",
+                            provider_id=status.provider_id,
+                            model_id=status.model_id,
+                            next_retry_at=datetime.now(UTC) + timedelta(minutes=5),
+                        )
+                        self._save_status(stale)
+                        return stale
+                return status
             except Exception:  # noqa: BLE001
                 pass
         config = AITaskRouter(self.store).get_config()
