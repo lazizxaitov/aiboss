@@ -887,7 +887,10 @@ class AIBusinessAgentService:
                 model=str(candidate["model_id"]),
                 provider=str(candidate["provider_id"]),
                 round_number=1,
-                stream_final=on_final_delta is not None,
+                # The first business turn is an internal capability decision,
+                # not user-facing text. Avoid opening a streaming response for
+                # protocol JSON; only the final synthesis is streamed.
+                stream_final=on_final_delta is not None and not business_context_enabled,
             )
             if candidate_response.status_code < 400:
                 runtime = candidate

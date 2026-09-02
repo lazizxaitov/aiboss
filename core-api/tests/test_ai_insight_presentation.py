@@ -73,6 +73,15 @@ def test_empty_dashboard_state_is_explicit():
     assert payload["findings"] == []
 
 
+def test_dashboard_insights_read_does_not_start_background_analysis():
+    store = InMemoryCoreDataLayer()
+    with patch.object(AutoBusinessAnalyticsService, "run_widget_if_needed", new=AsyncMock()) as run_widget:
+        payload = asyncio.run(get_dashboard_insights(store))
+
+    assert payload["status"] == "empty"
+    run_widget.assert_not_awaited()
+
+
 def test_running_dashboard_state_is_explicit():
     store = InMemoryCoreDataLayer()
     now = datetime.now(UTC)

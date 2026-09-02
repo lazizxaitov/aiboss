@@ -85,6 +85,10 @@ def test_web_chat_streams_only_final_text_before_done():
         capability = '{"capability":"business.query","arguments":{"sql":"SELECT total_amount FROM ai_sales LIMIT 1"}}'
         final_chunks = ["Лидер продаж — ", "Иван, ", "64 742 600 сум."]
         stream_calls = 0
+        model_request = AsyncMock(return_value=SimpleNamespace(
+            status_code=200,
+            json=lambda: {"choices": [{"message": {"content": capability}}]},
+        ))
 
         class FakeResponse:
             status_code = 200
@@ -116,6 +120,7 @@ def test_web_chat_streams_only_final_text_before_done():
             "fallback_used": False,
         }]
         with (
+            patch("app.api.routes.ai_chat._hermes_request", model_request),
             patch("app.api.routes.ai_chat._hermes_stream", fake_stream),
             patch("app.api.routes.ai_chat._resolve_tool_result", new=AsyncMock()) as legacy_tool_flow,
             patch("app.core.hermes_model_registry.HermesModelRegistry.get_providers", new=AsyncMock(return_value=[])),
