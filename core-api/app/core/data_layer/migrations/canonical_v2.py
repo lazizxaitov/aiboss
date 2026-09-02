@@ -2773,8 +2773,9 @@ class SmartUpCanonicalV2FoundationService:
                 "delivery_number",
             ),
             delivery_number=self._first_text(row, "delivery_number"),
-            order_at=self._parse_source_datetime(
-                row.get("deal_time") or row.get("created_on") or row.get("deal_date"),
+            order_at=(
+                self._parse_business_event_datetime(row.get("deal_time"))
+                or self._parse_source_datetime(row.get("created_on") or row.get("deal_date"))
             ),
             delivery_date=self._parse_source_datetime(row.get("delivery_date")),
             customer_id=self._resolve_canonical_customer_id(raw_record.organization_id, customer_external_id),
@@ -2999,7 +3000,10 @@ class SmartUpCanonicalV2FoundationService:
             payment_id=source_external_id,
             cashin_id=self._first_text(row, "cashin_id"),
             cashin_number=self._first_text(row, "cashin_number"),
-            paid_at=self._parse_source_datetime(row.get("cashin_time") or row.get("cashin_date")),
+            paid_at=(
+                self._parse_business_event_datetime(row.get("cashin_time"))
+                or self._parse_source_datetime(row.get("cashin_date"))
+            ),
             cashin_date=self._first_text(row, "cashin_date"),
             cashin_time=self._first_text(row, "cashin_time"),
             customer_id=self._resolve_canonical_customer_id(raw_record.organization_id, customer_external_id),
@@ -3154,7 +3158,10 @@ class SmartUpCanonicalV2FoundationService:
             organization_id=raw_record.organization_id,
             operation_id=source_external_id,
             operation_number=self._first_text(row, "cashin_number"),
-            operation_at=self._parse_source_datetime(row.get("cashin_time") or row.get("cashin_date")),
+            operation_at=(
+                self._parse_business_event_datetime(row.get("cashin_time"))
+                or self._parse_source_datetime(row.get("cashin_date"))
+            ),
             operation_date=self._parse_source_datetime(row.get("cashin_date")),
             source_operation_type=self._first_text(row, "payment_type_code"),
             normalized_operation_type="customer_payment",
@@ -3264,7 +3271,7 @@ class SmartUpCanonicalV2FoundationService:
             organization_id=raw_record.organization_id,
             operation_id=source_external_id,
             operation_number=self._first_text(row, "operation_number"),
-            operation_at=self._parse_source_datetime(row.get("operation_date")),
+            operation_at=self._parse_business_event_datetime(row.get("operation_date")),
             operation_date=self._parse_source_datetime(row.get("operation_date")),
             source_operation_type=self._first_text(row, "cashflow_kind", "cashflow_reason_code"),
             normalized_operation_type="cash_operation",
@@ -3363,7 +3370,9 @@ class SmartUpCanonicalV2FoundationService:
             organization_id=raw_record.organization_id,
             operation_id=source_external_id,
             operation_number=self._first_text(row, "operation_number", "bank_trans_number"),
-            operation_at=self._parse_source_datetime(row.get("operation_date") or row.get("bank_trans_date")),
+            operation_at=self._parse_business_event_datetime(
+                row.get("operation_date") or row.get("bank_trans_date")
+            ),
             operation_date=self._parse_source_datetime(row.get("operation_date") or row.get("bank_trans_date")),
             source_operation_type=self._first_text(row, "cashflow_kind", "payment_code"),
             normalized_operation_type="bank_operation",
@@ -3453,7 +3462,7 @@ class SmartUpCanonicalV2FoundationService:
                 "delivery_number",
                 "batch_number",
             ),
-            return_at=self._parse_source_datetime(row.get("deal_time")),
+            return_at=self._parse_business_event_datetime(row.get("deal_time")),
             booked_at=self._parse_source_datetime(row.get("booked_date")),
             delivery_date=self._parse_source_datetime(row.get("delivery_date")),
             customer_id=self._resolve_canonical_customer_id(raw_record.organization_id, customer_external_id),
@@ -3697,7 +3706,10 @@ class SmartUpCanonicalV2FoundationService:
             organization_id=raw_record.organization_id,
             document_id=source_external_id,
             document_number=self._first_text(row, "purchase_number", "invoice_number"),
-            document_at=self._parse_source_datetime(row.get("purchase_time") or row.get("input_date") or row.get("invoice_date")),
+            document_at=(
+                self._parse_business_event_datetime(row.get("purchase_time"))
+                or self._parse_source_datetime(row.get("input_date") or row.get("invoice_date"))
+            ),
             source_status_code=self._first_text(row, "status_code", "posted"),
             source_status_name=self._first_text(row, "status_code", "posted"),
             warehouse_id=self._resolve_canonical_warehouse_id(raw_record.organization_id, warehouse_external_id),
@@ -3864,7 +3876,7 @@ class SmartUpCanonicalV2FoundationService:
             organization_id=raw_record.organization_id,
             document_id=source_external_id,
             document_number=self._first_text(row, "input_number"),
-            document_at=self._parse_source_datetime(row.get("input_time")),
+            document_at=self._parse_business_event_datetime(row.get("input_time")),
             source_status_code=self._first_text(row, "status"),
             source_status_name=self._first_text(row, "status"),
             warehouse_id=self._resolve_canonical_warehouse_id(raw_record.organization_id, warehouse_external_id),
@@ -4124,7 +4136,7 @@ class SmartUpCanonicalV2FoundationService:
             organization_id=raw_record.organization_id,
             document_id=source_external_id,
             document_number=self._first_text(row, "delivery_number", "movement_id"),
-            document_at=self._parse_source_datetime(row.get("from_time")),
+            document_at=self._parse_business_event_datetime(row.get("from_time")),
             source_status_code=self._first_text(row, "status"),
             source_status_name=self._first_text(row, "status"),
             warehouse_id=self._resolve_canonical_warehouse_id(raw_record.organization_id, source_warehouse_external_id),
@@ -4724,14 +4736,15 @@ class SmartUpCanonicalV2FoundationService:
 
     @staticmethod
     def _parse_visit_datetime(value: object | None) -> datetime | None:
-        """Parse visit event times as Asia/Tashkent wall-clock values.
+        return SmartUpCanonicalV2FoundationService._parse_business_event_datetime(value)
 
-        SmartUp exports visit times without an offset, and those values are
+    @staticmethod
+    def _parse_business_event_datetime(value: object | None) -> datetime | None:
+        """Parse SmartUp event times as Asia/Tashkent wall-clock values.
+
+        SmartUp exports business event times without an offset, and those values are
         local business time rather than UTC. Explicitly zoned inputs retain
         their supplied instant instead of being reinterpreted as local time.
-        ``visit_date`` intentionally continues using the date-field contract
-        in ``_parse_source_datetime``; it is a business date, not an event
-        timestamp.
         """
 
         if isinstance(value, datetime):
@@ -4750,6 +4763,9 @@ class SmartUpCanonicalV2FoundationService:
             "%d.%m.%Y %H:%M:%S",
             "%d.%m.%y %H:%M:%S",
             "%Y-%m-%d %H:%M:%S",
+            "%d.%m.%Y",
+            "%d.%m.%y",
+            "%Y-%m-%d",
         ):
             try:
                 return datetime.strptime(text, fmt).replace(tzinfo=_BUSINESS_TIMEZONE)

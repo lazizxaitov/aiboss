@@ -504,7 +504,7 @@ def test_canonical_v2_phase2_materializes_orders_sales_and_sale_items() -> None:
     assert order.sold_quantity == Decimal("4")
     assert order.has_realization_evidence is True
     assert order.customer_external_id == "CUST-1"
-    assert order.order_at == datetime(2026, 8, 10, 10, 15, 0, tzinfo=UTC)
+    assert order.order_at == datetime(2026, 8, 10, 10, 15, 0, tzinfo=ZoneInfo("Asia/Tashkent"))
     assert order.delivery_date == datetime(2026, 8, 10, 0, 0, 0, tzinfo=UTC)
 
     assert sale.total_amount == Decimal("606000")
@@ -513,7 +513,7 @@ def test_canonical_v2_phase2_materializes_orders_sales_and_sale_items() -> None:
     assert sale.sold_quantity == Decimal("4")
     assert sale.realization_basis == "sold_quant"
     assert sale.order_id == order.id
-    assert sale.sale_at == datetime(2026, 8, 10, 10, 15, 0, tzinfo=UTC)
+    assert sale.sale_at == datetime(2026, 8, 10, 10, 15, 0, tzinfo=ZoneInfo("Asia/Tashkent"))
     assert sale.closed_at == datetime(2026, 8, 10, 0, 0, 0, tzinfo=UTC)
 
     assert sale_item.sale_id == sale.id
@@ -556,7 +556,7 @@ def test_canonical_v2_phase2b_materializes_payments_and_customer_returns() -> No
     assert payment.amount == Decimal("606000")
     assert payment.currency_code == "UZS"
     assert payment.normalized_payment_type == "unknown"
-    assert payment.paid_at == datetime(2026, 8, 10, 12, 0, 0, tzinfo=UTC)
+    assert payment.paid_at == datetime(2026, 8, 10, 12, 0, 0, tzinfo=ZoneInfo("Asia/Tashkent"))
 
     assert customer_return.customer_external_id == "CUST-1"
     assert customer_return.customer_id is not None
@@ -565,7 +565,7 @@ def test_canonical_v2_phase2b_materializes_payments_and_customer_returns() -> No
     assert customer_return.linked_sale_id == sale.id
     assert customer_return.total_amount == Decimal("-151500")
     assert customer_return.returned_quantity == Decimal("1")
-    assert customer_return.return_at == datetime(2026, 8, 10, 13, 0, 0, tzinfo=UTC)
+    assert customer_return.return_at == datetime(2026, 8, 10, 13, 0, 0, tzinfo=ZoneInfo("Asia/Tashkent"))
     assert customer_return.booked_at == datetime(2026, 8, 10, 0, 0, 0, tzinfo=UTC)
     assert customer_return.delivery_date == datetime(2026, 8, 10, 0, 0, 0, tzinfo=UTC)
 
