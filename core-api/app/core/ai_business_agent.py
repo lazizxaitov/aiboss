@@ -148,7 +148,21 @@ def _parse_capability_request(content: object) -> dict[str, object] | None:
     payload = _parse_json_object(content)
     if not isinstance(payload, dict):
         return None
+    nested_content = payload.get("content")
+    if (
+        not payload.get("capability")
+        and not payload.get("name")
+        and isinstance(nested_content, str)
+    ):
+        return _parse_capability_request(nested_content)
     arguments = payload.get("arguments")
+    if isinstance(arguments, str):
+        try:
+            decoded_arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            decoded_arguments = None
+        if isinstance(decoded_arguments, dict):
+            arguments = decoded_arguments
     capability = payload.get("capability") or payload.get("name")
     if payload.get("type") == "capability" or payload.get("action") == "capability":
         capability = capability or payload.get("tool")
@@ -631,6 +645,7 @@ class AIBusinessAgentService:
         # name or by inspecting user text.
         structured_mode = False
         structured_repair_used = False
+        capability_repair_used = False
         tool_choice_for_round = "auto"
         max_rounds = MAX_ROUNDS
         if task_type == "ai_chat":
@@ -1182,6 +1197,30 @@ class AIBusinessAgentService:
                     continue
             if not tool_calls:
                 if capability_only and _looks_like_internal_capability(assistant_message.get("content")):
+                    if not capability_repair_used:
+                        capability_repair_used = True
+                        messages.append({
+                            "role": "assistant",
+                            "content": str(assistant_message.get("content") or ""),
+                        })
+                        messages.append({
+                            "role": "system",
+                            "content": (
+                                "The previous capability envelope was incomplete or invalid. "
+                                "Return one complete capability request now with the exact capability name "
+                                "and all required arguments. Do not return plain text."
+                            ),
+                        })
+                        response = await model_request(
+                            messages=messages,
+                            tool_choice="auto",
+                            model=str(runtime["model_id"]),
+                            provider=str(runtime["provider_id"]),
+                            round_number=rounds + 1,
+                        )
+                        if response.status_code >= 400:
+                            raise ValueError("AI provider вернул ошибку при исправлении capability-запроса.")
+                        continue
                     raise ValueError("AI вернул незавершённый внутренний capability-запрос.")
                 if not structured_mode and total_tool_calls:
                     repeated_action = _parse_json_object(assistant_message.get("content"))
@@ -1190,7 +1229,11 @@ class AIBusinessAgentService:
                         # after the chat has already received the evidence.
                         # Never expose that protocol JSON to the user.
                         return await final_synthesis(round_number=rounds + 1)
-                final_text = str(assistant_message.get("content") or "")
+                final_text = (
+                    _parse_final_request(assistant_message.get("content"))
+                    or _parse_action_final(assistant_message.get("content"))
+                    or str(assistant_message.get("content") or "")
+                )
                 logger.info(
                     "AI_AGENT_FINAL request_id=%s rounds=%s tool_calls=%s provider=%s model=%s elapsed_ms=%.2f preview=%s",
                     request_id,
