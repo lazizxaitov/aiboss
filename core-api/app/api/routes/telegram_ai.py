@@ -423,9 +423,8 @@ async def handle_telegram_chat(
     candidates = router.resolve_candidates(
         task_type,
         provider_id=explicit_provider if task_type == "ai_chat" else None,
-            model_id=explicit_model if task_type == "ai_chat" else None,
-            max_duration_seconds=settings.telegram_ai_timeout_seconds,
-        )
+        model_id=explicit_model if task_type == "ai_chat" else None,
+    )
     if not candidates:
         raise HTTPException(status_code=409, detail="Выбранный provider/model сейчас недоступен.")
     resolved_target_channel = request.target_channel or service.infer_target_channel(user_text)
@@ -461,6 +460,9 @@ async def handle_telegram_chat(
             system_prompt=service.build_system_prompt(conversation),
             provider_id=explicit_provider if task_type == "ai_chat" else None,
             model_id=explicit_model if task_type == "ai_chat" else None,
+            # The deadline belongs to the shared Agent Core execution loop,
+            # not to the routing contract.
+            max_duration_seconds=settings.telegram_ai_timeout_seconds,
             attachments=request.attachments,
         )
     except ValueError as error:

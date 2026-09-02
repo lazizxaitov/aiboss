@@ -12,14 +12,18 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Field, ValidationError
 
 from app.core.ai_business_agent import AIBusinessAgentService, ResearchTimeoutError
-from app.core.ai_conversation import AIConversationChannel, AIConversationMessage, AIConversationState
+from app.core.ai_conversation import (
+    AIConversationChannel,
+    AIConversationMessage,
+    AIConversationState,
+)
 from app.core.ai_routing import AITaskRouter
+from app.core.analytics.widget_builder import WidgetBuilderService
 from app.core.config import settings
 from app.core.data_layer.contracts import CoreDataStore
 from app.core.data_layer.entities import AppSetting
-from app.core.hermes_tools import HermesBusinessTools
 from app.core.hermes_model_registry import hermes_model_registry
-from app.core.analytics.widget_builder import WidgetBuilderService
+from app.core.hermes_tools import HermesBusinessTools
 from app.core.organization_context import OrganizationContextService
 
 AUTO_ANALYTICS_INDEX_KEY = "ai_business_analytics:index:v1"

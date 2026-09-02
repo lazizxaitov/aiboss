@@ -40,6 +40,7 @@ from app.core.hermes_tools import HermesBusinessTools
 from app.core.organization_context import OrganizationContextService
 
 router = APIRouter(prefix="/ai")
+SSE_HEARTBEAT_SECONDS = 10.0
 logger = getLogger(__name__)
 
 
@@ -958,7 +959,16 @@ async def chat(
 
             agent_task = asyncio.create_task(execute_agent())
             while True:
-                delta = await delta_queue.get()
+                try:
+                    # Keep long provider/model gaps observable to SSE proxies
+                    # without exposing reasoning, SQL, or business data.
+                    delta = await asyncio.wait_for(
+                        delta_queue.get(),
+                        timeout=SSE_HEARTBEAT_SECONDS,
+                    )
+                except TimeoutError:
+                    yield _event({}, "heartbeat")
+                    continue
                 if delta is None:
                     break
                 if delta:

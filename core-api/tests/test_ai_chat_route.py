@@ -140,6 +140,49 @@ def test_web_chat_streams_only_final_text_before_done():
     assert "SELECT" not in body
 
 
+def test_web_chat_emits_non_content_heartbeat_while_agent_is_running():
+    async def execute():
+        store = RouteSQLStore()
+        capability = '{"capability":"business.query","arguments":{"sql":"SELECT total_amount FROM ai_sales LIMIT 1"}}'
+        model_request = AsyncMock(return_value=SimpleNamespace(
+            status_code=200,
+            json=lambda: {"choices": [{"message": {"content": capability}}]},
+        ))
+        request = ChatRequest(
+            messages=[ChatMessage(role="user", content="Покажи продажи")],
+            organization_id=UUID("11111111-1111-1111-1111-111111111111"),
+        )
+        candidates = [{"provider_id": "custom", "provider_name": "Local", "model_id": "local-model", "fallback_used": False}]
+
+        class DelayedResponse:
+            status_code = 200
+
+            async def aiter_lines(self):
+                await asyncio.sleep(0.05)
+                yield "data: " + json.dumps({"choices": [{"delta": {"content": "Ответ"}}]})
+                yield "data: [DONE]"
+
+        @asynccontextmanager
+        async def delayed_stream(**_kwargs):
+            yield DelayedResponse()
+
+        with (
+            patch("app.api.routes.ai_chat.SSE_HEARTBEAT_SECONDS", 0.01),
+            patch("app.api.routes.ai_chat._hermes_request", model_request),
+            patch("app.api.routes.ai_chat._hermes_stream", delayed_stream),
+            patch("app.core.hermes_model_registry.HermesModelRegistry.get_providers", new=AsyncMock(return_value=[])),
+            patch("app.api.routes.ai_chat.AITaskRouter.resolve_candidates", return_value=candidates),
+        ):
+            response = await chat(request, store, None)
+            chunks = [chunk async for chunk in response.body_iterator]
+            body = "".join(chunk.decode() if isinstance(chunk, bytes) else chunk for chunk in chunks)
+        return body
+
+    body = asyncio.run(execute())
+    assert "event: heartbeat" in body
+    assert '"content"' not in body.split("event: heartbeat", 1)[1].split("\n\n", 1)[0]
+
+
 def test_web_chat_meta_question_can_finish_without_business_query():
     async def execute():
         store = RouteSQLStore()

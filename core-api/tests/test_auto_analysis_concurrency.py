@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from threading import Event
 from unittest.mock import patch
 
 from app.api.routes.sales import get_sales_workspace
@@ -12,14 +13,14 @@ from app.main import _run_startup_auto_analysis
 def test_sales_and_visits_remain_responsive_during_background_analysis():
     async def execute():
         store = InMemoryCoreDataLayer()
-        started = asyncio.Event()
-        release = asyncio.Event()
+        started = Event()
+        release = Event()
         finished = False
 
         async def slow_analysis():
             nonlocal finished
             started.set()
-            await release.wait()
+            await asyncio.to_thread(release.wait)
             finished = True
 
         with patch(
@@ -27,7 +28,7 @@ def test_sales_and_visits_remain_responsive_during_background_analysis():
             side_effect=slow_analysis,
         ):
             analysis_task = asyncio.create_task(_run_startup_auto_analysis(store))
-            await started.wait()
+            await asyncio.to_thread(started.wait)
             sales, visits = await asyncio.gather(
                 asyncio.to_thread(get_sales_workspace, store),
                 asyncio.to_thread(get_visits_workspace, store),

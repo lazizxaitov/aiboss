@@ -46,7 +46,7 @@ async def get_dashboard_insights(store: Annotated[CoreDataStore, Depends(get_cor
     # This endpoint is a read path. Automatic analysis is owned by the SmartUp
     # sync/startup lifecycle; polling the dashboard must never start another AI
     # run or compete with an interactive chat request.
-    payload = AIInsightPresentationService(store).dashboard()
+    payload = await asyncio.to_thread(AIInsightPresentationService(store).dashboard)
     payload["refreshing"] = payload.get("status") == "running"
     return payload
 
