@@ -3354,6 +3354,9 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
         connection = self.connection_factory()
         try:
             with connection.cursor() as cursor:
+                # Keep query text and returned text in the application contract
+                # UTF-8, regardless of the database role/session default.
+                cursor.execute("SET client_encoding TO 'UTF8'")
                 cursor.execute("SET TRANSACTION READ ONLY")
                 # PostgreSQL does not accept a bind placeholder as the value of
                 # SET LOCAL. The value is validated as an integer first, then

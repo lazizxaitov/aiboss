@@ -249,7 +249,7 @@ def _compact_capability_result(result: object) -> object:
         return result
     compact: dict[str, object] = {
         key: result[key]
-        for key in ("available", "status", "view", "row_count", "rows", "message")
+        for key in ("success", "available", "status", "view", "row_count", "rows", "message", "error_type", "retryable")
         if key in result
     }
     return compact or result
@@ -1405,7 +1405,10 @@ class AIBusinessAgentService:
                 validation_error = _validate_tool_arguments(tool_name, arguments, tools)
                 if validation_error:
                     tool_result = {
+                        "success": False,
                         "status": "error",
+                        "error_type": "capability_validation_error",
+                        "retryable": False,
                         "message": validation_error,
                     }
                     logger.info("AI_TOOL_RESULT request_id=%s name=%s rejected=true", request_id, tool_name)
@@ -1460,8 +1463,11 @@ class AIBusinessAgentService:
                             )
                         except AIReadOnlyQueryError as error:
                             tool_result = {
+                                "success": False,
                                 "available": False,
                                 "status": "invalid_query",
+                                "error_type": "query_validation_error",
+                                "retryable": False,
                                 "message": str(error),
                             }
                         except Exception as error:  # noqa: BLE001 - feed DB errors back to the researcher
@@ -1484,9 +1490,12 @@ class AIBusinessAgentService:
                                 type(error).__name__,
                             )
                             tool_result = {
+                                "success": False,
                                 "available": False,
-                                "status": "invalid_query",
-                                "message": str(error),
+                                "status": "query_execution_error",
+                                "error_type": type(error).__name__,
+                                "retryable": isinstance(error, UnicodeDecodeError),
+                                "message": "Business query execution failed. Retry with the same published schema.",
                             }
                         timings["db_queries"] = int(timings.get("db_queries") or 0) + 1
                         timings.update({
@@ -1511,14 +1520,18 @@ class AIBusinessAgentService:
                     if tool_name == "business.describe":
                         timings["semantic_detail_chars"] = len(json.dumps(tool_result, ensure_ascii=False, default=str))
                     query_executed = tool_name in {"query_business_data", BUSINESS_QUERY_CAPABILITY}
-                    if query_executed and isinstance(tool_result, dict) and tool_result.get("available") is not False:
+                    if query_executed and isinstance(tool_result, dict) and tool_result.get("success", tool_result.get("available") is not False) is not False and tool_result.get("available") is not False:
                         runtime["successful_business_queries"] = int(runtime.get("successful_business_queries") or 0) + 1
                         runtime["business_data_verified"] = True
                         entities = runtime.setdefault("business_entities", [])
                         if isinstance(entities, list):
                             entities.extend(_compact_business_entities(tool_result.get("rows")))
                             runtime["business_entities"] = entities[-30:]
-                    result_cache[cache_key] = tool_result
+                    if not (
+                        isinstance(tool_result, dict)
+                        and (tool_result.get("success") is False or tool_result.get("available") is False)
+                    ):
+                        result_cache[cache_key] = tool_result
                     logger.info("AI_TOOL_RESULT request_id=%s name=%s rows=%s", request_id, tool_name, _row_count(tool_result))
                     if tool_name in {"query_business_data", "aggregate_sales", "query_inventory", "query_products", "query_customers", "query_returns", "query_visits", "query_finance"}:
                         logger.info(

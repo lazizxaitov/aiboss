@@ -412,6 +412,7 @@ class AIReadOnlySQLService:
             "statement_timeout_ms": effective_timeout_ms,
         }
         return {
+            "success": True,
             "available": True,
             "source": "AI Business OS Canonical/Core analytical views",
             "view": view,

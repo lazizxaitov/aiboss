@@ -428,6 +428,53 @@ def test_repeated_capability_query_uses_cache_and_allows_final_synthesis():
     assert "capability" not in result.final_text
 
 
+def test_failed_cyrillic_query_is_not_cached_as_empty_verified_data():
+    class SQLStore:
+        def __init__(self):
+            self.calls = 0
+
+        def execute_ai_readonly_sql(self, sql, params, *, statement_timeout_ms):
+            self.calls += 1
+            if self.calls == 1:
+                raise UnicodeDecodeError("utf-8", b"\\xff", 0, 1, "invalid start byte")
+            return [{"sales_rep_name": "Акрамова Нигора", "visit_count": 3}]
+
+    async def execute():
+        store = SQLStore()
+        query = (
+            '{"capability":"business.query","arguments":{"sql":"'
+            "SELECT sales_rep_name, COUNT(*) AS visit_count FROM ai_visits "
+            "WHERE sales_rep_name ILIKE '%Акрамова%'"
+            '"}}'
+        )
+        with patch("app.api.routes.ai_chat._hermes_request", new_callable=AsyncMock) as request:
+            request.side_effect = [
+                _response({"content": query}),
+                _response({"content": query}),
+                _response({"content": '{"type":"final","content":"Акрамова Нигора — 3 визита."}'}),
+            ]
+            result = await AIBusinessAgentService(store).run(
+                conversation=AIConversationState(
+                    organization_id=UUID("11111111-1111-1111-1111-111111111111"),
+                    messages=_conversation("Покажи визиты Акрамовой Нигора").messages,
+                ),
+                user_text="Покажи визиты Акрамовой Нигора",
+                source_channel="web", task_type="ai_chat", router=FakeRouter(), tools_service=FakeTools(),
+                widget_builder=object(), memory_prompt="", system_prompt="agent",
+            )
+            return store, result, request
+
+    store, result, request = asyncio.run(execute())
+    assert store.calls == 2
+    assert result.runtime["successful_business_queries"] == 1
+    assert result.runtime["business_data_verified"] is True
+    failed_context = "\n".join(str(item.get("content")) for item in request.await_args_list[1].kwargs["messages"])
+    assert '"success": false' in failed_context
+    assert '"error_type": "UnicodeDecodeError"' in failed_context
+    assert '"rows": []' not in failed_context
+    assert result.final_text == "Акрамова Нигора — 3 визита."
+
+
 def test_product_question_uses_product_aggregation():
     tool_call = {"id": "1", "function": {"name": "query_business_data", "arguments": '{"dataset":"sales","dimensions":["product"],"metrics":["revenue"]}'}}
     result, resolve, _ = _run(
