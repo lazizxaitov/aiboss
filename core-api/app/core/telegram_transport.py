@@ -18,6 +18,7 @@ from app.api.routes.telegram_ai import (
     handle_telegram_chat,
 )
 from app.core.ai_conversation import AIConversationService
+from app.core.ai_media import TranscriptionService
 from app.core.config import settings
 from app.core.data_layer.contracts import CoreDataStore
 
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 TELEGRAM_LOCK_PATH = Path("/tmp/aiboss-telegram-transport.lock")
+SUPPORTED_MEDIA = {"voice", "document", "photo"}
 
 
 class TelegramTransport:
@@ -37,11 +39,17 @@ class TelegramTransport:
         token: str,
         poll_timeout_seconds: int = 25,
         request_timeout_seconds: float = 35.0,
+        transcriber: TranscriptionService | None = None,
+        media_dir: str | Path | None = None,
+        max_media_bytes: int | None = None,
     ) -> None:
         self.store = store
         self.token = token
         self.poll_timeout_seconds = max(1, poll_timeout_seconds)
         self.request_timeout_seconds = max(5.0, request_timeout_seconds)
+        self.transcriber = transcriber or TranscriptionService()
+        self.media_dir = Path(media_dir or settings.telegram_media_dir)
+        self.max_media_bytes = max(1, max_media_bytes or settings.telegram_max_media_bytes)
         self._stop = asyncio.Event()
         self._offset: int | None = None
         self._processed: deque[int] = deque(maxlen=2048)
@@ -86,6 +94,59 @@ class TelegramTransport:
             raise RuntimeError(f"Telegram API {method} failed")
         return body.get("result")
 
+    async def _download_media(self, client: httpx.AsyncClient, file_id: str, update_id: int) -> tuple[Path, dict[str, Any]]:
+        file_info = await self._call(client, "getFile", {"file_id": file_id})
+        file_path = file_info.get("file_path") if isinstance(file_info, dict) else None
+        if not isinstance(file_path, str) or not file_path:
+            raise RuntimeError("Telegram file path is unavailable")
+        safe_name = Path(file_path).name
+        if safe_name in {"", ".", ".."} or safe_name != Path(safe_name).name:
+            raise RuntimeError("Invalid Telegram file name")
+        response = await client.get(
+            f"https://api.telegram.org/file/bot{self.token}/{file_path}",
+            timeout=self.request_timeout_seconds,
+        )
+        response.raise_for_status()
+        if len(response.content) > self.max_media_bytes:
+            raise ValueError("Размер файла превышает допустимый лимит")
+        self.media_dir.mkdir(parents=True, exist_ok=True)
+        destination = self.media_dir / f"{update_id}-{safe_name}"
+        destination.write_bytes(response.content)
+        return destination, {"file_path": file_path, "file_size": len(response.content)}
+
+    async def _media_from_message(self, client: httpx.AsyncClient, message: dict[str, Any], update_id: int) -> tuple[str, list[dict[str, object]]]:
+        kind = next((name for name in SUPPORTED_MEDIA if name in message), None)
+        if kind is None:
+            return "", []
+        item = message[kind]
+        if kind == "photo":
+            if not isinstance(item, list) or not item:
+                raise ValueError("Фото не содержит доступного размера")
+            item = item[-1]
+        if not isinstance(item, dict) or not isinstance(item.get("file_id"), str):
+            raise ValueError("Telegram media metadata is invalid")
+        path, downloaded = await self._download_media(client, item["file_id"], update_id)
+        filename = str(item.get("file_name") or path.name)
+        mime_type = str(item.get("mime_type") or ("image/jpeg" if kind == "photo" else "application/octet-stream"))
+        attachment: dict[str, object] = {
+            "attachment_id": f"telegram-{update_id}-{item['file_id']}",
+            "kind": kind,
+            "filename": filename,
+            "mime_type": mime_type,
+            "size": downloaded["file_size"],
+            "telegram_file_id": item["file_id"],
+        }
+        if kind == "photo":
+            import base64
+            attachment["content"] = {
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime_type};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"},
+            }
+        if kind == "voice":
+            transcription = await self.transcriber.transcribe(path, filename=filename, mime_type=mime_type)
+            return transcription.text, [{**attachment, "transcription_provider": transcription.provider_id, "transcription_model": transcription.model_id}]
+        return "", [attachment]
+
     async def _send_text(
         self,
         client: httpx.AsyncClient,
@@ -116,6 +177,31 @@ class TelegramTransport:
                 payload.pop("reply_markup", None)
                 await self._call(client, "sendMessage", payload)
         logger.info("TELEGRAM_SEND_SUCCESS telegram_chat_id=%s chunks=%s", chat_id, len(chunks))
+
+    async def _send_artifact(self, client: httpx.AsyncClient, chat_id: str, artifact: dict[str, object]) -> None:
+        """Deliver only declared artifacts; never expose their local path."""
+        method = str(artifact.get("method") or "sendDocument")
+        if method not in {"sendDocument", "sendPhoto", "sendVoice"}:
+            return
+        path_value = artifact.get("path")
+        if not isinstance(path_value, str):
+            return
+        path = Path(path_value).resolve()
+        try:
+            path.relative_to(self.media_dir.resolve())
+        except ValueError:
+            return
+        if not path.is_file() or path.stat().st_size > self.max_media_bytes:
+            return
+        field = {"sendDocument": "document", "sendPhoto": "photo", "sendVoice": "voice"}[method]
+        with path.open("rb") as media:
+            response = await client.post(
+                f"{self.api_url}/{method}",
+                data={"chat_id": chat_id, "caption": str(artifact.get("caption") or "")},
+                files={field: (str(artifact.get("filename") or path.name), media, str(artifact.get("mime_type") or "application/octet-stream"))},
+                timeout=self.request_timeout_seconds,
+            )
+        response.raise_for_status()
 
     async def _typing_loop(self, client: httpx.AsyncClient, chat_id: str) -> None:
         while not self._stop.is_set():
@@ -165,8 +251,10 @@ class TelegramTransport:
                     pass
         else:
             text = message.get("text") if isinstance(message, dict) else ""
-        if not isinstance(message, dict) or not isinstance(text, str) or not text.strip():
+        if not isinstance(message, dict):
             return
+        if not isinstance(text, str):
+            text = ""
         chat = message.get("chat")
         sender = message.get("from")
         if not isinstance(chat, dict) or not isinstance(sender, dict):
@@ -188,6 +276,22 @@ class TelegramTransport:
             )
             return
 
+        attachments: list[dict[str, object]] = []
+        try:
+            media_text, attachments = await self._media_from_message(client, message, update_id)
+        except ValueError as error:
+            await self._send_text(client, chat_id, str(error))
+            return
+        except RuntimeError:
+            await self._send_text(client, chat_id, "Не удалось получить это вложение. Попробуйте отправить его ещё раз.")
+            return
+        if media_text:
+            text = media_text if not text.strip() else f"{text.strip()}\n{media_text}"
+        if not text.strip() and not attachments:
+            return
+        if not text.strip():
+            text = "Пользователь отправил вложение. Проанализируй его, если у тебя есть подходящая capability."
+
         logger.info(
             "TELEGRAM_AI_REQUEST update_id=%s telegram_chat_id=%s telegram_user_id=%s",
             update_id,
@@ -202,6 +306,7 @@ class TelegramTransport:
                     telegram_chat_id=chat_id,
                     user_id=linked_identity,
                     message=text.strip(),
+                    attachments=attachments,
                 ),
                 self.store,
             )
@@ -211,6 +316,8 @@ class TelegramTransport:
                 result.telegram_message,
                 [option.model_dump() for option in result.options] or None,
             )
+            for artifact in result.artifacts:
+                await self._send_artifact(client, chat_id, artifact)
             logger.info(
                 "TELEGRAM_AI_RESPONSE update_id=%s telegram_chat_id=%s conversation_id=%s "
                 "elapsed_ms=%.2f provider_id=%s model_id=%s",

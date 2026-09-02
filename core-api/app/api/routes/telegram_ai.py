@@ -37,6 +37,7 @@ class TelegramChatRequest(BaseModel):
     organization_id: UUID | None = None
     period: str | None = None
     message: str = Field(min_length=1)
+    attachments: list[dict[str, object]] = Field(default_factory=list)
     target_channel: AIConversationTargetChannel | None = None
     provider_id: str | None = Field(default=None, validation_alias=AliasChoices("provider_id", "provider"))
     model_id: str | None = Field(default=None, validation_alias=AliasChoices("model_id", "model"))
@@ -57,6 +58,7 @@ class TelegramChatResponse(BaseModel):
     model_id: str | None = None
     fallback_used: bool = False
     options: list[TelegramOption] = Field(default_factory=list)
+    artifacts: list[dict[str, object]] = Field(default_factory=list)
 
 
 class ConversationHistoryResponse(BaseModel):
@@ -351,7 +353,23 @@ async def handle_telegram_chat(
     if not candidates:
         raise HTTPException(status_code=409, detail="Выбранный provider/model сейчас недоступен.")
     resolved_target_channel = request.target_channel or service.infer_target_channel(user_text)
-    conversation = service.append_message(conversation, role="user", content=user_text, source_channel=AIConversationChannel.TELEGRAM, target_channel=resolved_target_channel)
+    message_content: str | list[dict[str, object]] = user_text
+    if request.attachments:
+        message_content = [{"type": "text", "text": user_text}]
+        for attachment in request.attachments:
+            if not isinstance(attachment, dict):
+                continue
+            multimodal_content = attachment.get("content")
+            if isinstance(multimodal_content, dict) and multimodal_content.get("type") == "image_url":
+                message_content.append(multimodal_content)
+    conversation = service.append_message(
+        conversation,
+        role="user",
+        content=message_content,
+        source_channel=AIConversationChannel.TELEGRAM,
+        target_channel=resolved_target_channel,
+        metadata={"attachments": request.attachments} if request.attachments else None,
+    )
     shared_memory = SharedMemoryService(store)
     shared_memory.remember(user_id, user_text, "telegram")
     try:
@@ -367,6 +385,7 @@ async def handle_telegram_chat(
             system_prompt=service.build_system_prompt(conversation),
             provider_id=explicit_provider if task_type == "ai_chat" else None,
             model_id=explicit_model if task_type == "ai_chat" else None,
+            attachments=request.attachments,
         )
     except ValueError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
@@ -395,6 +414,7 @@ async def handle_telegram_chat(
         provider_id=str(result.runtime.get("provider_id")),
         model_id=str(result.runtime.get("model_id")),
         fallback_used=bool(result.runtime.get("fallback_used", False)),
+        artifacts=[],
     )
 
 

@@ -386,6 +386,7 @@ class AIBusinessAgentService:
         max_duration_seconds: float | None = None,
         ui_context: dict[str, object] | None = None,
         on_final_delta: Callable[[str], Awaitable[None]] | None = None,
+        attachments: list[dict[str, object]] | None = None,
     ) -> AIBusinessAgentResult:
         """Resolve a target, execute tools, and stop at the first final answer."""
 
@@ -562,6 +563,20 @@ class AIBusinessAgentService:
                 for message in conversation.messages[-MAX_CONVERSATION_MESSAGES:]
             ],
         ]
+        if attachments:
+            attachment_metadata = [
+                {key: value for key, value in attachment.items() if key != "content"}
+                for attachment in attachments
+                if isinstance(attachment, dict)
+            ]
+            messages.append({
+                "role": "system",
+                "content": (
+                    "ATTACHMENTS AVAILABLE IN THIS CONVERSATION. They are user-owned files received by AI Business OS. "
+                    "Use only approved file capabilities when available; never access arbitrary filesystem paths.\n"
+                    + json.dumps(attachment_metadata, ensure_ascii=False, default=str)
+                ),
+            })
         timings["round_1_sections"] = {
             "base_instructions": len(effective_system_prompt),
             "memory": len(memory_prompt),

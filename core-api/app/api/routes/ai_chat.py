@@ -657,6 +657,10 @@ async def _resolve_tool_result(
     widget_builder: WidgetBuilderService,
     router: AITaskRouter,
 ) -> object:
+    if tool_name == "system.inspect":
+        from app.core.ai_system_capabilities import inspect_system
+
+        return inspect_system()
     if tool_name == "delegate_ai_task":
         raw_task_type = str(arguments.get("task_type") or "")
         if raw_task_type not in {"business_analytics", "system_action", "communications"}:
