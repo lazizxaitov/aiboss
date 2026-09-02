@@ -3,7 +3,7 @@
 import { createContext, type FormEvent, type ReactNode, useContext, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
-const apiUrl = process.env.NEXT_PUBLIC_CORE_API_URL ?? "http://127.0.0.1:8000";
+const apiUrl = "";
 const defaultLockAfterMs = 5 * 60 * 1000;
 
 export type OwnerSessionState = {

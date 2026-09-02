@@ -18,7 +18,7 @@ import {
   getUnreadCount,
 } from "@/modules/alerts/notifications-data";
 
-const coreApiUrl = process.env.NEXT_PUBLIC_CORE_API_URL ?? "http://127.0.0.1:8000";
+const coreApiUrl = "";
 
 function sessionHeaders() {
   const value = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("aibos_owner_session="));

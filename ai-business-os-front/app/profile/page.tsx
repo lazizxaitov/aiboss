@@ -9,7 +9,7 @@ import { Surface } from "@/components/ui/surface";
 import { DashboardShell } from "@/components/shell/dashboard-shell";
 import { useUnsavedChangesGuard } from "@/lib/use-unsaved-changes";
 
-const coreApiUrl = process.env.NEXT_PUBLIC_CORE_API_URL ?? "http://127.0.0.1:8000";
+const coreApiUrl = "";
 
 export default function ProfilePage() {
   const router = useRouter();

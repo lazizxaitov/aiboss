@@ -3,7 +3,7 @@
 
 import { type FormEvent, useState } from "react";
 
-const coreApiUrl = process.env.NEXT_PUBLIC_CORE_API_URL ?? "http://127.0.0.1:8000";
+const coreApiUrl = "";
 
 export default function LoginPage() {
   const [login, setLogin] = useState("");

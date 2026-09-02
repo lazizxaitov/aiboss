@@ -18,6 +18,11 @@ async function verifyOwnerSession(token: string | undefined) {
 }
 
 export async function middleware(request: NextRequest) {
+  // API requests are authenticated by FastAPI and must reach the same-origin
+  // rewrite untouched. Page middleware must not redirect login or API calls.
+  if (request.nextUrl.pathname.startsWith("/api/v1/")) {
+    return NextResponse.next();
+  }
   const isLoginPage = request.nextUrl.pathname === "/login";
   const cookieHeader = request.headers.get("cookie") ?? "";
   const sessionCookie = cookieHeader

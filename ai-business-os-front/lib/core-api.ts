@@ -2459,7 +2459,11 @@ export type FinanceWorkspaceFilters = {
   pageSize?: number;
 };
 
-const coreApiBaseUrl = process.env.CORE_API_URL ?? "http://127.0.0.1:8000";
+// Browser requests stay same-origin so remote users never resolve localhost
+// against their own machine. Server-side callers may still use the local API.
+const coreApiBaseUrl = typeof window === "undefined"
+  ? (process.env.CORE_API_URL ?? "http://127.0.0.1:8000")
+  : "";
 const requestTimeoutMs = 3_500;
 
 function ownerSessionToken() {
