@@ -20,6 +20,7 @@ from app.core.ai_capabilities import BUSINESS_QUERY_CAPABILITY, ai_capability_re
 from app.core.ai_system_context import AISystemContextService
 from app.core.ai_routing import AITaskRouter, TaskType
 from app.core.analytics.widget_builder import WidgetBuilderService
+from app.core.config import settings
 from app.core.ai_readonly_sql import AIReadOnlyQueryError, AIReadOnlySQLService
 from app.core.data_layer.contracts import CoreDataStore
 from app.core.hermes_tools import HermesBusinessTools
@@ -389,6 +390,9 @@ class AIBusinessAgentService:
         attachments: list[dict[str, object]] | None = None,
     ) -> AIBusinessAgentResult:
         """Resolve a target, execute tools, and stop at the first final answer."""
+
+        if max_duration_seconds is None and task_type == "ai_chat":
+            max_duration_seconds = settings.ai_chat_timeout_seconds
 
         # Imports are local to keep the route-level tool contract in one place and
         # avoid making the HTTP route a second implementation of the tool layer.

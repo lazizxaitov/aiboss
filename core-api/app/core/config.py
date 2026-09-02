@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     ai_analytics_agent_timeout_seconds: float = 300.0
     ai_analytics_prompt_version: str = "phase-3c-v1"
     ai_analytics_cache_ttl_seconds: int = 300
+    ai_chat_timeout_seconds: float = 45.0
     openai_api_key: str | None = None
     openai_base_url: str = "https://api.openai.com/v1"
     anthropic_api_key: str | None = None
