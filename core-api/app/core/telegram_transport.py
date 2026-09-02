@@ -264,6 +264,10 @@ class TelegramTransport:
         telegram_user_id = str(sender.get("id") or "")
         if not chat_id or not telegram_user_id:
             return
+        stage = "identity"
+        conversation_id: str | None = None
+        provider_id: str | None = None
+        model_id: str | None = None
         conversation_service = AIConversationService(self.store)
         if text.strip().lower().startswith("/start "):
             link_token = text.strip().split(maxsplit=1)[1].strip()
@@ -309,6 +313,7 @@ class TelegramTransport:
         started = monotonic()
         typing_task = asyncio.create_task(self._typing_loop(client, chat_id))
         try:
+            stage = "application_request"
             result: TelegramChatResponse = await handle_telegram_chat(
                 TelegramChatRequest(
                     telegram_chat_id=chat_id,
@@ -318,13 +323,18 @@ class TelegramTransport:
                 ),
                 self.store,
             )
+            conversation_id = result.conversation_id
+            provider_id = result.provider_id
+            model_id = result.model_id
+            stage = "send_text"
             await self._send_text(
                 client,
                 chat_id,
                 result.telegram_message,
-                [option.model_dump() for option in result.options] or None,
+                [option.model_dump() for option in (result.options if isinstance(result.options, list) else [])] or None,
             )
-            for artifact in result.artifacts:
+            stage = "send_artifacts"
+            for artifact in (result.artifacts if isinstance(result.artifacts, list) else []):
                 await self._send_artifact(client, chat_id, artifact)
             logger.info(
                 "TELEGRAM_AI_RESPONSE update_id=%s telegram_chat_id=%s conversation_id=%s "
@@ -337,11 +347,18 @@ class TelegramTransport:
                 result.model_id,
             )
         except Exception as error:  # noqa: BLE001 - one update must not stop the poller
-            logger.info(
-                "TELEGRAM_TRANSPORT_ERROR update_id=%s telegram_chat_id=%s error_type=%s",
+            logger.exception(
+                "TELEGRAM_TRANSPORT_ERROR update_id=%s telegram_chat_id=%s stage=%s error_type=%s "
+                "error_message=%s conversation_id=%s provider_id=%s model_id=%s elapsed_ms=%.2f",
                 update_id,
                 chat_id,
+                stage,
                 type(error).__name__,
+                str(error)[:240],
+                conversation_id or "",
+                provider_id or "",
+                model_id or "",
+                (monotonic() - started) * 1000,
             )
             try:
                 await self._send_text(
