@@ -139,7 +139,22 @@ async def enforce_web_session_lock(request: Request, call_next):
     if request.method == "OPTIONS":
         return await call_next(request)
     path = request.url.path
-    public = {f"{settings.api_v1_prefix}/auth/login", f"{settings.api_v1_prefix}/auth/verify", f"{settings.api_v1_prefix}/auth/me", f"{settings.api_v1_prefix}/auth/unlock", f"{settings.api_v1_prefix}/auth/lock", f"{settings.api_v1_prefix}/auth/logout", f"{settings.api_v1_prefix}/health"}
+    public = {
+        f"{settings.api_v1_prefix}/auth/login",
+        f"{settings.api_v1_prefix}/auth/verify",
+        f"{settings.api_v1_prefix}/auth/me",
+        f"{settings.api_v1_prefix}/auth/unlock",
+        f"{settings.api_v1_prefix}/auth/lock",
+        f"{settings.api_v1_prefix}/auth/logout",
+        f"{settings.api_v1_prefix}/health",
+        # /device/pair is the entry point a brand-new phone uses to obtain its
+        # FIRST session — it has no Authorization header yet by definition, so
+        # it must stay outside this session-lock check. The route enforces its
+        # own security independently: rate limiting, the owner login/password,
+        # and a one-time pairing token minted by an already-authenticated
+        # owner session (see devices.py).
+        f"{settings.api_v1_prefix}/device/pair",
+    }
     if path.startswith(settings.api_v1_prefix) and path not in public:
         authorization = request.headers.get("authorization", "")
         token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
