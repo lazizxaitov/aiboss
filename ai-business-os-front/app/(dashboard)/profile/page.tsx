@@ -6,7 +6,6 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Surface } from "@/components/ui/surface";
-import { DashboardShell } from "@/components/shell/dashboard-shell";
 import { useUnsavedChangesGuard } from "@/lib/use-unsaved-changes";
 
 const coreApiUrl = "";
@@ -121,8 +120,7 @@ export default function ProfilePage() {
   };
 
   return (
-    <DashboardShell>
-      <section className="mx-auto w-full max-w-4xl space-y-4">
+    <section className="mx-auto w-full max-w-4xl space-y-4">
       <Surface>
         <div className="rounded-[28px] bg-[#2E3137] p-5 sm:p-6">
           <p className="text-xs uppercase tracking-[0.32em] text-slate-400">Профиль</p>
@@ -181,7 +179,6 @@ export default function ProfilePage() {
           </form>
         </div>
       </Surface>
-      </section>
-    </DashboardShell>
+    </section>
   );
 }
