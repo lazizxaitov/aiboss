@@ -34,15 +34,18 @@ export function DashboardShell({
       <BusinessRefreshProvider>
         <BusinessContextProvider>
           <div className="min-h-screen overflow-x-clip bg-[#1E1E21] p-4 pb-24 text-[#f4f7fb] lg:pb-4">
-            {/* Previously capped at max-w-[1920px] to stop the dashboard
-                grid from spreading widgets too far apart on ultra-wide
-                monitors — but that also letterboxed the whole shell (topbar,
-                sidebar, grid) on any screen wider than 1920px, making the UI
-                look small with wasted space on both sides. The actual
-                "spread out" problem is now fixed at the grid level (extra
-                xl/xxl breakpoints with more columns in launcher/composer.js),
-                so the shell can go back to filling the full viewport width. */}
-            <div className="mx-auto flex min-h-[calc(100vh-2rem)] w-full max-w-[2600px] flex-col gap-4">
+            {/* Previously capped at max-w-[1920px], then max-w-[2600px], to
+                stop the dashboard grid from spreading widgets too far apart
+                on ultra-wide monitors — but any fixed cap letterboxes the
+                whole shell (topbar, sidebar, grid) on a bigger screen (a 4K
+                TV is 3840px wide), which is exactly the "doesn't fill my
+                screen" complaint. The actual "spread out" problem is now
+                fixed at the grid level instead of by capping width: extra
+                xl/xxl breakpoints add more columns on wide screens, and
+                launcher/composer.js's row-fill grows widgets to close any
+                left-over row width. So the shell itself goes back to filling
+                the full viewport width on any monitor, TV included. */}
+            <div className="mx-auto flex min-h-[calc(100vh-2rem)] w-full flex-col gap-4">
               <AppTopbar />
               <div className="flex min-h-0 min-w-0 flex-1 items-stretch gap-4">
                 <AppSidebar />

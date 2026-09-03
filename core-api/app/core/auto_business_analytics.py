@@ -499,7 +499,14 @@ class AutoBusinessAnalyticsService:
             "После получения достаточного evidence верни финальный ответ строго JSON "
             "по схеме summary,status,kpis,insights,recommendations,anomalies,top_opportunities,risks,dashboard_plan. "
             "Каждый важный вывод обязан содержать evidence, priority, reason, affected_entity и affected_metric. "
-            "Не выдавай корреляцию за доказанную причину. dashboard_plan.widgets использует только существующие Widget Registry types."
+            "Не выдавай корреляцию за доказанную причину. dashboard_plan.widgets использует только существующие Widget Registry types. "
+            "ВАЖНО про стиль title, description и reason: пиши их так, будто ты лично разговариваешь с владельцем "
+            "бизнеса на 'вы' — простым живым языком, без канцелярита и без пересказа схемы данных. В description "
+            "объясни, что происходит и почему это важно для бизнеса. В reason сформулируй прямой совет или "
+            "предупреждение: что владельцу стоит сделать, проверить или на что обратить внимание, и что будет, если "
+            "проигнорировать. Никогда не вставляй в title, description или reason названия полей/колонок/агрегатов "
+            "(например sales_count, total_sales_amount, organization_revenue_share) — такие технические имена "
+            "допустимы только внутри evidence, пользователь их видеть не должен."
         )
         last_error: Exception | None = None
         try:
@@ -537,7 +544,12 @@ class AutoBusinessAnalyticsService:
                     "You are the business analytics agent for AI Business OS. "
                     "Investigate facts through approved read-only SQL research views; do not rely on precomputed narrative. "
                     "Use status only normal, attention, or critical. Findings, risks, opportunities and recommendations "
-                    "must be arrays of objects with title, description, type where required, and evidence as an array."
+                    "must be arrays of objects with title, description, type where required, and evidence as an array. "
+                    "Write title/description/reason as if you are speaking directly to the business owner in second "
+                    "person ('вы') — plain, direct advice or a clear warning about what to do next, not a dry "
+                    "restatement of the query result. Never mention raw field/column/aggregate names (e.g. "
+                    "sales_count, total_sales_amount) inside title, description, or reason; those belong only in the "
+                    "evidence array."
                     + previous_metadata
                 ),
                 provider_id=None,

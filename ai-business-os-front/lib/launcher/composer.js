@@ -171,6 +171,28 @@ export function composeLauncherLayout({ state, widgets, columns }) {
 
   const flushRow = () => {
     if (currentRow.length === 0) return;
+    // If a row doesn't reach the full column count (the last widget in a row
+    // is "medium" on a wide screen, or a row simply has too few widgets to
+    // fill it), grow its widgets — each up to its own family's "large" width
+    // — instead of leaving a dead gap on the right. This is what made the
+    // dashboard look "not full-width" / "black bars" on large and ultra-wide
+    // screens, independent of the xl/xxl breakpoint columns fix.
+    let remainder = columns - currentWidth;
+    if (remainder > 0) {
+      const growable = currentRow.map((entry) => ({
+        entry,
+        room: Math.max(0, Math.min(entry.maxW, columns) - entry.w),
+      }));
+      while (remainder > 0 && growable.some((item) => item.room > 0)) {
+        for (const item of growable) {
+          if (remainder <= 0) break;
+          if (item.room <= 0) continue;
+          item.entry.w += 1;
+          item.room -= 1;
+          remainder -= 1;
+        }
+      }
+    }
     let x = 0;
     for (const entry of currentRow) {
       const isLocked = locked.has(entry.id);

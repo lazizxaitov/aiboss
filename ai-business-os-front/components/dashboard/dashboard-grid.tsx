@@ -1139,7 +1139,12 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
         const items = (Array.isArray(payload.items) ? payload.items : []).map((item) => ({
           label: item.type === "recommendation" ? "Рекомендует" : item.priority === "critical" || item.priority === "high" ? "Требует внимания" : "Наблюдение",
           title: item.title,
-          text: [item.description, item.affected_entity, item.affected_metric].filter(Boolean).join(" · "),
+          // `reason` is the AI's direct advice/warning to the owner
+          // ("что делать" / "на что обратить внимание"); `affected_metric` is
+          // an internal field name (e.g. "sales_count,total_sales_amount")
+          // meant for evidence citations, not for display — it was showing
+          // up verbatim in the card text, which read as raw/technical.
+          text: [item.description, item.reason].filter(Boolean).join(" "),
         }));
         const nextThoughts = [...summary, ...items];
         setAiThoughts(nextThoughts);
@@ -1719,14 +1724,14 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
               </form>
             ) : hasConversation ? (
               <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
-                <div ref={chatThreadRef} className="min-h-0 flex-1 overflow-y-auto pr-1">
-                  <div className="flex flex-col gap-4 pb-3">
+                <div ref={chatThreadRef} className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden pr-1">
+                  <div className="flex min-w-0 flex-col gap-4 pb-3">
                     {chatMessages.map((item) => {
                       const parsed = item.role === "assistant" ? parseAssistantFiles(item.text) : null;
                       const visibleText = parsed ? parsed.text || item.text : item.text;
                       return item.role === "user" ? (
-                        <div key={item.id} className="ml-auto max-w-[82%] rounded-[22px] bg-[#565b63] px-4 py-3 text-[#f4f7fb] shadow-[0_10px_22px_rgba(0,0,0,0.14)]">
-                          <p className="whitespace-pre-wrap text-[15px] leading-6 text-[#f4f7fb]">{item.text}</p>
+                        <div key={item.id} className="ml-auto min-w-0 max-w-[82%] rounded-[22px] bg-[#565b63] px-4 py-3 text-[#f4f7fb] shadow-[0_10px_22px_rgba(0,0,0,0.14)]">
+                          <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[15px] leading-6 text-[#f4f7fb]">{item.text}</p>
                           {item.attachments.length > 0 ? (
                             <div className="mt-3 flex flex-wrap gap-2">
                               {item.attachments.map((attachment) => (
@@ -1756,8 +1761,8 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
                           ) : null}
                         </div>
                       ) : (
-                        <div key={item.id} className="mr-auto max-w-[82%] rounded-[22px] bg-[#f4f7fb] px-4 py-3 text-[#1E1E21] shadow-[0_10px_22px_rgba(0,0,0,0.14)]">
-                          {item.providerName ? <p className="mb-1 text-[10px] uppercase tracking-[0.2em] text-slate-500">{item.providerName}{item.modelName ? ` · ${item.modelName}` : ""}</p> : null}
+                        <div key={item.id} className="mr-auto min-w-0 max-w-[82%] rounded-[22px] bg-[#f4f7fb] px-4 py-3 text-[#1E1E21] shadow-[0_10px_22px_rgba(0,0,0,0.14)]">
+                          {item.providerName ? <p className="mb-1 truncate text-[10px] uppercase tracking-[0.2em] text-slate-500">{item.providerName}{item.modelName ? ` · ${item.modelName}` : ""}</p> : null}
                           {!visibleText && isGenerating ? (
                             // The first model round (deciding whether business
                             // data is needed) is never streamed, so this bubble
@@ -1768,7 +1773,7 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
                             // blank bubble or a single frozen "thinking" label.
                             <AiThinkingIndicator stage={aiStage} />
                           ) : (
-                            <p className="whitespace-pre-wrap text-[15px] leading-6 text-[#1E1E21]">{visibleText || " "}</p>
+                            <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[15px] leading-6 text-[#1E1E21]">{visibleText || " "}</p>
                           )}
                           {parsed?.attachments.length ? (
                             <div className="mt-3 flex flex-wrap gap-2">
