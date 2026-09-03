@@ -307,36 +307,81 @@ class AIReadOnlySQLService:
         entity: str | None = None,
         detail: str | None = None,
     ) -> dict[str, object]:
-        """Return detailed metadata only for the model-selected dataset."""
+        """Return detailed metadata for the model-selected dataset(s).
+
+        entity/domain accepts either one name or several comma-separated
+        names (e.g. "ai_sales, ai_orders, ai_products"). Models naturally
+        ask for every table they think they'll need in one call when given
+        a list of candidates — previously the whole comma-joined string was
+        matched against a single dataset name and always failed with
+        "not published", leaving the model with no schema information at
+        all before it went on to guess column names in a business.query
+        call. Each comma-separated token is now resolved independently.
+        """
 
         schema = self.database_schema()
         environment = self.semantic_environment(schema, include_columns=True)
-        requested = (entity or domain or "").strip().lower()
-        matches = [
-            item for item in environment.get("datasets", [])
-            if isinstance(item, dict)
-            and requested in {
-                str(item.get("name", "")).lower(),
-                str(item.get("name", "")).lower().removeprefix("ai_"),
-                str(item.get("domain", "")).lower(),
-            }
+        requested_raw = (entity or domain or "").strip()
+        requested_tokens = [
+            token.strip().lower() for token in requested_raw.split(",") if token.strip()
         ]
-        if not matches:
+        if not requested_tokens:
             return {
                 "available": False,
+                "error_type": "missing_entity",
                 "reason": "Requested business domain or entity is not published.",
-                "requested": requested,
+                "requested": requested_raw,
             }
-        selected = dict(matches[0])
-        if detail == "relationships":
-            selected.pop("columns", None)
-            selected["relationships"] = [
-                relationship for relationship in environment.get("relationships", [])
-                if isinstance(relationship, dict)
-                and (str(relationship.get("from", "")).lower().startswith(str(selected.get("name", "")).lower() + ".")
-                     or str(relationship.get("to", "")).lower().startswith(str(selected.get("name", "")).lower() + "."))
-            ]
-        return {"available": True, "dataset": selected}
+
+        datasets = environment.get("datasets", [])
+        selected: list[dict[str, object]] = []
+        unresolved: list[str] = []
+        seen_names: set[str] = set()
+        for token in requested_tokens:
+            match = next(
+                (
+                    item for item in datasets
+                    if isinstance(item, dict)
+                    and token in {
+                        str(item.get("name", "")).lower(),
+                        str(item.get("name", "")).lower().removeprefix("ai_"),
+                        str(item.get("domain", "")).lower(),
+                    }
+                ),
+                None,
+            )
+            if match is None:
+                unresolved.append(token)
+                continue
+            name = str(match.get("name", ""))
+            if name in seen_names:
+                continue
+            seen_names.add(name)
+            item = dict(match)
+            if detail == "relationships":
+                item.pop("columns", None)
+                item["relationships"] = [
+                    relationship for relationship in environment.get("relationships", [])
+                    if isinstance(relationship, dict)
+                    and (str(relationship.get("from", "")).lower().startswith(name.lower() + ".")
+                         or str(relationship.get("to", "")).lower().startswith(name.lower() + "."))
+                ]
+            selected.append(item)
+
+        if not selected:
+            return {
+                "available": False,
+                "error_type": "unknown_entity",
+                "reason": "Requested business domain or entity is not published.",
+                "requested": requested_raw,
+            }
+
+        result: dict[str, object] = {"available": True, "dataset": selected[0]}
+        if len(selected) > 1:
+            result["datasets"] = selected
+        if unresolved:
+            result["unresolved"] = unresolved
+        return result
 
     def validate(self, sql: str) -> tuple[str, str, tuple[Any, ...]]:
         if not isinstance(sql, str) or not sql.strip():

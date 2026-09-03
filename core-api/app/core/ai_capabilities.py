@@ -51,7 +51,14 @@ _CAPABILITIES: tuple[AICapability, ...] = (
             "type": "object",
             "properties": {
                 "domain": {"type": "string"},
-                "entity": {"type": "string"},
+                "entity": {
+                    "type": "string",
+                    "description": (
+                        "One dataset/view name, or several separated by commas "
+                        "(e.g. \"ai_sales, ai_orders, ai_products\") to describe "
+                        "multiple related datasets in a single call."
+                    ),
+                },
                 "detail": {"type": "string", "enum": ["schema", "relationships"]},
             },
             "additionalProperties": False,

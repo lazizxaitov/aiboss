@@ -212,6 +212,30 @@ def test_semantic_discovery_returns_only_requested_dataset_details():
     assert "columns" in result["dataset"]
 
 
+def test_semantic_discovery_resolves_comma_separated_entity_list():
+    # Models naturally ask for every table they expect to need in one call
+    # once they've seen a list of candidate entities — previously the whole
+    # comma-joined string was matched against a single dataset name and
+    # always failed with "not published", leaving the model with no schema
+    # information before it went on to guess column names in a SQL query.
+    service = AIReadOnlySQLService(SimpleNamespace())
+    result = service.describe_semantic(entity="ai_sales, ai_orders, does_not_exist")
+
+    assert result["available"] is True
+    names = {item["name"] for item in result["datasets"]}
+    assert names == {"ai_sales", "ai_orders"}
+    assert result["dataset"]["name"] == "ai_sales"
+    assert result["unresolved"] == ["does_not_exist"]
+
+
+def test_semantic_discovery_reports_error_type_when_nothing_matches():
+    service = AIReadOnlySQLService(SimpleNamespace())
+    result = service.describe_semantic(entity="not_a_real_table")
+
+    assert result["available"] is False
+    assert result["error_type"] == "unknown_entity"
+
+
 def test_semantic_graph_covers_published_domains_and_compound_identity():
     environment = AIReadOnlySQLService(SimpleNamespace()).semantic_environment(
         include_columns=False,
