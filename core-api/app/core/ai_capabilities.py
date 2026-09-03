@@ -36,7 +36,12 @@ _CAPABILITIES: tuple[AICapability, ...] = (
             "properties": {
                 "sql": {
                     "type": "string",
-                    "description": "One SELECT statement over the published ai_* analytical views.",
+                    "description": (
+                        "One simple SELECT statement over exactly ONE published ai_* analytical view. "
+                        "JOIN, UNION, INTERSECT, EXCEPT, CTEs, and nested SELECTs are not supported and "
+                        "are always rejected. To combine data across domains, call business.query "
+                        "separately for each view and combine the results yourself."
+                    ),
                 },
             },
             "required": ["sql"],

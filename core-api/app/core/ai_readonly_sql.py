@@ -403,7 +403,12 @@ class AIReadOnlySQLService:
         view = matches[0].lower()
         if re.search(r"\b(?:join|union|intersect|except|into)\b", query, re.IGNORECASE):
             raise AIReadOnlyQueryError(
-                "JOIN и составные запросы не разрешены в AI research interface."
+                "JOIN и составные запросы не разрешены в AI research interface. "
+                "Сделай несколько отдельных business.query запросов — по одному "
+                "разрешённому ai_* представлению в каждом (например сначала "
+                "SELECT ... FROM ai_sales ..., затем отдельно SELECT ... FROM "
+                "ai_orders ... и т.д.) — и сопоставь результаты сам в финальном "
+                "ответе, а не в SQL."
             )
         limit_match = _LIMIT.search(query)
         if limit_match and int(limit_match.group(1)) > MAX_ROWS:
