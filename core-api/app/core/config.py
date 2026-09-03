@@ -17,6 +17,15 @@ class Settings(BaseSettings):
     environment: str = "development"
     debug: bool = True
     api_v1_prefix: str = "/api/v1"
+    # QR pairing (Settings -> "Мобильные устройства") builds its deep link
+    # from the browser's own window.location.origin by default — which is
+    # correct when Settings is opened over the network, but is 127.0.0.1 (or
+    # some other loopback address) when opened from the desktop app running
+    # on the same machine that serves the app, producing a QR code a phone
+    # can never reach. Set this to the address a phone can actually use
+    # (e.g. "https://modailyai.uz") to always use it for the QR link instead
+    # of whatever origin the request came in on.
+    public_app_origin: str | None = None
     storage_backend: str = "postgres"
     sqlite_path: str = ":memory:"
     postgres_dsn: str = "postgresql://postgres:postgres@localhost:5432/ai_business_os"

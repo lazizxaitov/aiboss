@@ -89,7 +89,16 @@ def create_device_link(
     if not _ORIGIN_PATTERN.match(request.origin):
         raise HTTPException(status_code=422, detail="Некорректный адрес системы")
     result = DeviceLinkService(store).create(session.login)
-    deep_link = f"{request.origin}/m/pair?token={result['token']}"
+    # Prefer the configured public origin over whatever the browser sent.
+    # The desktop app always renders Settings from a loopback address
+    # (127.0.0.1 or similar) even when the server is reachable from the
+    # network at a real domain — a QR built from that loopback origin can
+    # never be reached by a phone scanning it. request.origin is still used
+    # as a fallback for setups with no configured public_app_origin (e.g.
+    # opening Settings directly from a browser on the real address already
+    # works fine as-is).
+    origin = (settings.public_app_origin or request.origin).rstrip("/")
+    deep_link = f"{origin}/m/pair?token={result['token']}"
     qr_data_uri = None
     if segno is not None:
         try:
