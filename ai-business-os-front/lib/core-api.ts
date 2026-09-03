@@ -2862,6 +2862,9 @@ export async function streamAiChat(
   conversationId?: string,
   organizationId?: string | null,
   period?: string | null,
+  // Progress hook: "thinking" | "researching" | "writing" — purely cosmetic,
+  // lets the UI show something more useful than a static "AI is thinking".
+  onStage?: (stage: string) => void,
 ): Promise<void> {
   const response = await fetch(`${coreApiBaseUrl}/api/v1/ai/chat`, {
     method: "POST",
@@ -2893,10 +2896,18 @@ export async function streamAiChat(
       const eventName = event.match(/^event: (.+)$/m)?.[1];
       const data = event.match(/^data: (.+)$/m)?.[1];
       if (!data) continue;
-      const payload = JSON.parse(data) as { content?: string; message?: string; provider_id?: string; provider_name?: string; model_id?: string };
+      const payload = JSON.parse(data) as {
+        content?: string;
+        message?: string;
+        provider_id?: string;
+        provider_name?: string;
+        model_id?: string;
+        stage?: string;
+      };
       if (eventName === "error") throw new Error(payload.message || "Не удалось получить ответ AI.");
       if (eventName === "meta") onMeta?.(payload);
       if (eventName === "done") receivedDone = true;
+      if ((eventName === "stage" || eventName === "heartbeat") && payload.stage) onStage?.(payload.stage);
       if (payload.content) onChunk(payload.content);
     }
     if (done) break;

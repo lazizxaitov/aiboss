@@ -1,7 +1,17 @@
 import { getWidgetFamily } from "./widget-registry";
 
-export const LAUNCHER_BREAKPOINTS = Object.freeze({ lg: 1024, md: 768, sm: 0 });
-export const LAUNCHER_COLUMNS = Object.freeze({ lg: 12, md: 8, sm: 4 });
+// Two extra breakpoints for large/ultra-wide monitors. Without them, a
+// screen wider than "lg" (1024px) still only had 12 columns, so each column
+// grew huge as the viewport widened — the grid either looked stretched out
+// (full width) or had to be artificially capped (looked small/letterboxed).
+// More columns at wider breakpoints keeps each column a sane physical size
+// while the grid still fills the full available width.
+export const LAUNCHER_BREAKPOINTS = Object.freeze({
+  xxl: 2200, xl: 1600, lg: 1024, md: 768, sm: 0,
+});
+export const LAUNCHER_COLUMNS = Object.freeze({
+  xxl: 20, xl: 16, lg: 12, md: 8, sm: 4,
+});
 
 const VALID_SIZES = new Set(["small", "medium", "large"]);
 
@@ -65,8 +75,17 @@ function widthForSize(size, columns) {
     if (size === "medium") return Math.min(columns, 6);
     return columns;
   }
-  if (size === "small") return 3;
-  if (size === "medium") return 6;
+  if (columns <= 12) {
+    if (size === "small") return 3;
+    if (size === "medium") return 6;
+    return columns;
+  }
+  // Wider grids (xl/xxl breakpoints, 16-20 columns): keep "small"/"medium"
+  // widgets at a sane absolute width instead of shrinking them further, so
+  // more widgets fit side by side and fill the extra screen width rather
+  // than a handful of boxes stretching to cover it.
+  if (size === "small") return 4;
+  if (size === "medium") return 8;
   return columns;
 }
 
@@ -228,6 +247,8 @@ export function composeResponsiveLauncherLayouts(state, widgets) {
 }
 
 export function breakpointForWidth(width) {
+  if (width >= LAUNCHER_BREAKPOINTS.xxl) return "xxl";
+  if (width >= LAUNCHER_BREAKPOINTS.xl) return "xl";
   if (width >= LAUNCHER_BREAKPOINTS.lg) return "lg";
   if (width >= LAUNCHER_BREAKPOINTS.md) return "md";
   return "sm";

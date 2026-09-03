@@ -223,6 +223,17 @@ type ChatMessage = {
   modelName?: string;
 };
 
+type AiChatStage = "thinking" | "researching" | "writing";
+
+// Each stage cycles through a few short phrases for a livelier indicator
+// than a single static "ИИ думает…" label, without needing the backend to
+// report anything more granular than the three real stages it already has.
+const AI_STAGE_PHRASES: Record<AiChatStage, string[]> = {
+  thinking: ["ИИ думает…", "Формулирует план…"],
+  researching: ["Анализирует данные…", "Проверяет показатели…", "Сопоставляет цифры…", "Запрашивает данные…"],
+  writing: ["Печатает ответ…", "Формулирует ответ…"],
+};
+
 type AssistantFileAttachment = {
   id: string;
   name: string;
@@ -230,6 +241,37 @@ type AssistantFileAttachment = {
   content: string;
   size: number;
 };
+
+// Cycles through a stage's phrase list every ~1.8s so the "AI is..."
+// indicator reads as active progress instead of a single frozen label.
+// `stage` is the real backend-reported step; the phrase within it is cosmetic.
+function AiThinkingIndicator({ stage }: { stage: AiChatStage | null }) {
+  const [phraseIndex, setPhraseIndex] = useState(0);
+  useEffect(() => {
+    setPhraseIndex(0);
+    if (!stage) return;
+    const phrases = AI_STAGE_PHRASES[stage];
+    if (phrases.length <= 1) return;
+    const interval = window.setInterval(() => {
+      setPhraseIndex((current) => (current + 1) % phrases.length);
+    }, 1800);
+    return () => window.clearInterval(interval);
+  }, [stage]);
+
+  const phrases = AI_STAGE_PHRASES[stage ?? "thinking"];
+  const phrase = phrases[phraseIndex % phrases.length];
+
+  return (
+    <p className="flex items-center gap-2 text-[15px] leading-6 text-slate-500" aria-label={phrase} aria-live="polite">
+      <span className="inline-flex items-center gap-1">
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.3s]" />
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.15s]" />
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400" />
+      </span>
+      <span>{phrase}</span>
+    </p>
+  );
+}
 
 const QUICK_ACTION_PROMPTS: Record<string, string> = {
   "Обсудить продажи":
@@ -1041,6 +1083,9 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
+  // Backend-reported progress stage for the current turn ("thinking" |
+  // "researching" | "writing"), driving the extended "AI is..." indicator.
+  const [aiStage, setAiStage] = useState<AiChatStage | null>(null);
   const [chatError, setChatError] = useState<string | null>(null);
   const [analysisStatus, setAnalysisStatus] = useState<"idle" | "running" | "completed" | "failed">("idle");
   const [analysisError, setAnalysisError] = useState<string | null>(null);
@@ -1363,6 +1408,7 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
     setMessage("");
     setPendingAttachments([]);
     setIsGenerating(true);
+    setAiStage("thinking");
     let streamedAssistantText = "";
     try {
       await streamAiChat(
@@ -1393,6 +1439,11 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
         conversationId,
         businessState.selectedOrganizationIds[0] ?? null,
         businessState.period.preset,
+        (stage) => {
+          if (stage === "thinking" || stage === "researching" || stage === "writing") {
+            setAiStage(stage);
+          }
+        },
       );
       if (taskType === "ai_chat" && shouldShowBusinessDataModal(text) && streamedAssistantText.trim()) {
         setBusinessDataModal({ text: streamedAssistantText.trim() });
@@ -1409,6 +1460,7 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
       );
     } finally {
       setIsGenerating(false);
+      setAiStage(null);
     }
   };
 
@@ -1711,16 +1763,10 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
                             // data is needed) is never streamed, so this bubble
                             // used to stay visually empty until the first token
                             // of the final answer arrived — often several
-                            // seconds later. Show a "thinking" state instead of
-                            // a blank bubble.
-                            <p className="flex items-center gap-2 text-[15px] leading-6 text-slate-500" aria-label="ИИ думает">
-                              <span className="inline-flex items-center gap-1">
-                                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.3s]" />
-                                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.15s]" />
-                                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400" />
-                              </span>
-                              <span>ИИ думает…</span>
-                            </p>
+                            // seconds later. Show the AI's actual current stage
+                            // (thinking / researching / writing) instead of a
+                            // blank bubble or a single frozen "thinking" label.
+                            <AiThinkingIndicator stage={aiStage} />
                           ) : (
                             <p className="whitespace-pre-wrap text-[15px] leading-6 text-[#1E1E21]">{visibleText || " "}</p>
                           )}

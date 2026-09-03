@@ -923,11 +923,18 @@ async def chat(
             "dashboard",
         )
         try:
-            delta_queue: asyncio.Queue[str | None] = asyncio.Queue()
+            # Queue items are small tagged dicts so the SSE loop can tell a
+            # text delta apart from a progress-stage update; `None` is the
+            # end-of-stream sentinel.
+            delta_queue: asyncio.Queue[dict[str, str] | None] = asyncio.Queue()
             streamed_parts: list[str] = []
+            last_stage: str | None = None
 
             async def on_final_delta(content: str) -> None:
-                await delta_queue.put(content)
+                await delta_queue.put({"kind": "delta", "content": content})
+
+            async def on_stage(stage: str) -> None:
+                await delta_queue.put({"kind": "stage", "stage": stage})
 
             async def execute_agent():
                 try:
@@ -953,6 +960,7 @@ async def chat(
                         request_id=request_id,
                         ui_context=request.ui_context,
                         on_final_delta=on_final_delta,
+                        on_stage=on_stage,
                     )
                 finally:
                     await delta_queue.put(None)
@@ -962,15 +970,25 @@ async def chat(
                 try:
                     # Keep long provider/model gaps observable to SSE proxies
                     # without exposing reasoning, SQL, or business data.
-                    delta = await asyncio.wait_for(
+                    item = await asyncio.wait_for(
                         delta_queue.get(),
                         timeout=SSE_HEARTBEAT_SECONDS,
                     )
                 except TimeoutError:
-                    yield _event({}, "heartbeat")
+                    # Re-send the last known stage as the heartbeat payload so a
+                    # client that missed the original "stage" event (or joined
+                    # late) still has something to show during a long gap.
+                    yield _event({"stage": last_stage} if last_stage else {}, "heartbeat")
                     continue
-                if delta is None:
+                if item is None:
                     break
+                if item.get("kind") == "stage":
+                    stage = item.get("stage") or ""
+                    if stage and stage != last_stage:
+                        last_stage = stage
+                        yield _event({"stage": stage}, "stage")
+                    continue
+                delta = item.get("content") or ""
                 if delta:
                     streamed_parts.append(delta)
                     yield _event({"content": delta}, "delta")

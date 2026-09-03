@@ -34,12 +34,15 @@ export function DashboardShell({
       <BusinessRefreshProvider>
         <BusinessContextProvider>
           <div className="min-h-screen overflow-x-clip bg-[#1E1E21] p-4 pb-24 text-[#f4f7fb] lg:pb-4">
-            {/* No max-width anywhere in this chain previously: on an
-                ultra-wide monitor (2560px+) the topbar/sidebar/dashboard grid
-                stretched full-bleed, spacing widgets out unusually far apart
-                instead of an off-screen overflow. Cap and center the actual
-                layout; the dark background above still fills the full width. */}
-            <div className="mx-auto flex min-h-[calc(100vh-2rem)] w-full max-w-[1920px] flex-col gap-4">
+            {/* Previously capped at max-w-[1920px] to stop the dashboard
+                grid from spreading widgets too far apart on ultra-wide
+                monitors — but that also letterboxed the whole shell (topbar,
+                sidebar, grid) on any screen wider than 1920px, making the UI
+                look small with wasted space on both sides. The actual
+                "spread out" problem is now fixed at the grid level (extra
+                xl/xxl breakpoints with more columns in launcher/composer.js),
+                so the shell can go back to filling the full viewport width. */}
+            <div className="mx-auto flex min-h-[calc(100vh-2rem)] w-full max-w-[2600px] flex-col gap-4">
               <AppTopbar />
               <div className="flex min-h-0 min-w-0 flex-1 items-stretch gap-4">
                 <AppSidebar />

@@ -543,7 +543,7 @@ class AutoBusinessAnalyticsService:
                 provider_id=None,
                 model_id=None,
                 build_baseline=False,
-                tool_call_budget={"widget": 4, "daily": 6, "deep": 12}[mode],
+                tool_call_budget={"widget": 6, "daily": 8, "deep": 12}[mode],
                 max_duration_seconds=run.total_budget_seconds,
             )
             run.capability_calls = agent_result.tool_calls
@@ -664,7 +664,20 @@ class AutoBusinessAnalyticsService:
             logger.info("BUSINESS_ANALYSIS_ERROR analysis_id=%s error=%s", run.analysis_id, str(error)[:300])
         if run.status != "completed":
             run.status = "failed"
-            run.error = f"Не удалось завершить автоанализ: {last_error or 'нет доступного provider/model'}"
+            if isinstance(last_error, ResearchTimeoutError):
+                # ResearchTimeoutError.args[0] is an internal diagnostic string
+                # ("AI research достиг установленного лимита времени.") — it
+                # was leaking straight into the widget/status banner instead
+                # of a message a user can act on.
+                run.error = (
+                    "Автоанализ не успел завершиться за отведённое время. "
+                    "Он будет повторён автоматически; если это повторяется часто, "
+                    "попробуйте сузить период анализа."
+                )
+            elif last_error is not None:
+                run.error = f"Не удалось завершить автоанализ: {last_error}"
+            else:
+                run.error = "Не удалось завершить автоанализ: нет доступного provider/model."
             self._save_status(AutoAnalyticsStatus(
                 status="retry_wait" if candidates else "error",
                 last_started_at=started_at,

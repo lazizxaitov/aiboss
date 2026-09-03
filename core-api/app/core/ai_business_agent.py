@@ -33,15 +33,19 @@ MAX_TOOL_CALLS = 12
 # ("analyze all visits this week", "analyze the whole business") legitimately
 # needs several distinct business.query calls; the previous 4/3 ceiling made
 # the agent hit the budget on the first non-trivial analytical question and
-# forced an early, evidence-starved final answer. Keep it bounded, but wide
-# enough for a genuinely multi-step analysis.
-CHAT_MAX_ROUNDS = 10
-CHAT_TOOL_CALLS = 8
+# forced an early, evidence-starved final answer. Users explicitly ask chat
+# to "analyze everything", so give it the same round/tool-call headroom as
+# the background "deep" analytics run instead of a smaller chat-only ceiling
+# (the timeout budget itself is raised separately in config.py).
+CHAT_MAX_ROUNDS = 14
+CHAT_TOOL_CALLS = 12
 LIGHTWEIGHT_ANALYSIS_MAX_ROUNDS = 6
 MAX_CONVERSATION_MESSAGES = 12
 FINAL_SYNTHESIS_RESERVE_RATIO = 0.25
 FINAL_SYNTHESIS_RESERVE_MIN_SECONDS = 5.0
-FINAL_SYNTHESIS_RESERVE_MAX_SECONDS = 15.0
+# A broad "analyze the whole business" answer is itself long (many findings),
+# so the final synthesis call needs more than a quick-answer's 15s reserve.
+FINAL_SYNTHESIS_RESERVE_MAX_SECONDS = 25.0
 # Last-resort window granted to a single wrap-up synthesis call when the
 # research loop itself has already run out of time. This never extends the
 # overall analysis budget in the common case; it only gives the model one
@@ -420,6 +424,12 @@ class AIBusinessAgentService:
         max_duration_seconds: float | None = None,
         ui_context: dict[str, object] | None = None,
         on_final_delta: Callable[[str], Awaitable[None]] | None = None,
+        # Optional progress hook: called with one of "thinking" (deciding
+        # whether research is needed), "researching" (running a business.query
+        # / tool call, or reasoning between rounds), "writing" (streaming the
+        # final answer). Purely cosmetic for the UI — never gates any timing
+        # or budget decision.
+        on_stage: Callable[[str], Awaitable[None]] | None = None,
         attachments: list[dict[str, object]] | None = None,
     ) -> AIBusinessAgentResult:
         """Resolve a target, execute tools, and stop at the first final answer."""
@@ -754,6 +764,13 @@ class AIBusinessAgentService:
                 deadline_stage = "initial_model"
             else:
                 deadline_stage = "research_deadline"
+            if on_stage is not None:
+                if final_synthesis or stream_final:
+                    await on_stage("writing")
+                elif round_number == 1:
+                    await on_stage("thinking")
+                else:
+                    await on_stage("researching")
             remaining_before = check_deadline(deadline_stage)
             request_started = monotonic()
             timings["model_calls"] = int(timings.get("model_calls") or 0) + 1
@@ -1442,6 +1459,8 @@ class AIBusinessAgentService:
                     else "research_deadline"
                 )
                 capability_remaining_before = check_deadline(capability_stage)
+                if on_stage is not None:
+                    await on_stage("researching")
                 capability_started = monotonic()
                 runtime["capability_attempts"] = int(runtime.get("capability_attempts") or 0) + 1
                 timings["capability_attempts"] = int(timings.get("capability_attempts") or 0) + 1
