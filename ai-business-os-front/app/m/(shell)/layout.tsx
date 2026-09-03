@@ -6,7 +6,8 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import { Drawer } from "@/components/ui/drawer";
 import { MobileActionButton } from "@/components/mobile/mobile-action-button";
-import { MobileComposerProvider } from "@/components/mobile/mobile-composer-context";
+// MobileComposerProvider now lives in the parent app/m/layout.tsx, shared
+// with the sibling /m/chat route — see the comment there for why.
 
 type MenuItem = { href: string; label: string; icon: string };
 
@@ -54,63 +55,61 @@ export default function MobileShellLayout({ children }: Readonly<{ children: Rea
   }
 
   return (
-    <MobileComposerProvider>
-      <div className="flex min-h-dvh flex-col">
-        <header className="sticky top-0 z-40 flex h-14 shrink-0 items-center justify-center border-b border-[#3a3d43] bg-[#1E1E21]/95 backdrop-blur">
-          <span className="text-sm font-semibold tracking-[-0.02em] text-[#f4f7fb]">AI Business OS</span>
-        </header>
+    <div className="flex min-h-dvh flex-col">
+      <header className="sticky top-0 z-40 flex h-14 shrink-0 items-center justify-center border-b border-[#3a3d43] bg-[#1E1E21]/95 backdrop-blur">
+        <span className="text-sm font-semibold tracking-[-0.02em] text-[#f4f7fb]">AI Business OS</span>
+      </header>
 
-        <main className="min-h-0 w-full flex-1 overflow-x-hidden px-4 pb-28 pt-4">{children}</main>
+      <main className="min-h-0 w-full flex-1 overflow-x-hidden px-4 pb-28 pt-4">{children}</main>
 
-        <nav className="fixed inset-x-3 bottom-3 z-40 grid grid-cols-3 rounded-[24px] border border-[#3a3d43] bg-[#2E3137]/95 p-2 shadow-[0_18px_50px_rgba(0,0,0,0.35)] backdrop-blur">
-          <button
-            type="button"
-            onClick={() => setMenuOpen(true)}
-            className="flex min-h-14 flex-col items-center justify-center gap-1 rounded-2xl text-[11px] text-slate-300"
-          >
-            <span aria-hidden="true" className="text-xl leading-none">
-              ☰
-            </span>
-            <span>Меню</span>
-          </button>
+      <nav className="fixed inset-x-3 bottom-3 z-40 grid grid-cols-3 rounded-[24px] border border-[#3a3d43] bg-[#2E3137]/95 p-2 shadow-[0_18px_50px_rgba(0,0,0,0.35)] backdrop-blur">
+        <button
+          type="button"
+          onClick={() => setMenuOpen(true)}
+          className="flex min-h-14 flex-col items-center justify-center gap-1 rounded-2xl text-[11px] text-slate-300"
+        >
+          <span aria-hidden="true" className="text-xl leading-none">
+            ☰
+          </span>
+          <span>Меню</span>
+        </button>
 
-          <MobileActionButton />
+        <MobileActionButton />
 
-          <button
-            type="button"
-            disabled
-            title="Скоро"
-            className="flex min-h-14 flex-col items-center justify-center gap-1 rounded-2xl text-[11px] text-slate-500 opacity-50"
-          >
-            <span aria-hidden="true" className="text-xl leading-none">
-              ⚙
-            </span>
-            <span>Режим</span>
-          </button>
+        <button
+          type="button"
+          disabled
+          title="Скоро"
+          className="flex min-h-14 flex-col items-center justify-center gap-1 rounded-2xl text-[11px] text-slate-500 opacity-50"
+        >
+          <span aria-hidden="true" className="text-xl leading-none">
+            ⚙
+          </span>
+          <span>Режим</span>
+        </button>
+      </nav>
+
+      <Drawer open={menuOpen} onClose={() => setMenuOpen(false)} title="Меню" className="max-w-sm">
+        <nav className="flex flex-col gap-1">
+          {MENU_ITEMS.map((item) => {
+            const active = item.href === "/m" ? pathname === "/m" : pathname.startsWith(item.href);
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                onClick={() => setMenuOpen(false)}
+                className={`flex items-center gap-3 rounded-2xl px-3 py-3 text-sm transition ${
+                  active ? "bg-[#3a3d43] text-[#f4f7fb]" : "text-slate-300 hover:bg-[#343840]"
+                }`}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={item.icon} alt="" className="h-5 w-5 object-contain" />
+                {item.label}
+              </Link>
+            );
+          })}
         </nav>
-
-        <Drawer open={menuOpen} onClose={() => setMenuOpen(false)} title="Меню" className="max-w-sm">
-          <nav className="flex flex-col gap-1">
-            {MENU_ITEMS.map((item) => {
-              const active = item.href === "/m" ? pathname === "/m" : pathname.startsWith(item.href);
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  onClick={() => setMenuOpen(false)}
-                  className={`flex items-center gap-3 rounded-2xl px-3 py-3 text-sm transition ${
-                    active ? "bg-[#3a3d43] text-[#f4f7fb]" : "text-slate-300 hover:bg-[#343840]"
-                  }`}
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={item.icon} alt="" className="h-5 w-5 object-contain" />
-                  {item.label}
-                </Link>
-              );
-            })}
-          </nav>
-        </Drawer>
-      </div>
-    </MobileComposerProvider>
+      </Drawer>
+    </div>
   );
 }
