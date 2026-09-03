@@ -20,6 +20,24 @@ class Settings(BaseSettings):
     storage_backend: str = "postgres"
     sqlite_path: str = ":memory:"
     postgres_dsn: str = "postgresql://postgres:postgres@localhost:5432/ai_business_os"
+    # Previously every read/write opened a brand-new TCP+auth connection to
+    # Postgres and closed it immediately after (see PostgresCoreStore.from_dsn) —
+    # including the session check the auth middleware runs on nearly every API
+    # request. A small reusable pool removes that per-call handshake cost.
+    # min_size keeps that many connections warm at all times; max_size caps how
+    # many concurrent DB operations this single-process backend can have in
+    # flight before requests start queueing for a free connection.
+    postgres_pool_min_size: int = 1
+    postgres_pool_max_size: int = 10
+    # psycopg_pool's own default is 30s: if the database is unreachable, every
+    # caller waiting for a connection would block that long before finding
+    # out, versus the old bare psycopg.connect() failing almost immediately
+    # on a refused connection. Keep that old "fail fast" character for a
+    # genuinely down/misconfigured database, while still getting the pool's
+    # reuse benefit whenever Postgres is actually up and healthy (the normal
+    # case, where a connection is usually already warm and this timeout is
+    # never hit at all).
+    postgres_pool_timeout_seconds: float = 5.0
     ai_analytics_provider: str = "disabled"
     ai_analytics_model: str | None = None
     ai_analytics_language: str = "ru"

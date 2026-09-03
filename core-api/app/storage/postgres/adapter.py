@@ -139,25 +139,62 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
     """PostgreSQL-backed core data store."""
 
     connection_factory: PostgresConnectionFactory
+    # Optional pool backing connection_factory/_release_connection. None in
+    # tests and anywhere a store is built directly with a bare factory (e.g.
+    # PostgresCoreStore(connection_factory=lambda: fake_connection)) — those
+    # keep the old "one connection per call, closed when done" behavior
+    # unchanged. from_dsn() below is the only place that sets this.
+    connection_pool: Any | None = None
 
     @classmethod
-    def from_dsn(cls, dsn: str) -> PostgresCoreStore:
-        """Create a store from a PostgreSQL DSN.
+    def from_dsn(
+        cls,
+        dsn: str,
+        *,
+        pool_min_size: int | None = None,
+        pool_max_size: int | None = None,
+        pool_timeout_seconds: float | None = None,
+    ) -> PostgresCoreStore:
+        """Create a store from a PostgreSQL DSN, backed by a reusable pool.
 
-        The psycopg import is intentionally lazy so the project can run without
-        the dependency until PostgreSQL is enabled.
+        Previously this opened a brand-new TCP connection (with a fresh
+        Postgres auth handshake) for every single read or write, then closed
+        it immediately after — including the session check the auth
+        middleware runs on nearly every API request. Under real traffic that
+        adds a full connection setup to almost every request. A small pool of
+        reused connections removes that overhead; connections are still
+        checked out/returned per call (see _release_connection), just from a
+        warm pool instead of from scratch each time.
+
+        The psycopg import is intentionally lazy so the project can run
+        without the dependency until PostgreSQL is enabled.
         """
 
+        try:
+            from psycopg_pool import ConnectionPool  # type: ignore[import-not-found]
+        except ImportError as exc:  # pragma: no cover - runtime environment dependent
+            msg = "psycopg[pool] is required for PostgreSQL storage"
+            raise RuntimeError(msg) from exc
+
+        from app.core.config import get_settings
+
+        settings = get_settings()
+        min_size = pool_min_size if pool_min_size is not None else settings.postgres_pool_min_size
+        max_size = pool_max_size if pool_max_size is not None else settings.postgres_pool_max_size
+        timeout = (
+            pool_timeout_seconds
+            if pool_timeout_seconds is not None
+            else settings.postgres_pool_timeout_seconds
+        )
+
+        pool = ConnectionPool(
+            dsn, min_size=min_size, max_size=max_size, timeout=timeout, open=True
+        )
+
         def _factory() -> PostgresConnection:
-            try:
-                import psycopg  # type: ignore[import-not-found]
-            except ImportError as exc:  # pragma: no cover - runtime environment dependent
-                msg = "psycopg is required for PostgreSQL storage"
-                raise RuntimeError(msg) from exc
+            return pool.getconn()
 
-            return psycopg.connect(dsn)
-
-        return cls(connection_factory=_factory)
+        return cls(connection_factory=_factory, connection_pool=pool)
 
     def ensure_schema(self) -> None:
         """Create core tables and indexes if they do not exist."""
@@ -3337,7 +3374,7 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
                 columns = [column[0] for column in description]
             return [dict(zip(columns, row, strict=False)) for row in rows]
         finally:
-            _close_connection(connection)
+            self._release_connection(connection)
 
     def execute_ai_readonly_sql(
         self,
@@ -3380,7 +3417,7 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
             connection.rollback()
             raise
         finally:
-            _close_connection(connection)
+            self._release_connection(connection)
 
     def describe_ai_views(self) -> dict[str, Any]:
         """Read the exact published analytical view schema from PostgreSQL."""
@@ -3463,7 +3500,7 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
             connection.rollback()
             raise
         finally:
-            _close_connection(connection)
+            self._release_connection(connection)
 
     def _upsert(
         self,
@@ -3500,7 +3537,7 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
             connection.rollback()
             raise
         finally:
-            _close_connection(connection)
+            self._release_connection(connection)
 
     @staticmethod
     def _adapt_params(values: Iterable[Any]) -> tuple[Any, ...]:
@@ -3508,13 +3545,26 @@ class PostgresCoreStore(CoreDataReader, CoreDataWriter):
 
         return tuple(_adapt_param(value) for value in values)
 
+    def _release_connection(self, connection: Any) -> None:
+        """Return a pooled connection, or close a one-off connection.
 
-def _close_connection(connection: Any) -> None:
-    """Release per-operation connections without assuming test doubles expose close()."""
+        When connection_pool is set (real Postgres via from_dsn), the
+        connection goes back to the pool for reuse instead of being torn
+        down — psycopg_pool resets/rolls back any left-open transaction on
+        a returned connection itself, and discards connections that turn
+        out to be broken, so callers here don't need to do that bookkeeping.
+        When there is no pool (tests constructing PostgresCoreStore directly
+        with a bare connection_factory, or any other bespoke factory), this
+        falls back to the original behavior of closing the connection.
+        """
 
-    close = getattr(connection, "close", None)
-    if callable(close):
-        close()
+        pool = self.connection_pool
+        if pool is not None:
+            pool.putconn(connection)
+            return
+        close = getattr(connection, "close", None)
+        if callable(close):
+            close()
 
 
 def _adapt_param(value: Any) -> Any:
