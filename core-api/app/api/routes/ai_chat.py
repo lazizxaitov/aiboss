@@ -1060,6 +1060,28 @@ async def chat(
             if "agent_task" in locals() and not agent_task.done():
                 agent_task.cancel()
             raise
+        except TimeoutError as error:
+            # ResearchTimeoutError (raised by AIBusinessAgentService.run when the
+            # analysis budget runs out) is a TimeoutError. Previously this fell
+            # through to the generic handler below and leaked the raw internal
+            # message (e.g. "AI model response exceeded available analysis
+            # time.") straight into the chat bubble. Give the user an honest,
+            # actionable message instead.
+            logger.exception(
+                "AI_CHAT_RESPONSE request_id=%s status=timeout elapsed_ms=%.2f response_type=error",
+                request_id,
+                (monotonic() - request_started) * 1000,
+            )
+            yield _event(
+                {
+                    "message": (
+                        "Анализ занял больше времени, чем было выделено, и не успел завершиться. "
+                        "Попробуйте сузить вопрос (период, сотрудник, конкретный показатель) "
+                        "или повторите запрос ещё раз."
+                    )
+                },
+                "error",
+            )
         except Exception as error:  # noqa: BLE001 - SSE clients need a terminal error event
             logger.exception(
                 "AI_CHAT_RESPONSE request_id=%s status=error elapsed_ms=%.2f response_type=error",

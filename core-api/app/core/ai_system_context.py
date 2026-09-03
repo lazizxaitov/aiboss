@@ -40,20 +40,30 @@ class AISystemContextService:
         week = resolve_business_period("this_week", now)
         week_start, week_end = week.start, week.end
         context_service = OrganizationContextService(self.store)
+        # `resolve_accessible_organization_ids()` and the `accessible_organizations`
+        # list below both ultimately read `list_canonical_organizations()`. This
+        # used to be fetched twice (once inside resolve_accessible_organization_ids,
+        # once directly here) on every single AI request. Fetch it once and derive
+        # both from the same result.
+        list_organizations = getattr(self.store, "list_canonical_organizations", None)
+        organizations = list_organizations() if callable(list_organizations) else []
+        if not isinstance(organizations, (list, tuple)):
+            organizations = []
+        accessible_organization_ids = list(dict.fromkeys(
+            organization.organization_id
+            for organization in organizations
+            if getattr(organization, "organization_id", None) is not None
+        ))
         if callable(getattr(self.store, "get_app_setting", None)):
             selected_context = context_service.get_context()
             selected_scope = (
                 [organization_id]
                 if organization_id is not None
-                else context_service.resolve_accessible_organization_ids()
+                else accessible_organization_ids
             )
         else:
             selected_context = AnalyticsContextState()
-            selected_scope = context_service.resolve_accessible_organization_ids()
-        list_organizations = getattr(self.store, "list_canonical_organizations", None)
-        organizations = list_organizations() if callable(list_organizations) else []
-        if not isinstance(organizations, (list, tuple)):
-            organizations = []
+            selected_scope = accessible_organization_ids
         accessible_organizations = [
             {"id": str(item.organization_id), "name": item.name}
             for item in organizations

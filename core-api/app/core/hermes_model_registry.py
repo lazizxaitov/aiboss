@@ -30,7 +30,11 @@ class HermesProvider(BaseModel):
 
 @dataclass(slots=True)
 class HermesModelRegistry:
-    ttl_seconds: int = 60
+    # Providers/models change rarely; refreshing every 60s meant a request
+    # arriving right after expiry paid a synchronous Hermes round trip (which
+    # can itself queue behind Hermes's own inference work) before the actual
+    # chat/analysis call even started. See AI_LATENCY_PROBLEMS.txt problem #5.
+    ttl_seconds: int = 300
 
     _providers_cache: list[HermesProvider] | None = None
     _expires_at: float = 0

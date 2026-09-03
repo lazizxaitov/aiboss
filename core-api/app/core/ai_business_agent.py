@@ -29,13 +29,25 @@ logger = getLogger(__name__)
 
 MAX_ROUNDS = 12
 MAX_TOOL_CALLS = 12
-CHAT_MAX_ROUNDS = 4
-CHAT_TOOL_CALLS = 3
+# ai_chat is used by both the web chat and Telegram. A deep business question
+# ("analyze all visits this week", "analyze the whole business") legitimately
+# needs several distinct business.query calls; the previous 4/3 ceiling made
+# the agent hit the budget on the first non-trivial analytical question and
+# forced an early, evidence-starved final answer. Keep it bounded, but wide
+# enough for a genuinely multi-step analysis.
+CHAT_MAX_ROUNDS = 10
+CHAT_TOOL_CALLS = 8
 LIGHTWEIGHT_ANALYSIS_MAX_ROUNDS = 6
 MAX_CONVERSATION_MESSAGES = 12
 FINAL_SYNTHESIS_RESERVE_RATIO = 0.25
 FINAL_SYNTHESIS_RESERVE_MIN_SECONDS = 5.0
 FINAL_SYNTHESIS_RESERVE_MAX_SECONDS = 15.0
+# Last-resort window granted to a single wrap-up synthesis call when the
+# research loop itself has already run out of time. This never extends the
+# overall analysis budget in the common case; it only gives the model one
+# short chance to summarize evidence it already collected instead of the
+# request failing outright.
+GRACEFUL_SYNTHESIS_GRACE_SECONDS = 8.0
 
 
 class ResearchTimeoutError(TimeoutError):
@@ -507,7 +519,12 @@ class AIBusinessAgentService:
         )
         conversation.conversation_mode = "business" if business_context_enabled else "general"
         context_started = monotonic()
-        system_context = AISystemContextService(self.store).build(
+        # AISystemContextService.build() makes several synchronous DB calls
+        # (app settings, canonical organizations) and rebuilds the semantic
+        # domain index with no caching. Run it off the event loop so it can't
+        # stall other concurrent requests (web + Telegram) while it executes.
+        system_context = await asyncio.to_thread(
+            AISystemContextService(self.store).build,
             role=task_type,
             provider=str(runtime.get("provider_id") or "") or None,
             model=str(runtime.get("model_id") or "") or None,
@@ -996,24 +1013,44 @@ class AIBusinessAgentService:
             return response
 
         response = None
-        for candidate in candidates:
-            candidate_response = await model_request(
-                messages=messages,
-                tool_choice="auto",
-                model=str(candidate["model_id"]),
-                provider=str(candidate["provider_id"]),
-                round_number=1,
-                # The first business turn is an internal capability decision,
-                # not user-facing text. Avoid opening a streaming response for
-                # protocol JSON; only the final synthesis is streamed.
-                stream_final=on_final_delta is not None and not business_context_enabled,
+        try:
+            for candidate in candidates:
+                candidate_response = await model_request(
+                    messages=messages,
+                    tool_choice="auto",
+                    model=str(candidate["model_id"]),
+                    provider=str(candidate["provider_id"]),
+                    round_number=1,
+                    # The first business turn is an internal capability decision,
+                    # not user-facing text. Avoid opening a streaming response for
+                    # protocol JSON; only the final synthesis is streamed.
+                    stream_final=on_final_delta is not None and not business_context_enabled,
+                )
+                if candidate_response.status_code < 400:
+                    runtime = candidate
+                    response = candidate_response
+                    break
+            if response is None:
+                raise ValueError("Не удалось выполнить запрос через доступные provider/model.")
+        except ResearchTimeoutError as error:
+            # The very first model round never got a response in time. No
+            # evidence exists yet, so be honest about it instead of letting a
+            # raw TimeoutError leak to the chat/Telegram surface.
+            logger.info(
+                "AI_AGENT_GRACEFUL_TIMEOUT request_id=%s stage=%s rounds=0 tool_calls=0",
+                request_id,
+                getattr(error, "stage", "initial_request"),
             )
-            if candidate_response.status_code < 400:
-                runtime = candidate
-                response = candidate_response
-                break
-        if response is None:
-            raise ValueError("Не удалось выполнить запрос через доступные provider/model.")
+            return AIBusinessAgentResult(
+                final_text=(
+                    "ИИ-модель не успела ответить в отведённое время. "
+                    "Обычно это временная задержка провайдера — повторите запрос ещё раз."
+                ),
+                messages=messages,
+                runtime=runtime,
+                rounds=0,
+                tool_calls=0,
+            )
 
         async def final_synthesis(*, round_number: int) -> AIBusinessAgentResult:
             """Ask once for an evidence-only answer when the loop cannot continue."""

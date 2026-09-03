@@ -288,7 +288,12 @@ async def handle_telegram_chat(
     service = AIConversationService(store)
     tools_service = HermesBusinessTools(store)
     router = AITaskRouter(store)
-    providers = await hermes_model_registry.get_providers(refresh=True)
+    # Every incoming Telegram update used to force a synchronous refresh
+    # against Hermes before doing anything else, even for a plain analytical
+    # question that never touches provider/model selection. That ate part of
+    # the same analysis time budget for no benefit; use the shared cached
+    # registry (TTL-based) like the web chat route already does.
+    providers = await hermes_model_registry.get_providers()
     user_id = request.user_id or service.resolve_identity(telegram_chat_id=request.telegram_chat_id)
     conversation = service.resolve_or_create_conversation(
         source_channel=AIConversationChannel.TELEGRAM,
@@ -464,6 +469,41 @@ async def handle_telegram_chat(
             # not to the routing contract.
             max_duration_seconds=settings.telegram_ai_timeout_seconds,
             attachments=request.attachments,
+        )
+    except TimeoutError as error:
+        # ResearchTimeoutError (a TimeoutError) previously fell through to
+        # telegram_transport.py's catch-all and showed the generic
+        # "Не удалось обработать запрос" message with no explanation. Answer
+        # the user directly instead, on the normal happy path, so the
+        # conversation keeps a real assistant reply.
+        import logging
+
+        logging.getLogger(__name__).info(
+            "TELEGRAM_AI_RESEARCH_TIMEOUT telegram_chat_id=%s error=%s",
+            request.telegram_chat_id,
+            error,
+        )
+        final_text = (
+            "Анализ занял больше времени, чем было выделено, и не успел завершиться. "
+            "Попробуйте сузить вопрос (например, по конкретному периоду, сотруднику или "
+            "показателю) или повторите запрос ещё раз."
+        )
+        conversation = service.append_message(
+            conversation,
+            role="assistant",
+            content=final_text,
+            source_channel=AIConversationChannel.TELEGRAM,
+            target_channel=resolved_target_channel,
+            metadata={"error": "research_timeout"},
+        )
+        return TelegramChatResponse(
+            conversation_id=conversation.conversation_id,
+            target_channel=resolved_target_channel,
+            assistant_message=final_text,
+            telegram_message=final_text,
+            deliver_to_web=resolved_target_channel
+            in {None, AIConversationTargetChannel.REPLY_WEB, AIConversationTargetChannel.REPLY_BOTH},
+            artifacts=[],
         )
     except ValueError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error

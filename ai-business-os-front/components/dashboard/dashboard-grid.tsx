@@ -1698,7 +1698,24 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
                       ) : (
                         <div key={item.id} className="mr-auto max-w-[82%] rounded-[22px] bg-[#f4f7fb] px-4 py-3 text-[#1E1E21] shadow-[0_10px_22px_rgba(0,0,0,0.14)]">
                           {item.providerName ? <p className="mb-1 text-[10px] uppercase tracking-[0.2em] text-slate-500">{item.providerName}{item.modelName ? ` · ${item.modelName}` : ""}</p> : null}
-                          <p className="whitespace-pre-wrap text-[15px] leading-6 text-[#1E1E21]">{visibleText || " "}</p>
+                          {!visibleText && isGenerating ? (
+                            // The first model round (deciding whether business
+                            // data is needed) is never streamed, so this bubble
+                            // used to stay visually empty until the first token
+                            // of the final answer arrived — often several
+                            // seconds later. Show a "thinking" state instead of
+                            // a blank bubble.
+                            <p className="flex items-center gap-2 text-[15px] leading-6 text-slate-500" aria-label="ИИ думает">
+                              <span className="inline-flex items-center gap-1">
+                                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.3s]" />
+                                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.15s]" />
+                                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400" />
+                              </span>
+                              <span>ИИ думает…</span>
+                            </p>
+                          ) : (
+                            <p className="whitespace-pre-wrap text-[15px] leading-6 text-[#1E1E21]">{visibleText || " "}</p>
+                          )}
                           {parsed?.attachments.length ? (
                             <div className="mt-3 flex flex-wrap gap-2">
                               {parsed.attachments.map((attachment) => (

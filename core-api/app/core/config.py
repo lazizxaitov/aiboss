@@ -28,7 +28,11 @@ class Settings(BaseSettings):
     ai_analytics_widget_timeout_seconds: float = 60.0
     ai_analytics_prompt_version: str = "phase-3c-v1"
     ai_analytics_cache_ttl_seconds: int = 300
-    ai_chat_timeout_seconds: float = 45.0
+    # A deep business question (e.g. "analyze all visits this week") needs
+    # several sequential business.query round trips through Hermes -> Codex.
+    # 45s was tight enough that the agent frequently hit the deadline before
+    # finishing even a 2-3 query analysis (see AI_LATENCY_PROBLEMS.txt).
+    ai_chat_timeout_seconds: float = 90.0
     openai_api_key: str | None = None
     openai_base_url: str = "https://api.openai.com/v1"
     anthropic_api_key: str | None = None
@@ -41,7 +45,7 @@ class Settings(BaseSettings):
     telegram_transport_enabled: bool = True
     telegram_poll_timeout_seconds: int = 25
     telegram_request_timeout_seconds: float = 35.0
-    telegram_ai_timeout_seconds: float = 120.0
+    telegram_ai_timeout_seconds: float = 180.0
     telegram_bot_username: str | None = None
     telegram_max_media_bytes: int = 20 * 1024 * 1024
     telegram_media_dir: str = "/tmp/aiboss-telegram-media"
