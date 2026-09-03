@@ -1556,10 +1556,18 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
         />
       ) : null}
       <div ref={assistantRootRef} className={fullScreen ? "fixed inset-3 z-[60] mx-auto flex h-[calc(100dvh-1.5rem)] min-h-0 w-[min(980px,calc(100vw-1.5rem))] max-h-[calc(100dvh-1.5rem)] flex-col gap-3 sm:inset-6 sm:h-[calc(100dvh-3rem)] sm:max-h-[calc(100dvh-3rem)]" : floating ? "fixed bottom-24 right-4 z-50 flex w-[min(420px,calc(100vw-2rem))] flex-col gap-3 lg:bottom-6 lg:right-6" : "flex min-h-0 flex-col gap-3 xl:sticky xl:top-[6.5rem] xl:h-[calc(100dvh-8rem)]"}>
-      <div id="ai-chat" ref={chatSurfaceRef} className={fullScreen ? "flex min-h-0 flex-1" : undefined}>
+      <div id="ai-chat" ref={chatSurfaceRef} className={fullScreen ? "flex min-h-0 min-w-0 w-full flex-1" : undefined}>
         <Surface
           className={cn(
-            "relative flex min-h-0 shrink-0 flex-col overflow-hidden border-[#3c4048] bg-[radial-gradient(circle_at_78%_12%,rgba(255,255,255,0.05),transparent_32%),linear-gradient(180deg,#2E3137_0%,#2A2D33_100%)] px-4",
+            // `chatSurfaceRef` becomes a row-direction flex container in
+            // fullScreen mode. Without an explicit width, `shrink-0` here
+            // made this box size itself to its CONTENT's natural width
+            // instead of filling the modal — a short message ("Привет")
+            // shrank the whole modal down to a sliver, and a long unwrapped
+            // paragraph grew it past the edge of the screen. `w-full` +
+            // `min-w-0` pins it to the modal's actual (fixed) width in every
+            // state, so text wraps inside it instead of resizing it.
+            "relative flex min-h-0 w-full min-w-0 shrink-0 flex-col overflow-hidden border-[#3c4048] bg-[radial-gradient(circle_at_78%_12%,rgba(255,255,255,0.05),transparent_32%),linear-gradient(180deg,#2E3137_0%,#2A2D33_100%)] px-4",
             smoothTransition,
             // Below `xl` this used to be a hard h-[699px], regardless of the
             // actual viewport height. The floating variant of this panel is
