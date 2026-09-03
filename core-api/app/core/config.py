@@ -69,6 +69,12 @@ class Settings(BaseSettings):
     ai_transcription_provider: str | None = None
     ai_transcription_model: str | None = None
     ai_transcription_timeout_seconds: float = 60.0
+    # For ai_transcription_provider = "local": any OpenAI-compatible
+    # speech-to-text server (e.g. faster-whisper-server / "speaches"), run
+    # on your own infrastructure so voice messages never leave it. Same
+    # request shape as OpenAI's /audio/transcriptions endpoint.
+    ai_transcription_local_base_url: str = "http://127.0.0.1:8090/v1"
+    ai_transcription_local_api_key: str = "aiboss-whisper-local"
     owner_login: str | None = None
     owner_password: str | None = None
     auth_secret: str = "change-this-ai-business-os-secret"

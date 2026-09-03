@@ -17,13 +17,29 @@ async function verifyOwnerSession(token: string | undefined) {
   }
 }
 
+const PUBLIC_PAGE_PREFIXES = ["/telegram-app", "/m/pair"];
+const PUBLIC_PAGE_EXACT = ["/m/manifest.webmanifest"];
+
 export async function middleware(request: NextRequest) {
+  const pathname = request.nextUrl.pathname;
   // API requests are authenticated by FastAPI and must reach the same-origin
   // rewrite untouched. Page middleware must not redirect login or API calls.
-  if (request.nextUrl.pathname.startsWith("/api/v1/")) {
+  if (pathname.startsWith("/api/v1/")) {
     return NextResponse.next();
   }
-  const isLoginPage = request.nextUrl.pathname === "/login";
+  // These pages authenticate themselves instead of relying on an existing
+  // session cookie — that's the whole point of scanning a QR code on a
+  // device that has never logged in before (Telegram Mini App initData +
+  // pairing token, or the mobile pairing token + owner password). The
+  // mobile manifest is a static resource the OS/browser fetches directly,
+  // same reasoning as the desktop manifest.webmanifest exclusion below.
+  if (
+    PUBLIC_PAGE_EXACT.includes(pathname) ||
+    PUBLIC_PAGE_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`))
+  ) {
+    return NextResponse.next();
+  }
+  const isLoginPage = pathname === "/login";
   const cookieHeader = request.headers.get("cookie") ?? "";
   const sessionCookie = cookieHeader
     .split(";")

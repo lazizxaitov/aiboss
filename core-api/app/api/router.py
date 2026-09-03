@@ -6,6 +6,7 @@ from app.api.routes.ai_analytics import router as ai_analytics_router
 from app.api.routes.auth import router as auth_router
 from app.api.routes.ai_chat import router as ai_chat_router
 from app.api.routes.ai_insights import router as ai_insights_router
+from app.api.routes.ai_voice import router as ai_voice_router
 from app.api.routes.ai_routing import providers_router as ai_providers_router
 from app.api.routes.ai_routing import router as ai_routing_router
 from app.api.routes.analytics import router as analytics_router
@@ -16,6 +17,7 @@ from app.api.routes.context import router as context_router
 from app.api.routes.customers import router as customers_router
 from app.api.routes.dashboard import router as dashboard_router
 from app.api.routes.data import router as data_router
+from app.api.routes.devices import router as devices_router
 from app.api.routes.finance import router as finance_router
 from app.api.routes.health import router as health_router
 from app.api.routes.inventory import router as inventory_router
@@ -41,6 +43,7 @@ api_router.include_router(ai_analytics_router, tags=["AI Analytics"])
 api_router.include_router(auth_router, tags=["Auth"])
 api_router.include_router(ai_chat_router, tags=["AI Chat"])
 api_router.include_router(ai_insights_router, tags=["AI Insights"])
+api_router.include_router(ai_voice_router, tags=["AI Voice"])
 api_router.include_router(ai_routing_router, tags=["AI Routing"])
 api_router.include_router(ai_providers_router, tags=["AI Providers"])
 api_router.include_router(dashboard_router, tags=["Dashboard"])
@@ -57,4 +60,5 @@ api_router.include_router(smartup_mirror_router, tags=["SmartUp Mirror"])
 api_router.include_router(system_update_router, tags=["System Update"])
 api_router.include_router(system_control_router, tags=["System Control"])
 api_router.include_router(telegram_ai_router, tags=["Telegram AI"])
+api_router.include_router(devices_router, tags=["Devices"])
 api_router.include_router(widget_builder_router, tags=["Widget Builder"])

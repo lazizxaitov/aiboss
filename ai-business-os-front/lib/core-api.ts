@@ -47,6 +47,61 @@ export async function disconnectTelegramChat(chatId: string): Promise<TelegramLi
   });
 }
 
+export type DeviceLinkResult = {
+  token?: string | null;
+  deep_link?: string | null;
+  qr_data_uri?: string | null;
+  expires_at?: string | null;
+};
+
+export type PairedDevice = {
+  device_id: string;
+  label: string;
+  user_agent?: string | null;
+  linked_at?: string | null;
+};
+
+export async function createDeviceLink(origin: string): Promise<DeviceLinkResult> {
+  return requestJson<DeviceLinkResult>("/api/v1/device/link/create", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ origin }),
+  });
+}
+
+export async function getPairedDevices(): Promise<PairedDevice[]> {
+  const response = await requestJson<{ devices: PairedDevice[] }>("/api/v1/device/link/list", {}, fastReadTimeoutMs);
+  return response.devices;
+}
+
+export async function transcribeVoiceMessage(blob: Blob, filename: string): Promise<string> {
+  const form = new FormData();
+  form.append("audio", blob, filename);
+  const token = ownerSessionToken();
+  const response = await fetch(`${coreApiBaseUrl}/api/v1/ai/transcribe`, {
+    method: "POST",
+    // No Content-Type here on purpose — the browser must set its own
+    // multipart boundary for FormData, which authenticatedHeaders() would
+    // otherwise override with "application/json" and break the upload.
+    headers: token ? { Authorization: `Bearer ${decodeURIComponent(token)}` } : {},
+    body: form,
+  });
+  const payload = (await response.json().catch(() => ({}))) as { text?: string; detail?: string };
+  if (!response.ok || typeof payload.text !== "string") {
+    throw new Error(payload.detail ?? "Не удалось распознать голосовое сообщение");
+  }
+  return payload.text;
+}
+
+export async function disconnectDevice(deviceId: string): Promise<PairedDevice[]> {
+  const response = await requestJson<{ devices: PairedDevice[] }>("/api/v1/device/link/disconnect", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ device_id: deviceId }),
+  });
+  return response.devices;
+}
+
 export type DashboardMetric = DashboardCard;
 
 export type DashboardSignal = {

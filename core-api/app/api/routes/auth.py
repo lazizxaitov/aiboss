@@ -102,11 +102,10 @@ def _session(token: str, store: CoreDataStore | None = None) -> _SessionState | 
         return session
 
 
-def _revoke_session(store: CoreDataStore, token: str) -> None:
+def _revoke_session_by_hash(store: CoreDataStore, token_hash: str) -> None:
     setting = store.get_app_setting(REVOKED_SESSIONS_SETTING_KEY)
     revoked = setting.setting_value.get("tokens", []) if setting and isinstance(setting.setting_value, dict) else []
     tokens = [item for item in revoked if isinstance(item, str)] if isinstance(revoked, list) else []
-    token_hash = sha256(token.encode()).hexdigest()
     if token_hash not in tokens:
         tokens.append(token_hash)
     now = datetime.now(UTC)
@@ -117,6 +116,10 @@ def _revoke_session(store: CoreDataStore, token: str) -> None:
         created_at=now,
         updated_at=now,
     ))
+
+
+def _revoke_session(store: CoreDataStore, token: str) -> None:
+    _revoke_session_by_hash(store, sha256(token.encode()).hexdigest())
 
 
 def _token_from_request(token: str | None, authorization: str | None) -> str:

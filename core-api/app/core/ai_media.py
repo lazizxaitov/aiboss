@@ -31,13 +31,23 @@ class TranscriptionService:
         model = settings.ai_transcription_model
         if not provider or not model:
             raise RuntimeError("Транскрибация голосовых сообщений не настроена")
-        if provider != "openai" or not settings.openai_api_key:
+        if provider == "openai":
+            if not settings.openai_api_key:
+                raise RuntimeError("Выбранный provider транскрибации недоступен")
+            base_url = settings.openai_base_url
+            api_key = settings.openai_api_key
+        elif provider == "local":
+            # Any self-hosted server that implements OpenAI's
+            # /audio/transcriptions contract (e.g. faster-whisper-server).
+            base_url = settings.ai_transcription_local_base_url
+            api_key = settings.ai_transcription_local_api_key
+        else:
             raise RuntimeError("Выбранный provider транскрибации недоступен")
         async with httpx.AsyncClient(timeout=settings.ai_transcription_timeout_seconds) as client:
             with path.open("rb") as media:
                 response = await client.post(
-                    f"{settings.openai_base_url.rstrip('/')}/audio/transcriptions",
-                    headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+                    f"{base_url.rstrip('/')}/audio/transcriptions",
+                    headers={"Authorization": f"Bearer {api_key}"},
                     data={"model": model},
                     files={"file": (filename, media, mime_type)},
                 )
