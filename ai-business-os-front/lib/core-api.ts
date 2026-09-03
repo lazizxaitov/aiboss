@@ -1015,6 +1015,13 @@ export async function getSystemUpdateJob(jobId: string): Promise<SystemUpdateJob
   return requestJson<SystemUpdateJob>(`/api/v1/system/update/jobs/${jobId}`, {}, 10_000);
 }
 
+// The most recent update attempt, whatever it finished as — used to hydrate
+// the Settings card on load, since an update restarts the backend itself
+// and wipes whatever the page had in React state at the time.
+export async function getLatestSystemUpdateJob(): Promise<SystemUpdateJob | null> {
+  return requestJson<SystemUpdateJob | null>("/api/v1/system/update/latest", {}, 10_000);
+}
+
 export type SmartUpPage = "sales" | "visits" | "products" | "customers" | "inventory" | "finance";
 
 export async function startSmartUpPageSync(page: SmartUpPage): Promise<SmartUpMigrationJobResponse> {

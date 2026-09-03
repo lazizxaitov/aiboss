@@ -22,6 +22,25 @@ function deviceLabel(): string {
   return `${platformLabel} · ${browser}`;
 }
 
+const DEVICE_ID_STORAGE_KEY = "aibos_device_id";
+
+// A stable id this browser/PWA keeps across re-pairing (session expired,
+// cookies cleared, PWA reinstalled) so the Settings device list updates the
+// existing entry for this phone instead of growing a new "ghost" device
+// every time it re-scans a QR code.
+function clientDeviceId(): string {
+  if (typeof window === "undefined") return "";
+  try {
+    const existing = window.localStorage.getItem(DEVICE_ID_STORAGE_KEY);
+    if (existing) return existing;
+    const created = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+    window.localStorage.setItem(DEVICE_ID_STORAGE_KEY, created);
+    return created;
+  } catch {
+    return "";
+  }
+}
+
 export default function MobilePairPage() {
   // Read the token straight from the URL instead of Next's useSearchParams —
   // this page is fully client-rendered anyway, and this avoids having to
@@ -52,7 +71,7 @@ export default function MobilePairPage() {
       const response = await fetch("/api/v1/device/pair", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, login, password, device_label: deviceLabel() }),
+        body: JSON.stringify({ token, login, password, device_label: deviceLabel(), device_id: clientDeviceId() || undefined }),
       });
       const payload = (await response.json().catch(() => ({}))) as { access_token?: string; detail?: string };
       if (!response.ok || typeof payload.access_token !== "string") {

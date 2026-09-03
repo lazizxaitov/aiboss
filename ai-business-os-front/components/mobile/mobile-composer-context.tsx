@@ -8,9 +8,14 @@ import { createContext, useContext, useState, type ReactNode } from "react";
 // navigation to any page nested inside it, this survives the
 // hold-button-then-navigate-to-chat handoff with no size limits or
 // serialization the way sessionStorage would have.
+// `id` uniquely identifies each draft the Action button hands off — without
+// it, recording a second voice message while already on /m/chat (the page
+// never remounts, since the URL doesn't change) had no way to tell "a new
+// draft arrived" apart from "the same draft is still sitting here", and the
+// second message was silently dropped. See app/m/chat/page.tsx.
 export type PendingDraft =
-  | { kind: "text"; text: string }
-  | { kind: "image"; text: string; imageDataUrl: string; fileName: string };
+  | { id: string; kind: "text"; text: string }
+  | { id: string; kind: "image"; text: string; imageDataUrl: string; fileName: string };
 
 type MobileComposerContextValue = {
   pendingDraft: PendingDraft | null;

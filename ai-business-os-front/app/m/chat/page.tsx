@@ -43,7 +43,13 @@ export default function MobileChatPage() {
   const [error, setError] = useState<string | null>(null);
   const conversationIdRef = useRef(getConversationId());
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const consumedDraftRef = useRef(false);
+  // Tracks draft ids already sent, not just "has any draft ever been
+  // consumed" — this page doesn't remount when the Action button pushes to
+  // /m/chat while already there (same URL), so a boolean latch silently
+  // dropped every voice/photo message after the first one sent from this
+  // screen. Keying off id lets each new draft go through while still
+  // guarding against a duplicate effect run for the same one.
+  const handledDraftIdsRef = useRef<Set<string>>(new Set());
 
   const scrollToEnd = () => {
     requestAnimationFrame(() => {
@@ -86,10 +92,11 @@ export default function MobileChatPage() {
   };
 
   // Auto-send whatever the Action button prepared (voice transcript, photo,
-  // or file note) the moment this page mounts, exactly once.
+  // or file note) — each draft exactly once, even if several are recorded
+  // back-to-back without ever leaving this page.
   useEffect(() => {
-    if (!pendingDraft || consumedDraftRef.current) return;
-    consumedDraftRef.current = true;
+    if (!pendingDraft || handledDraftIdsRef.current.has(pendingDraft.id)) return;
+    handledDraftIdsRef.current.add(pendingDraft.id);
     const draftToSend = pendingDraft;
     setPendingDraft(null);
     if (draftToSend.kind === "text") {

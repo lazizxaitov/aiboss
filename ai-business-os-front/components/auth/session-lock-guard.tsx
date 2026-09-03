@@ -30,7 +30,16 @@ function authHeaders() {
   return { "Content-Type": "application/json", Authorization: `Bearer ${decodeURIComponent(token())}` };
 }
 
-export function SessionLockGuard({ children }: { children: ReactNode }) {
+export function SessionLockGuard({
+  children,
+  lockedRedirectTo = "/",
+}: {
+  children: ReactNode;
+  /** Where to send the user once the session locks. Desktop pages live
+   * under "/", but the mobile PWA has its own subtree and should stay
+   * there — see app/m/layout.tsx. */
+  lockedRedirectTo?: string;
+}) {
   const router = useRouter();
   const timer = useRef<number | null>(null);
   const lockAfterMs = useRef(defaultLockAfterMs);
@@ -192,8 +201,8 @@ export function SessionLockGuard({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!locked) return;
-    router.replace("/");
-  }, [locked, router]);
+    router.replace(lockedRedirectTo);
+  }, [locked, router, lockedRedirectTo]);
 
   async function unlock(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

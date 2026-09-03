@@ -5,6 +5,15 @@ import { type FormEvent, useState } from "react";
 
 const coreApiUrl = "";
 
+// Only ever follow a same-app relative path — never let a "next" query
+// value redirect somewhere else (open-redirect guard).
+function safeNextPath(): string {
+  if (typeof window === "undefined") return "/";
+  const next = new URLSearchParams(window.location.search).get("next");
+  if (!next || !next.startsWith("/") || next.startsWith("//")) return "/";
+  return next;
+}
+
 export default function LoginPage() {
   const [login, setLogin] = useState("");
   const [password, setPassword] = useState("");
@@ -27,7 +36,7 @@ export default function LoginPage() {
         throw new Error(payload.detail ?? "Не удалось выполнить вход.");
       }
       document.cookie = `aibos_owner_session=${encodeURIComponent(payload.access_token)}; Path=/; ${remember ? "Max-Age=2592000; " : ""}SameSite=Lax`;
-      window.location.assign("/");
+      window.location.assign(safeNextPath());
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Не удалось выполнить вход.");
     } finally {

@@ -25,6 +25,10 @@ function extensionFor(mimeType: string): string {
   return "webm";
 }
 
+function newDraftId(): string {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+}
+
 function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -71,7 +75,7 @@ export function MobileActionButton() {
         setError("Не удалось распознать голос — попробуйте ещё раз");
         return;
       }
-      setPendingDraft({ kind: "text", text: text.trim() });
+      setPendingDraft({ id: newDraftId(), kind: "text", text: text.trim() });
       goToChat();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Не удалось отправить голосовое сообщение");
@@ -164,7 +168,7 @@ export function MobileActionButton() {
     }
     try {
       const dataUrl = await readFileAsDataUrl(file);
-      setPendingDraft({ kind: "image", text: "", imageDataUrl: dataUrl, fileName: file.name });
+      setPendingDraft({ id: newDraftId(), kind: "image", text: "", imageDataUrl: dataUrl, fileName: file.name });
       goToChat();
     } catch {
       setError("Не удалось прочитать файл");
@@ -183,7 +187,7 @@ export function MobileActionButton() {
       }
       try {
         const dataUrl = await readFileAsDataUrl(file);
-        setPendingDraft({ kind: "image", text: "", imageDataUrl: dataUrl, fileName: file.name });
+        setPendingDraft({ id: newDraftId(), kind: "image", text: "", imageDataUrl: dataUrl, fileName: file.name });
         goToChat();
       } catch {
         setError("Не удалось прочитать файл");
@@ -193,7 +197,7 @@ export function MobileActionButton() {
     // The AI agent doesn't read arbitrary document contents yet (same as the
     // Telegram bot today) — send the filename as a note so the conversation
     // at least records that a file was shared, instead of silently dropping it.
-    setPendingDraft({ kind: "text", text: `Пользователь прикрепил файл: ${file.name}` });
+    setPendingDraft({ id: newDraftId(), kind: "text", text: `Пользователь прикрепил файл: ${file.name}` });
     goToChat();
   };
 

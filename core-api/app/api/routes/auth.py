@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from threading import Lock
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel
 
 from app.core.config import settings
@@ -16,6 +16,7 @@ from app.core.data_layer.contracts import CoreDataStore
 from app.core.data_layer.entities import AppSetting
 from app.core.data_layer.factory import get_core_store
 from app.core.owner_profile import OwnerProfileService
+from app.core.rate_limit import client_key, enforce_rate_limit, record_failure, record_success
 
 router = APIRouter(prefix="/auth")
 
@@ -152,7 +153,9 @@ def _auto_lock_minutes(store: CoreDataStore) -> int:
 
 
 @router.post("/login", response_model=LoginResponse)
-def login(payload: LoginRequest) -> LoginResponse:
+def login(payload: LoginRequest, request: Request) -> LoginResponse:
+    key = client_key("login", request)
+    enforce_rate_limit(key)
     if not settings.owner_login or not settings.owner_password:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -161,7 +164,9 @@ def login(payload: LoginRequest) -> LoginResponse:
     if not compare_digest(payload.login, settings.owner_login) or not compare_digest(
         payload.password, settings.owner_password
     ):
+        record_failure(key)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверный логин или пароль")
+    record_success(key)
     return LoginResponse(access_token=_token_for(payload.login))
 
 
@@ -307,6 +312,7 @@ def lock_session(
 @router.post("/unlock")
 def unlock_session(
     payload: UnlockRequest,
+    request: Request,
     store: Annotated[CoreDataStore, Depends(get_core_store)],
     token: str | None = Query(default=None),
     authorization: str | None = Header(default=None),
@@ -314,11 +320,17 @@ def unlock_session(
     session = _session(_token_from_request(token, authorization), store)
     if session is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Сессия недействительна")
+    # A 4-digit PIN is only 10,000 combinations — without a limit here it's
+    # trivially brute-forceable, unlike the full login password.
+    key = client_key("unlock", request)
+    enforce_rate_limit(key)
     unlock_pin = _current_unlock_pin(store)
     if unlock_pin is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="PIN разблокировки не настроен. Создайте его в профиле.")
     if not compare_digest(payload.pin, unlock_pin):
+        record_failure(key)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверный PIN")
+    record_success(key)
     with _SESSIONS_LOCK:
         session.locked = False
         session.locked_at = None

@@ -51,3 +51,17 @@ def update_job(
     if job is None:
         raise HTTPException(status_code=404, detail="Задача обновления не найдена")
     return job.model_dump(mode="json")
+
+
+@router.get("/latest")
+def latest_update_job(
+    store: Annotated[CoreDataStore, Depends(get_core_store)],
+    authorization: str | None = Header(default=None),
+) -> dict[str, object] | None:
+    """The most recent update attempt (running, succeeded, failed, or rolled
+    back), so Settings can show what happened even after a reload — an
+    update restarts the backend itself, wiping any in-page state."""
+
+    require_owner(authorization, store)
+    job = SystemUpdateService(store).get_latest_job()
+    return job.model_dump(mode="json") if job else None

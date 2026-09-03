@@ -10,10 +10,11 @@ from typing import Annotated, Any
 from urllib.parse import parse_qsl
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import AliasChoices, BaseModel, Field
 
 from app.api.routes.auth import _session, _token_from_request
+from app.core.rate_limit import client_key, enforce_rate_limit, record_failure, record_success
 from app.core.ai_business_agent import AIBusinessAgentService
 from app.core.ai_conversation import (
     AIConversationChannel,
@@ -381,6 +382,7 @@ def complete_telegram_link(
 @router.post("/webapp/link", response_model=TelegramWebAppLinkResponse)
 def link_via_webapp(
     request: TelegramWebAppLinkRequest,
+    request_ctx: Request,
     store: Annotated[CoreDataStore, Depends(get_core_store)],
 ) -> TelegramWebAppLinkResponse:
     """Complete a pairing token scanned inside the bot's Mini App panel.
@@ -393,6 +395,8 @@ def link_via_webapp(
     these alone is not enough.
     """
 
+    key = client_key("telegram_webapp", request_ctx)
+    enforce_rate_limit(key)
     if not settings.telegram_bot_token:
         raise HTTPException(status_code=503, detail="Telegram-бот не настроен")
     if (
@@ -401,10 +405,13 @@ def link_via_webapp(
         or not hmac.compare_digest(request.login, settings.owner_login)
         or not hmac.compare_digest(request.password, settings.owner_password)
     ):
+        record_failure(key)
         raise HTTPException(status_code=401, detail="Неверный логин или пароль")
     user = _verify_webapp_init_data(request.init_data, settings.telegram_bot_token)
     if user is None:
+        record_failure(key)
         raise HTTPException(status_code=401, detail="Не удалось подтвердить пользователя Telegram")
+    record_success(key)
     chat_id = str(user.get("id") or "")
     if not chat_id:
         raise HTTPException(status_code=400, detail="Некорректные данные пользователя Telegram")

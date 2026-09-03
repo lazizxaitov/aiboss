@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 
+import { MobileAuthGate } from "@/components/mobile/mobile-auth-gate";
 import { MobileComposerProvider } from "@/components/mobile/mobile-composer-context";
 
 // Everything under /m (the mobile web-app experience, reached by scanning
@@ -33,7 +34,9 @@ export default function MobileRootLayout({ children }: Readonly<{ children: Reac
   // root layout is their nearest common ancestor.
   return (
     <div className="min-h-dvh w-full overflow-x-hidden bg-[#1E1E21] text-[#f4f7fb]">
-      <MobileComposerProvider>{children}</MobileComposerProvider>
+      <MobileAuthGate>
+        <MobileComposerProvider>{children}</MobileComposerProvider>
+      </MobileAuthGate>
     </div>
   );
 }

@@ -17,6 +17,7 @@ import {
   getSmartUpLiveSyncStatus,
   getSessionLockSettings,
   saveSessionLockSettings,
+  getLatestSystemUpdateJob,
   getSystemUpdateJob,
   getSystemUpdateStatus,
   installSystemUpdate,
@@ -389,6 +390,21 @@ function SystemUpdateCard() {
     void checkForUpdates();
   }, [session.hydrated, session.authenticated, session.locked]);
 
+  // An update restarts the backend itself, so whatever this card showed
+  // before the restart is gone from React state. Pull the last known job
+  // (running, succeeded, failed, or rolled back) once on load so the owner
+  // can see what actually happened without having to dig through logs.
+  const hydratedLatestRef = useRef(false);
+  useEffect(() => {
+    if (!session.hydrated || !session.authenticated || session.locked || hydratedLatestRef.current) return;
+    hydratedLatestRef.current = true;
+    void getLatestSystemUpdateJob()
+      .then((latest) => {
+        if (latest) setJob(latest);
+      })
+      .catch(() => undefined);
+  }, [session.hydrated, session.authenticated, session.locked]);
+
   useEffect(() => {
     if (!job || job.status !== "running" || !session.hydrated || !session.authenticated || session.locked) return;
     let active = true;
@@ -458,7 +474,7 @@ function SystemUpdateCard() {
         {systemStatus?.last_successful_update_at ? (
           <p className="mt-4 text-xs text-slate-400">Последнее успешное обновление: {formatDateTime(systemStatus.last_successful_update_at)}</p>
         ) : null}
-        {job?.status === "failed" ? <p className="mt-3 text-sm text-rose-200">{job.error ?? job.message}</p> : null}
+        {job?.status === "failed" || job?.status === "rollback" ? <p className="mt-3 text-sm text-rose-200">{job.error ?? job.message}</p> : null}
       </div>
     </Surface>
   );

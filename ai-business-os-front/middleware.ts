@@ -90,7 +90,13 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
   if (!session.valid && !isLoginPage) {
-    return NextResponse.redirect(new URL("/login", request.url));
+    // Carry the originally-requested path along so /login can send the
+    // person back where they meant to go — without this, a mobile session
+    // that expires on e.g. /m/chat always dumps the phone onto the desktop
+    // Dashboard after re-login instead of back into the mobile app.
+    const loginUrl = new URL("/login", request.url);
+    if (pathname !== "/") loginUrl.searchParams.set("next", pathname + request.nextUrl.search);
+    return NextResponse.redirect(loginUrl);
   }
   if (session.valid && isLoginPage) {
     return NextResponse.redirect(new URL("/", request.url));

@@ -8,7 +8,7 @@ import re
 from hmac import compare_digest
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.api.routes.auth import (
@@ -22,6 +22,7 @@ from app.core.config import settings
 from app.core.data_layer.contracts import CoreDataStore
 from app.core.data_layer.factory import get_core_store
 from app.core.device_link import DeviceLinkService
+from app.core.rate_limit import client_key, enforce_rate_limit, record_failure, record_success
 
 try:
     import segno
@@ -71,6 +72,11 @@ class DevicePairRequest(BaseModel):
     login: str = Field(min_length=1, max_length=128)
     password: str = Field(min_length=1, max_length=256)
     device_label: str | None = Field(default=None, max_length=80)
+    # A stable id the phone generates once and stores locally (localStorage),
+    # so re-pairing the SAME physical device (session expired, PWA
+    # reinstalled, cookie cleared) updates its existing registry entry
+    # instead of appending a new "ghost" device every time.
+    device_id: str | None = Field(default=None, max_length=64)
 
 
 @router.post("/link/create", response_model=DeviceLinkResponse)
@@ -115,15 +121,17 @@ def disconnect_device(
 ) -> DeviceListResponse:
     _require_owner(authorization, store)
     service = DeviceLinkService(store)
-    if not service.forget_device(request.device_id):
+    token_hash = service.forget_device(request.device_id)
+    if token_hash is None:
         raise HTTPException(status_code=404, detail="Устройство не найдено")
-    _revoke_session_by_hash(store, request.device_id)
+    _revoke_session_by_hash(store, token_hash)
     return DeviceListResponse(devices=[DeviceInfo(**item) for item in service.list_devices()])
 
 
 @router.post("/pair", response_model=LoginResponse)
 def pair_device(
     request: DevicePairRequest,
+    request_ctx: Request,
     store: Annotated[CoreDataStore, Depends(get_core_store)],
     user_agent: str | None = Header(default=None),
 ) -> LoginResponse:
@@ -134,19 +142,25 @@ def pair_device(
     pairing token from the QR — neither one alone is enough.
     """
 
+    key = client_key("device_pair", request_ctx)
+    enforce_rate_limit(key)
     if not settings.owner_login or not settings.owner_password:
         raise HTTPException(status_code=503, detail="Владелец не настроен")
     if not compare_digest(request.login, settings.owner_login) or not compare_digest(
         request.password, settings.owner_password
     ):
+        record_failure(key)
         raise HTTPException(status_code=401, detail="Неверный логин или пароль")
     identity = DeviceLinkService(store).consume(request.token)
     if identity is None:
+        record_failure(key)
         raise HTTPException(status_code=410, detail="QR-код недействителен или уже истёк")
+    record_success(key)
     access_token = _token_for(identity)
     DeviceLinkService(store).register_device(
         access_token=access_token,
         label=request.device_label or "Мобильное устройство",
         user_agent=user_agent or "",
+        device_id=request.device_id,
     )
     return LoginResponse(access_token=access_token)

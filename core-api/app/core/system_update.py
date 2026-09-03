@@ -86,6 +86,17 @@ class SystemUpdateService:
         except Exception:  # noqa: BLE001
             return None
 
+    def get_latest_job(self) -> SystemUpdateJob | None:
+        """The most recent update attempt, whatever it finished as (success,
+        failed, or rolled back) — so the Settings page can tell the owner
+        what happened even after the backend restart an update itself
+        triggers wipes any in-memory/React state the page was showing."""
+
+        job_id = self._state().get("last_job_id")
+        if not isinstance(job_id, str):
+            return None
+        return self.get_job(job_id)
+
     def _run_install(self, job_id: str) -> None:
         job = self.get_job(job_id)
         if job is None:
@@ -189,9 +200,14 @@ class SystemUpdateService:
         job.updated_at = datetime.now(UTC)
         self._save_job(job)
         if job.status != "running":
-            state = self._state()
-            if state.get("active_job_id") == job.job_id:
-                self._save_state({"active_job_id": None, "last_successful_update_at": state.get("last_successful_update_at")})
+            # Record this as the latest finished job (success, failed, or
+            # rollback alike) so the Settings page can show what happened
+            # even after reopening — an update restarts the backend itself,
+            # which wipes whatever the page had in memory.
+            update: dict[str, Any] = {"last_job_id": job.job_id}
+            if self._state().get("active_job_id") == job.job_id:
+                update["active_job_id"] = None
+            self._save_state(update)
 
     def _save_job(self, job: SystemUpdateJob) -> None:
         self.store.upsert_app_setting(AppSetting(
@@ -201,19 +217,24 @@ class SystemUpdateService:
             created_at=job.created_at,
             updated_at=job.updated_at,
         ))
-        state = self._state()
         if job.status == "running":
-            self._save_state({"active_job_id": job.job_id, "last_successful_update_at": state.get("last_successful_update_at")})
+            self._save_state({"active_job_id": job.job_id})
 
     def _state(self) -> dict[str, Any]:
         setting = self.store.get_app_setting(UPDATE_INDEX_KEY)
         return setting.setting_value if setting and isinstance(setting.setting_value, dict) else {}
 
     def _save_state(self, value: dict[str, Any]) -> None:
+        # Merges rather than replaces — this setting accumulates several
+        # independent fields (active_job_id, last_job_id,
+        # last_successful_update_at, version) written from different call
+        # sites, and a plain replace would silently drop whichever fields
+        # the current caller didn't happen to mention.
         now = datetime.now(UTC)
+        merged = {**self._state(), **value}
         self.store.upsert_app_setting(AppSetting(
             setting_key=UPDATE_INDEX_KEY,
-            setting_value=value,
+            setting_value=merged,
             metadata={"scope": "system", "kind": "system_update_state"},
             created_at=now,
             updated_at=now,

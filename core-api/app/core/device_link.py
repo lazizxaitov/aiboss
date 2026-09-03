@@ -103,29 +103,54 @@ class DeviceLinkService:
             updated_at=now,
         ))
 
-    def register_device(self, *, access_token: str, label: str, user_agent: str) -> str:
-        device_id = hash_token(access_token)
+    def register_device(
+        self, *, access_token: str, label: str, user_agent: str, device_id: str | None = None
+    ) -> str:
+        """`device_id`, when given, is a stable id the phone itself generated
+        once and persists locally (localStorage) — re-pairing the SAME
+        physical device (expired session, cleared cookies, reinstalled PWA)
+        updates its existing registry entry in place instead of appending a
+        new "ghost" device every time. The session token changes on every
+        pairing regardless, so its hash is stored as a separate field
+        (`token_hash`) rather than doubling as the identity."""
+
+        resolved_id = device_id or secrets.token_hex(16)
         with _LOCK:
             devices = self._registry()
-            devices[device_id] = {
+            devices[resolved_id] = {
                 "label": label[:80],
                 "user_agent": user_agent[:200],
                 "linked_at": datetime.now(UTC).isoformat(),
+                "token_hash": hash_token(access_token),
             }
             self._save_registry(devices)
-        return device_id
+        return resolved_id
 
     def list_devices(self) -> list[dict[str, Any]]:
         devices = self._registry()
-        items = [{"device_id": device_id, **info} for device_id, info in devices.items()]
+        items = [
+            {
+                "device_id": device_id,
+                "label": info.get("label"),
+                "user_agent": info.get("user_agent"),
+                "linked_at": info.get("linked_at"),
+            }
+            for device_id, info in devices.items()
+        ]
         items.sort(key=lambda item: item.get("linked_at") or "")
         return items
 
-    def forget_device(self, device_id: str) -> bool:
+    def forget_device(self, device_id: str) -> str | None:
+        """Remove the device and return the session-token hash to revoke, or
+        None if the device wasn't found. Older registry entries (from before
+        `token_hash` existed) used the device_id itself as that hash — keep
+        honoring those without needing a data migration."""
+
         with _LOCK:
             devices = self._registry()
-            if device_id not in devices:
-                return False
-            devices.pop(device_id, None)
+            record = devices.pop(device_id, None)
+            if record is None:
+                return None
             self._save_registry(devices)
-        return True
+        token_hash = record.get("token_hash")
+        return token_hash if isinstance(token_hash, str) and token_hash else device_id
