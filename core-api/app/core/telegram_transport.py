@@ -271,7 +271,12 @@ class TelegramTransport:
         conversation_service = AIConversationService(self.store)
         if text.strip().lower().startswith("/start "):
             link_token = text.strip().split(maxsplit=1)[1].strip()
-            if complete_telegram_link(self.store, link_token, chat_id):
+            profile = {
+                "first_name": sender.get("first_name"),
+                "last_name": sender.get("last_name"),
+                "username": sender.get("username"),
+            }
+            if complete_telegram_link(self.store, link_token, chat_id, profile=profile):
                 await self._send_text(client, chat_id, "Telegram успешно подключён к AI Business OS.")
             else:
                 await self._send_text(client, chat_id, "Ссылка подключения недействительна или уже истекла.")

@@ -70,6 +70,11 @@ class AIConversationIndex(BaseModel):
     active_by_identity: dict[str, str] = Field(default_factory=dict)
     telegram_chat_to_identity: dict[str, str] = Field(default_factory=dict)
     telegram_chat_targets: dict[str, dict[str, str]] = Field(default_factory=dict)
+    # Per-chat display info (first/last name, username, linked_at) so the
+    # settings UI can list every connected Telegram user by name instead of
+    # just a masked chat id — needed now that more than one Telegram account
+    # can be linked at the same time.
+    telegram_chat_profiles: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -124,10 +129,54 @@ class AIConversationService:
         )
         return normalized
 
-    def link_telegram_chat(self, telegram_chat_id: str, identity: str) -> AIConversationIndex:
+    def link_telegram_chat(
+        self,
+        telegram_chat_id: str,
+        identity: str,
+        *,
+        profile: dict[str, Any] | None = None,
+    ) -> AIConversationIndex:
         index = self.get_index()
-        index.telegram_chat_to_identity[str(telegram_chat_id)] = identity
+        chat_id = str(telegram_chat_id)
+        index.telegram_chat_to_identity[chat_id] = identity
+        if profile:
+            stored = dict(index.telegram_chat_profiles.get(chat_id, {}))
+            stored.update({key: value for key, value in profile.items() if value is not None})
+            stored.setdefault("linked_at", datetime.now(UTC).isoformat())
+            index.telegram_chat_profiles[chat_id] = stored
         return self.save_index(index)
+
+    def telegram_profiles_for_identity(self, identity: str) -> list[dict[str, Any]]:
+        """List every Telegram chat linked to this identity, with display info."""
+
+        index = self.get_index()
+        profiles = []
+        for chat_id, mapped in index.telegram_chat_to_identity.items():
+            if mapped != identity:
+                continue
+            profile = index.telegram_chat_profiles.get(chat_id, {})
+            profiles.append({
+                "chat_id": chat_id,
+                "first_name": profile.get("first_name"),
+                "last_name": profile.get("last_name"),
+                "username": profile.get("username"),
+                "linked_at": profile.get("linked_at"),
+            })
+        profiles.sort(key=lambda item: item.get("linked_at") or "")
+        return profiles
+
+    def unlink_telegram_chat(self, telegram_chat_id: str, identity: str) -> bool:
+        """Disconnect a single Telegram user, leaving other linked users intact."""
+
+        index = self.get_index()
+        chat_id = str(telegram_chat_id)
+        if index.telegram_chat_to_identity.get(chat_id) != identity:
+            return False
+        index.telegram_chat_to_identity.pop(chat_id, None)
+        index.telegram_chat_targets.pop(chat_id, None)
+        index.telegram_chat_profiles.pop(chat_id, None)
+        self.save_index(index)
+        return True
 
     def get_telegram_target(self, telegram_chat_id: str) -> dict[str, str] | None:
         target = self.get_index().telegram_chat_targets.get(str(telegram_chat_id))
@@ -147,6 +196,7 @@ class AIConversationService:
         for chat_id in chats:
             index.telegram_chat_to_identity.pop(chat_id, None)
             index.telegram_chat_targets.pop(chat_id, None)
+            index.telegram_chat_profiles.pop(chat_id, None)
         index.active_by_identity.pop(f"{AIConversationChannel.TELEGRAM.value}:{identity}", None)
         self.save_index(index)
         return chats

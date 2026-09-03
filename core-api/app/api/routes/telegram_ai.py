@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+import hashlib
+import hmac
+import json
+from datetime import UTC, datetime
+from typing import Annotated, Any
+from urllib.parse import parse_qsl
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -25,6 +30,15 @@ from app.core.hermes_model_registry import hermes_model_registry
 from app.core.hermes_tools import HermesBusinessTools
 from app.core.telegram_link import TelegramLinkService
 
+# Optional: renders the pairing token as a scannable QR code. The rest of the
+# linking flow (deep link + manual "/start <token>") keeps working even if
+# this package hasn't been installed yet — run `uv add segno` in core-api/
+# and restart to enable the QR code image.
+try:
+    import segno
+except ImportError:  # pragma: no cover - optional dependency
+    segno = None  # type: ignore[assignment]
+
 router = APIRouter(prefix="/telegram")
 
 
@@ -33,13 +47,77 @@ class TelegramLinkRequest(BaseModel):
     user_id: str = Field(min_length=1)
 
 
+class TelegramLinkedUser(BaseModel):
+    chat_id: str
+    first_name: str | None = None
+    last_name: str | None = None
+    username: str | None = None
+    linked_at: str | None = None
+
+
 class TelegramLinkResponse(BaseModel):
     connected: bool
     chats: list[str] = Field(default_factory=list)
+    users: list[TelegramLinkedUser] = Field(default_factory=list)
     token: str | None = None
     deep_link: str | None = None
+    qr_data_uri: str | None = None
     instructions: str | None = None
     expires_at: str | None = None
+
+
+class TelegramDisconnectChatRequest(BaseModel):
+    chat_id: str = Field(min_length=1)
+
+
+class TelegramWebAppLinkRequest(BaseModel):
+    token: str = Field(min_length=1, max_length=256)
+    init_data: str = Field(min_length=1, max_length=8192)
+
+
+class TelegramWebAppLinkResponse(BaseModel):
+    connected: bool
+    message: str
+
+
+def _verify_webapp_init_data(init_data: str, bot_token: str, *, max_age_seconds: int = 600) -> dict[str, Any] | None:
+    """Validate Telegram WebApp initData per Telegram's signing scheme.
+
+    See https://core.telegram.org/bots/webapps#validating-data-received-via-the-web-app
+    A valid, fresh hash is the only thing that lets the Mini App's "scan QR"
+    button grant access — it proves the request really came from that
+    Telegram user's own Telegram client, not just anyone who saw the QR code.
+    """
+
+    try:
+        pairs = parse_qsl(init_data, strict_parsing=True, keep_blank_values=True)
+    except ValueError:
+        return None
+    data = dict(pairs)
+    received_hash = data.pop("hash", None)
+    if not isinstance(received_hash, str) or not received_hash:
+        return None
+    check_string = "\n".join(f"{key}={value}" for key, value in sorted(data.items()))
+    secret_key = hmac.new(b"WebAppData", bot_token.encode("utf-8"), hashlib.sha256).digest()
+    computed_hash = hmac.new(secret_key, check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(computed_hash, received_hash):
+        return None
+    auth_date = data.get("auth_date")
+    try:
+        if not auth_date or (datetime.now(UTC).timestamp() - float(auth_date)) > max_age_seconds:
+            return None
+    except (TypeError, ValueError):
+        return None
+    user_raw = data.get("user")
+    if not isinstance(user_raw, str) or not user_raw:
+        return None
+    try:
+        user = json.loads(user_raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(user, dict) or not user.get("id"):
+        return None
+    return user
 
 
 class TelegramChatRequest(BaseModel):
@@ -221,10 +299,20 @@ def create_telegram_link(
     result = TelegramLinkService(store).create(session.login, bot_username=settings.telegram_bot_username)
     import logging
     logging.getLogger(__name__).info("TELEGRAM_LINK_CREATED identity=%s", session.login)
+    qr_data_uri = None
+    if segno is not None:
+        try:
+            # Encode just the raw token — the Mini App's QR scanner reads this
+            # text and posts it back with the scanning user's Telegram
+            # identity, so scanning is equivalent to sending "/start <token>".
+            qr_data_uri = segno.make(result["token"], error="m").svg_data_uri(scale=6, border=2)
+        except Exception:  # noqa: BLE001 - a broken QR image must never break linking
+            qr_data_uri = None
     return TelegramLinkResponse(
         connected=False,
         token=result["token"],
         deep_link=result.get("deep_link"),
+        qr_data_uri=qr_data_uri,
         expires_at=result["expires_at"],
         instructions=f"Откройте Telegram и отправьте боту команду /start {result['token']}",
     )
@@ -242,14 +330,37 @@ def disconnect_telegram(
     return TelegramLinkResponse(connected=False, chats=[])
 
 
-def complete_telegram_link(store: CoreDataStore, token: str, telegram_chat_id: str) -> bool:
+@router.post("/link/disconnect-chat", response_model=TelegramLinkResponse)
+def disconnect_telegram_chat(
+    request: TelegramDisconnectChatRequest,
+    store: Annotated[CoreDataStore, Depends(get_core_store)],
+    authorization: str | None = Header(default=None),
+) -> TelegramLinkResponse:
+    """Revoke a single connected Telegram user without touching the others."""
+
+    session = _require_owner(authorization, store)
+    removed = AIConversationService(store).unlink_telegram_chat(request.chat_id, session.login)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Этот Telegram-пользователь не найден среди подключённых.")
+    import logging
+    logging.getLogger(__name__).info("TELEGRAM_LINK_CHAT_REVOKED identity=%s chat_id=%s", session.login, request.chat_id)
+    return TelegramLinkResponse(**TelegramLinkService(store).status(session.login))
+
+
+def complete_telegram_link(
+    store: CoreDataStore,
+    token: str,
+    telegram_chat_id: str,
+    *,
+    profile: dict[str, Any] | None = None,
+) -> bool:
     identity = TelegramLinkService(store).consume(token, telegram_chat_id)
     if identity is None:
         import logging
         logging.getLogger(__name__).info("TELEGRAM_LINK_FAILED reason=invalid_or_expired")
         return False
     service = AIConversationService(store)
-    service.link_telegram_chat(telegram_chat_id, identity)
+    service.link_telegram_chat(telegram_chat_id, identity, profile=profile)
     service.resolve_or_create_conversation(
         source_channel=AIConversationChannel.TELEGRAM,
         user_id=identity,
@@ -258,6 +369,41 @@ def complete_telegram_link(store: CoreDataStore, token: str, telegram_chat_id: s
     import logging
     logging.getLogger(__name__).info("TELEGRAM_LINK_COMPLETED identity=%s", identity)
     return True
+
+
+@router.post("/webapp/link", response_model=TelegramWebAppLinkResponse)
+def link_via_webapp(
+    request: TelegramWebAppLinkRequest,
+    store: Annotated[CoreDataStore, Depends(get_core_store)],
+) -> TelegramWebAppLinkResponse:
+    """Complete a pairing token scanned inside the bot's Mini App panel.
+
+    No owner session is required here on purpose — the caller is the
+    Telegram user's own Mini App, authenticated instead by Telegram's signed
+    initData (verified against the bot token) plus the one-time pairing
+    token encoded in the QR code shown in the system's "Подключить Telegram"
+    modal. Either one alone is not enough to grant access.
+    """
+
+    if not settings.telegram_bot_token:
+        raise HTTPException(status_code=503, detail="Telegram-бот не настроен")
+    user = _verify_webapp_init_data(request.init_data, settings.telegram_bot_token)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Не удалось подтвердить пользователя Telegram")
+    chat_id = str(user.get("id") or "")
+    if not chat_id:
+        raise HTTPException(status_code=400, detail="Некорректные данные пользователя Telegram")
+    profile = {
+        "first_name": user.get("first_name"),
+        "last_name": user.get("last_name"),
+        "username": user.get("username"),
+    }
+    if not complete_telegram_link(store, request.token, chat_id, profile=profile):
+        return TelegramWebAppLinkResponse(
+            connected=False,
+            message="QR-код недействителен или уже истёк. Обновите его в системе и отсканируйте ещё раз.",
+        )
+    return TelegramWebAppLinkResponse(connected=True, message="Telegram успешно подключён к AI Business OS.")
 
 
 

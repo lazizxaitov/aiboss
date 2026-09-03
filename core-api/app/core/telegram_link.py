@@ -79,5 +79,9 @@ class TelegramLinkService:
     def status(self, identity: str) -> dict[str, Any]:
         from app.core.ai_conversation import AIConversationService
 
-        chats = AIConversationService(self.store).telegram_chats_for_identity(identity)
-        return {"connected": bool(chats), "chats": [f"…{chat_id[-4:]}" for chat_id in chats]}
+        users = AIConversationService(self.store).telegram_profiles_for_identity(identity)
+        return {
+            "connected": bool(users),
+            "chats": [f"…{user['chat_id'][-4:]}" for user in users],
+            "users": users,
+        }

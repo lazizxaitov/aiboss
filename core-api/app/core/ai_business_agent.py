@@ -46,6 +46,22 @@ FINAL_SYNTHESIS_RESERVE_MIN_SECONDS = 5.0
 # A broad "analyze the whole business" answer is itself long (many findings),
 # so the final synthesis call needs more than a quick-answer's 15s reserve.
 FINAL_SYNTHESIS_RESERVE_MAX_SECONDS = 25.0
+# Previously every round's HTTP call to Hermes was given whatever time was
+# LEFT in the overall request budget (`remaining_before`). That meant later
+# rounds got starved as the budget was consumed by earlier ones — a request
+# needing many rounds would fail deep into its own research no matter how
+# high the overall budget was raised, because each individual round's slice
+# kept shrinking. Give every round a fixed, generous timeout instead, and let
+# the overall budget (config.py) act only as an outer safety net. This is
+# what makes CHAT_MAX_ROUNDS / CHAT_TOOL_CALLS above (not a wall-clock
+# number) the real, permanent ceiling for how deep a chat analysis can go.
+ROUND_REQUEST_TIMEOUT_SECONDS = 90.0
+# Same fix applied to the actual SQL statement timeout for a single
+# business.query call: it used to be set to whatever budget remained
+# (shrinking the same way), so a perfectly normal aggregation query late in a
+# long analysis could get cut off by only a couple of seconds. Read-only
+# research views should always finish well within this.
+SQL_STATEMENT_TIMEOUT_SECONDS = 30.0
 # Last-resort window granted to a single wrap-up synthesis call when the
 # research loop itself has already run out of time. This never extends the
 # overall analysis budget in the common case; it only gives the model one
@@ -772,6 +788,17 @@ class AIBusinessAgentService:
                 else:
                     await on_stage("researching")
             remaining_before = check_deadline(deadline_stage)
+            # Cap the timeout given to THIS round's HTTP call at a fixed,
+            # generous ceiling rather than handing it the entire remaining
+            # budget (which shrinks round over round) or an ever-smaller
+            # sliver near the deadline. `check_deadline` above already raised
+            # ResearchTimeoutError if the overall budget is already gone, so
+            # `remaining_before` here is always positive when reached.
+            round_timeout = (
+                min(remaining_before, ROUND_REQUEST_TIMEOUT_SECONDS)
+                if remaining_before is not None
+                else ROUND_REQUEST_TIMEOUT_SECONDS
+            )
             request_started = monotonic()
             timings["model_calls"] = int(timings.get("model_calls") or 0) + 1
             prompt_chars = sum(len(str(message.get("content") or "")) for message in messages)
@@ -848,7 +875,7 @@ class AIBusinessAgentService:
                         model=model,
                         provider=provider,
                         response_format=None,
-                        timeout_seconds=remaining_before,
+                        timeout_seconds=round_timeout,
                     ) as streamed_response:
                         if streamed_response.status_code >= 400:
                             await streamed_response.aread()
@@ -917,7 +944,7 @@ class AIBusinessAgentService:
                             model=model,
                             provider=provider,
                             response_format={"type": "json_object"} if business_protocol_enabled else None,
-                            timeout_seconds=remaining_budget(),
+                            timeout_seconds=round_timeout,
                         )
                 else:
                     response = await _hermes_request(
@@ -931,7 +958,7 @@ class AIBusinessAgentService:
                         model=model,
                         provider=provider,
                         response_format={"type": "json_object"} if business_protocol_enabled else None,
-                        timeout_seconds=remaining_before,
+                        timeout_seconds=round_timeout,
                     )
             except httpx.TimeoutException as error:
                 round_telemetry = timings["round_telemetry"]
@@ -1565,9 +1592,12 @@ class AIBusinessAgentService:
                                 str(arguments["sql"]),
                                 organization_id=conversation.organization_id,
                                 statement_timeout_ms=(
-                                    max(1, int(capability_remaining_before * 1000))
+                                    min(
+                                        max(1, int(capability_remaining_before * 1000)),
+                                        int(SQL_STATEMENT_TIMEOUT_SECONDS * 1000),
+                                    )
                                     if capability_remaining_before is not None
-                                    else None
+                                    else int(SQL_STATEMENT_TIMEOUT_SECONDS * 1000)
                                 ),
                             )
                         except AIReadOnlyQueryError as error:

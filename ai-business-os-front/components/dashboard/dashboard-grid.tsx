@@ -1288,6 +1288,13 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
       const target = event.target;
       if (!(target instanceof Node)) return;
       if (assistantRootRef.current?.contains(target)) return;
+      // Don't auto-collapse while a request is in flight or while there's an
+      // error the user hasn't seen yet — an accidental click elsewhere on
+      // the dashboard used to silently close the panel mid-request, so the
+      // error (which arrives later) rendered into the tiny collapsed height
+      // and got clipped/looked like it "disappeared". Collapsing still works
+      // via the explicit chevron/"Свернуть" button.
+      if (isGenerating || chatError) return;
       setExpanded(false);
       setFullScreen(false);
     };
@@ -1539,7 +1546,7 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
                 Свернуть
               </button>
             </div>
-            <div className="min-h-0 overflow-y-auto px-5 py-6 sm:px-8 sm:py-8">
+            <div className="min-h-0 overflow-y-auto overscroll-contain px-5 py-6 sm:px-8 sm:py-8">
               <p className="whitespace-pre-wrap text-[20px] leading-8 text-[#f4f7fb] sm:text-[24px] sm:leading-9">{businessDataModal.text}</p>
             </div>
           </div>
@@ -1577,7 +1584,11 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
             // screen with no way to scroll it into view. Clamp it to the
             // viewport at every breakpoint; the existing `xl:` override still
             // takes over for the wide-screen sticky layout.
-            fullScreen ? "h-full min-h-0 pt-5 pb-4" : expanded ? "h-[min(699px,calc(100dvh-9rem))] xl:!h-[calc(100dvh_-_23.625rem)] pt-5 pb-4" : "h-[165px] xl:h-[165px] py-3",
+            // Also switch to the tall layout while chatError is set (even if
+            // the panel is technically "collapsed") — otherwise an error
+            // message rendered into the fixed 165px collapsed box would
+            // clip/overlap the input and send button below it.
+            fullScreen ? "h-full min-h-0 pt-5 pb-4" : (expanded || Boolean(chatError)) ? "h-[min(699px,calc(100dvh-9rem))] xl:!h-[calc(100dvh_-_23.625rem)] pt-5 pb-4" : "h-[165px] xl:h-[165px] py-3",
           )}
         >
           <button
@@ -1732,7 +1743,7 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
               </form>
             ) : hasConversation ? (
               <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
-                <div ref={chatThreadRef} className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden pr-1">
+                <div ref={chatThreadRef} className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain pr-1">
                   <div className="flex min-w-0 flex-col gap-4 pb-3">
                     {chatMessages.map((item) => {
                       const parsed = item.role === "assistant" ? parseAssistantFiles(item.text) : null;
@@ -2095,7 +2106,7 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
         <div
           className={cn(
             "mt-3 flex min-h-0 flex-col gap-2 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
-            expanded ? "flex-none overflow-hidden" : "flex-1 overflow-y-auto pr-1",
+            expanded ? "flex-none overflow-hidden" : "flex-1 overflow-y-auto overscroll-contain pr-1",
           )}
         >
           {visibleThoughts.map((item) => (
@@ -2832,7 +2843,7 @@ function SmallStat({ label, value, note, compact = false }: { label: string; val
 
 function ListShell({ children, scroll }: { children: React.ReactNode; scroll?: boolean }) {
   return (
-    <div className={cn("mt-4 min-h-0 flex-1", scroll ? "overflow-y-auto pr-1" : "overflow-hidden")}>{children}</div>
+    <div className={cn("mt-4 min-h-0 flex-1", scroll ? "overflow-y-auto overscroll-contain pr-1" : "overflow-hidden")}>{children}</div>
   );
 }
 
@@ -2975,7 +2986,7 @@ function ExecutiveBriefWidget({ widget, variant }: { widget: DashboardManifestWi
   return (
     <Surface className={cn("group relative flex h-full min-h-0 flex-col overflow-hidden", widgetSurfacePadding(widget, variant))}>
       {widgetHeader(widget, variant === "compact")}
-      <div className={cn("mt-4 min-h-0 flex-1 overflow-y-auto pr-1", variant === "compact" ? "space-y-3" : "space-y-4")}>
+      <div className={cn("mt-4 min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1", variant === "compact" ? "space-y-3" : "space-y-4")}>
         <div className="space-y-3">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
@@ -3122,7 +3133,7 @@ function OrganizationComparisonWidget({ widget, variant }: { widget: DashboardMa
     <Surface className={cn("group relative flex h-full min-h-0 flex-col overflow-hidden", widgetSurfacePadding(widget, variant))}>
       {widgetHeader(widget, variant === "compact")}
       <div className={cn("mt-4 min-h-0 flex-1 overflow-hidden rounded-[22px] border border-[#3a3d43] bg-[#2E3137]", variant === "compact" && "text-xs")}>
-        <div className="h-full overflow-auto">
+        <div className="h-full overflow-auto overscroll-contain">
           <table className={cn("min-w-full text-left", variant === "compact" ? "text-xs" : "text-sm")}>
             <thead className="sticky top-0 bg-[#343840] text-slate-400">
               <tr>

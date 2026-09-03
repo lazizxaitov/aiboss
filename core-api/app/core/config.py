@@ -32,15 +32,20 @@ class Settings(BaseSettings):
     ai_analytics_widget_timeout_seconds: float = 90.0
     ai_analytics_prompt_version: str = "phase-3c-v1"
     ai_analytics_cache_ttl_seconds: int = 300
-    # A deep business question (e.g. "analyze all visits this week") needs
-    # several sequential business.query round trips through Hermes -> Codex.
-    # 45s was tight enough that the agent frequently hit the deadline before
-    # finishing even a 2-3 query analysis (see AI_LATENCY_PROBLEMS.txt). 90s
-    # was still not enough for an explicit "analyze the whole business"
-    # request in chat (users do ask chat this, not just the background
-    # analytics run) — raised to match the round/tool-call budget now given
-    # to chat (CHAT_MAX_ROUNDS/CHAT_TOOL_CALLS in ai_business_agent.py).
-    ai_chat_timeout_seconds: float = 240.0
+    # This used to be tuned tighter and tighter (45s -> 90s -> 240s) and kept
+    # failing on genuinely heavy chat questions ("посмотри где упали продажи
+    # и дай подробный анализ") because each individual round's HTTP call was
+    # given a SHRINKING slice of whatever was left of this number — so no
+    # matter how high it was raised, a request needing many rounds eventually
+    # starved late in its own research. That per-round starvation is now
+    # fixed directly (ROUND_REQUEST_TIMEOUT_SECONDS / SQL_STATEMENT_TIMEOUT_SECONDS
+    # in ai_business_agent.py give every round a fixed, generous timeout
+    # instead). This number is now only an outer safety net for a wedged
+    # request, not the everyday limit — CHAT_MAX_ROUNDS/CHAT_TOOL_CALLS decide
+    # how deep an analysis can go, and those don't need bumping for a bigger
+    # question. Set generously so it is never the reason a real analysis
+    # fails.
+    ai_chat_timeout_seconds: float = 1800.0
     openai_api_key: str | None = None
     openai_base_url: str = "https://api.openai.com/v1"
     anthropic_api_key: str | None = None
@@ -53,10 +58,11 @@ class Settings(BaseSettings):
     telegram_transport_enabled: bool = True
     telegram_poll_timeout_seconds: int = 25
     telegram_request_timeout_seconds: float = 35.0
-    # Kept above ai_chat_timeout_seconds so a broad "analyze everything"
-    # request asked over Telegram gets at least as much research time as the
-    # same request in the web chat.
-    telegram_ai_timeout_seconds: float = 260.0
+    # Kept at least as high as ai_chat_timeout_seconds so a broad "analyze
+    # everything" request asked over Telegram gets at least as much research
+    # time as the same request in the web chat. Same outer-safety-net role —
+    # see the comment on ai_chat_timeout_seconds.
+    telegram_ai_timeout_seconds: float = 1800.0
     telegram_bot_username: str | None = None
     telegram_max_media_bytes: int = 20 * 1024 * 1024
     telegram_media_dir: str = "/tmp/aiboss-telegram-media"
