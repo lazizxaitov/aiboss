@@ -40,9 +40,12 @@ a {
   box-sizing: border-box;
 }
 
-@media (max-width: 1023px) {
-  html,
-  body {
-    overflow-x: clip;
-  }
+/* Previously scoped to `max-width: 1023px` only. That made the same
+   overflow bug present differently depending on screen size: content
+   silently clipped/cut off below 1024px, but produced a whole-page
+   horizontal scrollbar at 1024px and above. Apply consistently so any
+   remaining overflow behaves the same way everywhere. */
+html,
+body {
+  overflow-x: clip;
 }

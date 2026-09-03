@@ -1498,13 +1498,21 @@ export function DashboardAssistantPanel({ floating = false }: { floating?: boole
           }}
         />
       ) : null}
-      <div ref={assistantRootRef} className={fullScreen ? "fixed inset-3 z-[60] mx-auto flex h-[calc(100dvh-1.5rem)] min-h-0 w-[min(980px,calc(100vw-1.5rem))] max-h-[calc(100dvh-1.5rem)] flex-col gap-3 sm:inset-6 sm:h-[calc(100dvh-3rem)] sm:max-h-[calc(100dvh-3rem)]" : floating ? "fixed bottom-6 right-6 z-50 flex w-[min(420px,calc(100vw-2rem))] flex-col gap-3" : "flex min-h-0 flex-col gap-3 xl:sticky xl:top-[6.5rem] xl:h-[calc(100dvh-8rem)]"}>
+      <div ref={assistantRootRef} className={fullScreen ? "fixed inset-3 z-[60] mx-auto flex h-[calc(100dvh-1.5rem)] min-h-0 w-[min(980px,calc(100vw-1.5rem))] max-h-[calc(100dvh-1.5rem)] flex-col gap-3 sm:inset-6 sm:h-[calc(100dvh-3rem)] sm:max-h-[calc(100dvh-3rem)]" : floating ? "fixed bottom-24 right-4 z-50 flex w-[min(420px,calc(100vw-2rem))] flex-col gap-3 lg:bottom-6 lg:right-6" : "flex min-h-0 flex-col gap-3 xl:sticky xl:top-[6.5rem] xl:h-[calc(100dvh-8rem)]"}>
       <div id="ai-chat" ref={chatSurfaceRef} className={fullScreen ? "flex min-h-0 flex-1" : undefined}>
         <Surface
           className={cn(
             "relative flex min-h-0 shrink-0 flex-col overflow-hidden border-[#3c4048] bg-[radial-gradient(circle_at_78%_12%,rgba(255,255,255,0.05),transparent_32%),linear-gradient(180deg,#2E3137_0%,#2A2D33_100%)] px-4",
             smoothTransition,
-            fullScreen ? "h-full min-h-0 pt-5 pb-4" : expanded ? "h-[699px] xl:!h-[calc(100dvh_-_23.625rem)] pt-5 pb-4" : "h-[165px] xl:h-[165px] py-3",
+            // Below `xl` this used to be a hard h-[699px], regardless of the
+            // actual viewport height. The floating variant of this panel is
+            // `position: fixed`, so on any window/viewport shorter than
+            // ~750-800px (a common laptop window size, landscape tablet, or
+            // split-screen desktop) it overflowed past the bottom of the
+            // screen with no way to scroll it into view. Clamp it to the
+            // viewport at every breakpoint; the existing `xl:` override still
+            // takes over for the wide-screen sticky layout.
+            fullScreen ? "h-full min-h-0 pt-5 pb-4" : expanded ? "h-[min(699px,calc(100dvh-9rem))] xl:!h-[calc(100dvh_-_23.625rem)] pt-5 pb-4" : "h-[165px] xl:h-[165px] py-3",
           )}
         >
           <button
@@ -4026,10 +4034,10 @@ export function DashboardGrid() {
           margin={[18, 18]}
           containerPadding={[0, 0]}
           draggableHandle=".drag-handle"
-          resizeHandles={[]}
+          resizeHandles={editMode ? ["se"] : []}
           compactType={null}
           preventCollision={false}
-          isResizable={false}
+          isResizable={editMode}
           isDraggable={editMode}
           onDragStart={(_layout, item) => {
             if (!editMode) return;

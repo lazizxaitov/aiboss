@@ -5,16 +5,22 @@ export const LAUNCHER_COLUMNS = Object.freeze({ lg: 12, md: 8, sm: 4 });
 
 const VALID_SIZES = new Set(["small", "medium", "large"]);
 
+// Height now varies by the widget's chosen semantic size, not just its family.
+// A "small" chart/table/list needs meaningfully less vertical room than a
+// "large" one, otherwise content is forced to cram into (or spill out of) a
+// box sized for a different density.
 const FAMILY_HEIGHTS = Object.freeze({
-  kpi: 2,
-  alert: 3,
-  wide: 5,
-  detail: 5,
-  summary: 4,
-  chart: 5,
-  list: 5,
-  table: 5,
+  kpi: { small: 2, medium: 2, large: 2 },
+  alert: { small: 2, medium: 3, large: 4 },
+  wide: { small: 4, medium: 5, large: 6 },
+  detail: { small: 3, medium: 4, large: 6 },
+  summary: { small: 2, medium: 4, large: 5 },
+  chart: { small: 3, medium: 5, large: 7 },
+  list: { small: 3, medium: 5, large: 7 },
+  table: { small: 4, medium: 5, large: 7 },
 });
+
+const DEFAULT_FAMILY_HEIGHTS = { small: 3, medium: 4, large: 5 };
 
 const FAMILY_DEFAULT_SIZES = Object.freeze({
   kpi: "small",
@@ -44,15 +50,30 @@ function defaultSizeForWidget(widget) {
 }
 
 function widthForSize(size, columns) {
-  if (columns <= 4) return columns;
-  if (columns <= 8) return size === "large" ? columns : 4;
+  if (columns <= 4) {
+    // At the narrowest breakpoint everything is effectively full-width, but
+    // "small" still gets a visibly smaller footprint than "large" so users
+    // can tell the sizes apart instead of everything collapsing to columns.
+    if (size === "small") return Math.max(2, Math.round(columns / 2));
+    if (size === "medium") return columns;
+    return columns;
+  }
+  if (columns <= 8) {
+    // Previously "small" and "medium" both returned 4 here, making the two
+    // sizes visually identical. Give medium real extra width.
+    if (size === "small") return 4;
+    if (size === "medium") return Math.min(columns, 6);
+    return columns;
+  }
   if (size === "small") return 3;
   if (size === "medium") return 6;
   return columns;
 }
 
-function heightForWidget(widget) {
-  return FAMILY_HEIGHTS[getWidgetFamily(widget)] ?? 4;
+function heightForWidget(widget, size) {
+  const family = getWidgetFamily(widget);
+  const heightsForFamily = FAMILY_HEIGHTS[family] ?? DEFAULT_FAMILY_HEIGHTS;
+  return heightsForFamily[size] ?? heightsForFamily.medium ?? DEFAULT_FAMILY_HEIGHTS.medium;
 }
 
 export function createDefaultLauncherState(widgets) {
@@ -133,19 +154,27 @@ export function composeLauncherLayout({ state, widgets, columns }) {
     if (currentRow.length === 0) return;
     let x = 0;
     for (const entry of currentRow) {
+      const isLocked = locked.has(entry.id);
+      // Real (non-degenerate) resize bounds: the widget can be dragged
+      // between the widths/heights of its own allowed sizes, clamped to the
+      // available columns, instead of being pinned to its current w/h.
+      const minW = Math.min(entry.minW, columns);
+      const maxW = Math.min(Math.max(entry.maxW, minW), columns);
+      const minH = Math.min(entry.minH, entry.maxH);
+      const maxH = Math.max(entry.maxH, minH);
       layout.push({
         i: entry.id,
         x,
         y,
         w: entry.w,
         h: entry.preferredHeight,
-        minW: entry.w,
-        maxW: entry.w,
-        minH: entry.preferredHeight,
-        maxH: entry.preferredHeight,
-        static: locked.has(entry.id),
-        isDraggable: !locked.has(entry.id),
-        isResizable: false,
+        minW,
+        maxW,
+        minH,
+        maxH,
+        static: isLocked,
+        isDraggable: !isLocked,
+        isResizable: !isLocked && entry.canResize,
       });
       x += entry.w;
     }
@@ -158,14 +187,26 @@ export function composeLauncherLayout({ state, widgets, columns }) {
   for (const id of orderedIds) {
     const widget = byId.get(id);
     if (!widget) continue;
-    const w = Math.min(widthForSize(normalized.sizes[id] ?? "medium", columns), columns);
-    const preferredHeight = heightForWidget(widget);
+    const size = normalized.sizes[id] ?? "medium";
+    const w = Math.min(widthForSize(size, columns), columns);
+    const preferredHeight = heightForWidget(widget, size);
+    const widthsForSizes = ["small", "medium", "large"].map((candidate) => (
+      Math.min(widthForSize(candidate, columns), columns)
+    ));
+    const heightsForSizes = ["small", "medium", "large"].map((candidate) => (
+      heightForWidget(widget, candidate)
+    ));
+    const minW = Math.min(...widthsForSizes);
+    const maxW = Math.max(...widthsForSizes);
+    const minH = Math.min(...heightsForSizes);
+    const maxH = Math.max(...heightsForSizes);
+    const canResize = minW !== maxW || minH !== maxH;
 
     if (currentRow.length > 0 && currentWidth + w > columns) {
       flushRow();
     }
 
-    currentRow.push({ id, w, preferredHeight });
+    currentRow.push({ id, w, preferredHeight, minW, maxW, minH, maxH, canResize });
     currentWidth += w;
     currentRowHeight = Math.max(currentRowHeight, preferredHeight);
 
