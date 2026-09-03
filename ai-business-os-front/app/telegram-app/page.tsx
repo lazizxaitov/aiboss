@@ -28,6 +28,8 @@ export default function TelegramMiniAppPage() {
   const [sdkReady, setSdkReady] = useState(false);
   const [stage, setStage] = useState<LinkStage>("idle");
   const [message, setMessage] = useState<string | null>(null);
+  const [login, setLogin] = useState("");
+  const [password, setPassword] = useState("");
 
   useEffect(() => {
     if (!sdkReady) return;
@@ -42,7 +44,7 @@ export default function TelegramMiniAppPage() {
       const response = await fetch("/api/v1/telegram/webapp/link", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: token.trim(), init_data: initData }),
+        body: JSON.stringify({ token: token.trim(), init_data: initData, login, password }),
       });
       const data = (await response.json().catch(() => null)) as
         | { connected?: boolean; message?: string; detail?: string }
@@ -67,6 +69,11 @@ export default function TelegramMiniAppPage() {
       setMessage("Откройте эту страницу через кнопку меню бота в Telegram.");
       return;
     }
+    if (!login.trim() || !password) {
+      setStage("error");
+      setMessage("Сначала введите логин и пароль от системы.");
+      return;
+    }
     setStage("scanning");
     setMessage(null);
     webApp.showScanQrPopup(
@@ -79,6 +86,8 @@ export default function TelegramMiniAppPage() {
     );
   };
 
+  const canScan = sdkReady && login.trim().length > 0 && password.length > 0;
+
   return (
     <>
       <Script src="https://telegram.org/js/telegram-web-app.js" strategy="afterInteractive" onLoad={() => setSdkReady(true)} />
@@ -87,8 +96,8 @@ export default function TelegramMiniAppPage() {
           <p className="text-xs uppercase tracking-[0.32em] text-slate-400">AI Business OS</p>
           <h1 className="text-2xl font-semibold tracking-[-0.03em]">Панель бота</h1>
           <p className="max-w-sm text-sm leading-6 text-slate-400">
-            Отсканируйте QR-код, показанный в системе (кнопка «Подключить Telegram»), чтобы дать
-            этому Telegram-аккаунту доступ к AI Business OS.
+            Введите логин и пароль от системы, затем отсканируйте QR-код, показанный в системе
+            (кнопка «Подключить Telegram»), чтобы дать этому Telegram-аккаунту доступ к AI Business OS.
           </p>
         </div>
 
@@ -97,14 +106,36 @@ export default function TelegramMiniAppPage() {
             <p className="text-sm">{message}</p>
           </div>
         ) : (
-          <button
-            type="button"
-            onClick={scanQr}
-            disabled={!sdkReady || stage === "scanning" || stage === "linking"}
-            className="inline-flex h-12 items-center justify-center gap-2 rounded-full border border-[#FFF27A]/30 bg-[#FFF27A] px-6 text-sm font-medium text-[#1E1E21] transition disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {stage === "linking" ? "Подключаем..." : "Сканировать QR"}
-          </button>
+          <>
+            <div className="flex w-full max-w-xs flex-col gap-3">
+              <input
+                type="text"
+                autoComplete="username"
+                placeholder="Логин"
+                value={login}
+                onChange={(event) => setLogin(event.target.value)}
+                disabled={stage === "scanning" || stage === "linking"}
+                className="h-11 rounded-full border border-[#3a3d43] bg-[#2E3137] px-4 text-sm text-[#f4f7fb] outline-none placeholder:text-slate-500 focus:border-[#FFF27A]/40"
+              />
+              <input
+                type="password"
+                autoComplete="current-password"
+                placeholder="Пароль"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                disabled={stage === "scanning" || stage === "linking"}
+                className="h-11 rounded-full border border-[#3a3d43] bg-[#2E3137] px-4 text-sm text-[#f4f7fb] outline-none placeholder:text-slate-500 focus:border-[#FFF27A]/40"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={scanQr}
+              disabled={!canScan || stage === "scanning" || stage === "linking"}
+              className="inline-flex h-12 items-center justify-center gap-2 rounded-full border border-[#FFF27A]/30 bg-[#FFF27A] px-6 text-sm font-medium text-[#1E1E21] transition disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {stage === "linking" ? "Подключаем..." : "Сканировать QR"}
+            </button>
+          </>
         )}
 
         {stage === "error" && message ? <p className="max-w-sm text-sm text-rose-300">{message}</p> : null}

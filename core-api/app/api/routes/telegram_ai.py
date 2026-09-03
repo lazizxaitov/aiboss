@@ -73,6 +73,13 @@ class TelegramDisconnectChatRequest(BaseModel):
 class TelegramWebAppLinkRequest(BaseModel):
     token: str = Field(min_length=1, max_length=256)
     init_data: str = Field(min_length=1, max_length=8192)
+    # Scanning the QR alone used to be enough to gain access — anyone who saw
+    # the code (e.g. over someone's shoulder) could link their own Telegram.
+    # Requiring the same owner login/password used on the web dashboard
+    # closes that gap: only someone who already has the credentials can add
+    # a new Telegram user.
+    login: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=1, max_length=256)
 
 
 class TelegramWebAppLinkResponse(BaseModel):
@@ -378,15 +385,23 @@ def link_via_webapp(
 ) -> TelegramWebAppLinkResponse:
     """Complete a pairing token scanned inside the bot's Mini App panel.
 
-    No owner session is required here on purpose — the caller is the
-    Telegram user's own Mini App, authenticated instead by Telegram's signed
-    initData (verified against the bot token) plus the one-time pairing
-    token encoded in the QR code shown in the system's "Подключить Telegram"
-    modal. Either one alone is not enough to grant access.
+    No owner *session* is required here — the caller is the Telegram user's
+    own Mini App — but three things must all check out before access is
+    granted: the owner's login/password (typed on the phone), Telegram's own
+    signed initData (proves the request really came from that Telegram
+    account), and the one-time pairing token from the QR code. Any one of
+    these alone is not enough.
     """
 
     if not settings.telegram_bot_token:
         raise HTTPException(status_code=503, detail="Telegram-бот не настроен")
+    if (
+        not settings.owner_login
+        or not settings.owner_password
+        or not hmac.compare_digest(request.login, settings.owner_login)
+        or not hmac.compare_digest(request.password, settings.owner_password)
+    ):
+        raise HTTPException(status_code=401, detail="Неверный логин или пароль")
     user = _verify_webapp_init_data(request.init_data, settings.telegram_bot_token)
     if user is None:
         raise HTTPException(status_code=401, detail="Не удалось подтвердить пользователя Telegram")
