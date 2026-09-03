@@ -1,20 +1,56 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-async function verifyOwnerSession(token: string | undefined) {
+type VerifyResult = { valid: boolean; backendAvailable: boolean };
+
+// Every page navigation (and every background RSC refetch a "force-dynamic"
+// page or a <Link> prefetch triggers) used to make middleware do a fresh
+// network round-trip to the FastAPI backend just to re-verify the exact same
+// session token — the backend log showed the same token being re-verified
+// dozens of times back-to-back, which is wasted backend load and made
+// navigation feel slow (every transition waited on that round trip). The
+// token is a signed value the backend can only ever answer the same way for
+// within a short window, so a brief in-memory cache here removes almost all
+// of that redundant traffic without weakening the check: a revoked/changed
+// session is still re-verified for real within CACHE_TTL_MS of the change.
+const CACHE_TTL_MS = 5_000;
+const verifyCache = new Map<string, { result: VerifyResult; expiresAt: number }>();
+
+async function verifyOwnerSession(token: string | undefined): Promise<VerifyResult> {
   if (!token) return { valid: false, backendAvailable: true };
-  try {
-    const baseUrl = process.env.CORE_API_URL ?? process.env.NEXT_PUBLIC_CORE_API_URL ?? "http://127.0.0.1:8000";
-    const decodedToken = decodeURIComponent(token);
-    const response = await fetch(`${baseUrl}/api/v1/auth/verify?token=${encodeURIComponent(decodedToken)}`, {
-      cache: "no-store",
-      signal: AbortSignal.timeout(1500),
-    });
-    if (!response.ok) return { valid: false, backendAvailable: true };
-    const payload = await response.json() as { valid?: boolean };
-    return { valid: payload.valid === true, backendAvailable: true };
-  } catch {
-    return { valid: false, backendAvailable: false };
+
+  const cached = verifyCache.get(token);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.result;
   }
+
+  const result = await (async (): Promise<VerifyResult> => {
+    try {
+      const baseUrl = process.env.CORE_API_URL ?? process.env.NEXT_PUBLIC_CORE_API_URL ?? "http://127.0.0.1:8000";
+      const decodedToken = decodeURIComponent(token);
+      const response = await fetch(`${baseUrl}/api/v1/auth/verify?token=${encodeURIComponent(decodedToken)}`, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(1500),
+      });
+      if (!response.ok) return { valid: false, backendAvailable: true };
+      const payload = await response.json() as { valid?: boolean };
+      return { valid: payload.valid === true, backendAvailable: true };
+    } catch {
+      return { valid: false, backendAvailable: false };
+    }
+  })();
+
+  // Don't cache a "backend unreachable" result — that should keep retrying
+  // on the very next request instead of pinning a stale verdict for 5s.
+  if (result.backendAvailable) {
+    verifyCache.set(token, { result, expiresAt: Date.now() + CACHE_TTL_MS });
+    // Keep this from growing forever across many different tokens/logins.
+    if (verifyCache.size > 50) {
+      const oldestKey = verifyCache.keys().next().value;
+      if (oldestKey !== undefined) verifyCache.delete(oldestKey);
+    }
+  }
+
+  return result;
 }
 
 const PUBLIC_PAGE_PREFIXES = ["/telegram-app", "/m/pair"];
