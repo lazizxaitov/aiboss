@@ -5,7 +5,8 @@ import { Badge } from "@/components/ui/badge";
 import { MetricTile } from "@/components/ui/metric-tile";
 import { SectionHeading } from "@/components/ui/section-heading";
 import { Surface } from "@/components/ui/surface";
-import { getDashboardOverview } from "@/lib/core-api";
+import { getDashboardOverview, getMarketingAnalytics } from "@/lib/core-api";
+import type { MarketingAnalyticsResponse } from "@/lib/core-api";
 import { formatMoneyValue, parseMoneyValue } from "@/lib/money";
 import type { ModuleConfig } from "@/modules/shared/types";
 
@@ -108,6 +109,15 @@ export function ModuleScreen({ module }: ModuleScreenProps) {
 }
 
 async function ModuleScreenContent({ module }: ModuleScreenProps) {
+  if (module.kind === "ceo") {
+    // The old "Руководитель"/CEO page is now the Marketing Analytics page —
+    // it has its own data source (Instagram/YouTube/Meta ads), unrelated to
+    // the sales-and-finance `getDashboardOverview()` used by every other
+    // module below.
+    const analytics = await getMarketingAnalytics();
+    return <MarketingAnalyticsWorkspace module={module} analytics={analytics} />;
+  }
+
   const overview = await getDashboardOverview();
 
   return module.kind === "sales" ? (
@@ -122,8 +132,6 @@ async function ModuleScreenContent({ module }: ModuleScreenProps) {
     <TelegramWorkspace module={module} overview={overview} />
   ) : module.kind === "alerts" ? (
     <AlertsWorkspace module={module} overview={overview} />
-  ) : module.kind === "ceo" ? (
-    <CEOWorkspace module={module} overview={overview} />
   ) : (
     <RecommendationsWorkspace module={module} overview={overview} />
   );
@@ -622,101 +630,128 @@ function AlertsWorkspace({
   );
 }
 
-function CEOWorkspace({
+function formatShortDate(value?: string | null): string {
+  if (!value) return "";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return parsed.toLocaleDateString("ru-RU", { day: "2-digit", month: "short" });
+}
+
+function MarketingAnalyticsWorkspace({
   module,
-  overview,
+  analytics,
 }: {
   module: ModuleConfig;
-  overview: Awaited<ReturnType<typeof getDashboardOverview>>;
+  analytics: MarketingAnalyticsResponse;
 }) {
-  const rankedBusinesses = [...overview.businesses].sort((a, b) => extractNumber(b.revenue) - extractNumber(a.revenue));
+  const { summary, top_instagram_posts: topPosts, top_youtube_videos: topVideos, meta_ads: metaAds, ai_commentary: aiCommentary } = analytics;
+
+  const stats: ModuleConfig["stats"] = [
+    { label: "Посты Instagram", value: `${summary.instagram_posts}`, note: `охват ${summary.instagram_total_reach}` },
+    { label: "Видео YouTube", value: `${summary.youtube_videos}`, note: `просмотров ${summary.youtube_total_views}` },
+    { label: "Реклама Meta", value: formatMoneyValue(summary.meta_ad_spend), note: `${summary.meta_ad_impressions} показов` },
+  ];
 
   return (
     <div className="space-y-6">
-      <StatsShelf stats={overview.executive_summary as ModuleConfig["stats"]} />
+      <StatsShelf stats={stats} />
 
-      <div className="space-y-6">
-        <Surface className="p-6 sm:p-8">
-          <PanelTitle eyebrow={module.accent ?? "Руководитель"} title="Единый стратегический обзор" badge={overview.analysis_engine} />
-          <p className="mt-3 max-w-3xl text-sm leading-7 text-slate-400">
-            Руководительский экран собирает картину бизнеса в один обзор: активность, потоки, риски и дальнейшие шаги.
-          </p>
+      <Surface className="p-6 sm:p-8">
+        <PanelTitle eyebrow={module.accent ?? "Маркетинг"} title="Мысли AI о маркетинге" badge="AI-аналитика" />
+        <p className="mt-4 whitespace-pre-line text-sm leading-7 text-slate-300">{aiCommentary}</p>
+      </Surface>
 
-          <div className="mt-6 space-y-4">
-            <TrendPanel trend={overview.trend} title="Динамика бизнеса" badge={overview.trend.badge} />
-            <StructurePanel title="Структура бизнеса" badge="Структура" structure={overview.structure} />
-          </div>
-
-          <div className="mt-6 space-y-4">
-            <DetailListPanel
-              title="Бизнесы и потоки"
-              badge="Организации"
-              subtitle="Выручка, расходы и чистый поток по каждой организации"
-              items={rankedBusinesses.slice(0, 6)}
-              emptyLabel="Бизнесы пока не загружены."
-              renderItem={(business) => (
-                <div
-                  key={business.business_id}
-                  className="rounded-[18px] border border-[#3a3d43] bg-[#2E3137] px-4 py-3 transition hover:border-[#4a4e56] hover:bg-[#343840]/80"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="truncate font-semibold tracking-[-0.03em] text-[#f4f7fb]">{business.name}</p>
-                      <p className="mt-1 truncate text-sm text-slate-400">
-                        {business.external_ref ?? "Без external_ref"} · {business.sales} сделок
-                      </p>
-                      <p className="mt-2 truncate text-xs text-slate-400">
-                        {business.contacts} контактов · {business.source_systems} источн.
-                      </p>
-                    </div>
-                    <Badge variant="soft">{business.contacts} контактов</Badge>
-                  </div>
-                  <div className="mt-3 flex flex-wrap gap-2 text-sm text-slate-400">
-                    <span>{formatMoneyValue(business.revenue)}</span>
-                    <span>{formatMoneyValue(business.expense)}</span>
-                    <span>{formatMoneyValue(business.net_flow)}</span>
-                  </div>
+      <div className="grid gap-6 lg:grid-cols-2">
+        <DetailListPanel
+          title="Топ постов Instagram"
+          badge="Instagram"
+          subtitle="Лучшие посты по вовлечённости (лайки + комментарии + сохранения + репосты)"
+          items={topPosts}
+          emptyLabel="Пока нет данных — подключите Meta в настройках и запустите синхронизацию."
+          renderItem={(post, index) => (
+            <a
+              key={post.external_id}
+              href={post.permalink ?? undefined}
+              target={post.permalink ? "_blank" : undefined}
+              rel={post.permalink ? "noreferrer" : undefined}
+              className="block rounded-[18px] border border-[#3a3d43] bg-[#2E3137] px-4 py-3 transition hover:border-[#4a4e56] hover:bg-[#343840]/80"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate font-semibold tracking-[-0.03em] text-[#f4f7fb]">
+                    #{index + 1} {post.caption || "Без подписи"}
+                  </p>
+                  <p className="mt-1 truncate text-sm text-slate-400">
+                    {post.account_username ? `@${post.account_username}` : "Instagram"}
+                    {post.media_type ? ` · ${post.media_type}` : ""}
+                    {post.published_at ? ` · ${formatShortDate(post.published_at)}` : ""}
+                  </p>
+                  <p className="mt-2 truncate text-xs text-slate-400">
+                    {post.likes} лайков · {post.comments} комментариев · {post.reach} охват
+                  </p>
                 </div>
-              )}
-            />
-            <DetailListPanel
-              title="Последние продажи"
-              badge="Сделки"
-              subtitle="Что продано и по какой сумме"
-              items={overview.recent_sales.slice(0, 6)}
-              emptyLabel="Продажи пока не загружены."
-              renderItem={(sale) => (
-                <div
-                  key={sale.sale_id}
-                  className="rounded-[18px] border border-[#3a3d43] bg-[#2E3137] px-4 py-3 transition hover:border-[#4a4e56] hover:bg-[#343840]/80"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="truncate font-semibold tracking-[-0.03em] text-[#f4f7fb]">{sale.sale_number}</p>
-                      <p className="mt-1 truncate text-sm text-slate-400">{sale.business_name}</p>
-                      <p className="mt-2 truncate text-xs text-slate-400">
-                        {sale.items_count} строк · {sale.products_count} товаров
-                      </p>
-                    </div>
-                    <Badge variant="soft">{sale.stage}</Badge>
-                  </div>
-                  <div className="mt-3 text-sm font-semibold text-[#f4f7fb]">{formatMoneyValue(sale.amount, sale.currency)}</div>
+                <Badge variant="accent">{post.engagement}</Badge>
+              </div>
+            </a>
+          )}
+        />
+        <DetailListPanel
+          title="Топ видео YouTube"
+          badge="YouTube"
+          subtitle="Лучшие видео по числу просмотров"
+          items={topVideos}
+          emptyLabel="Пока нет данных — подключите YouTube в настройках и запустите синхронизацию."
+          renderItem={(video, index) => (
+            <div
+              key={video.external_id}
+              className="rounded-[18px] border border-[#3a3d43] bg-[#2E3137] px-4 py-3 transition hover:border-[#4a4e56] hover:bg-[#343840]/80"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate font-semibold tracking-[-0.03em] text-[#f4f7fb]">
+                    #{index + 1} {video.title || "Без названия"}
+                  </p>
+                  <p className="mt-1 truncate text-sm text-slate-400">
+                    {video.channel_title ?? "YouTube"}
+                    {video.published_at ? ` · ${formatShortDate(video.published_at)}` : ""}
+                  </p>
+                  <p className="mt-2 truncate text-xs text-slate-400">
+                    {video.likes} лайков · {video.comments} комментариев
+                  </p>
                 </div>
-              )}
-            />
+                <Badge variant="accent">{video.views} просм.</Badge>
+              </div>
+            </div>
+          )}
+        />
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Surface className="p-6 sm:p-7">
+          <PanelTitle eyebrow="Meta Ads" title="Реклама в Meta" badge="Сводка" />
+          <div className="mt-4 grid grid-cols-2 gap-3">
+            <div className="rounded-[18px] border border-[#3a3d43] bg-[#343840] p-4">
+              <p className="text-xs uppercase tracking-[0.24em] text-slate-400">Расход</p>
+              <p className="mt-2 text-lg font-semibold text-[#f4f7fb]">{formatMoneyValue(metaAds.spend)}</p>
+            </div>
+            <div className="rounded-[18px] border border-[#3a3d43] bg-[#343840] p-4">
+              <p className="text-xs uppercase tracking-[0.24em] text-slate-400">Показы</p>
+              <p className="mt-2 text-lg font-semibold text-[#f4f7fb]">{metaAds.impressions}</p>
+            </div>
+            <div className="rounded-[18px] border border-[#3a3d43] bg-[#343840] p-4">
+              <p className="text-xs uppercase tracking-[0.24em] text-slate-400">Охват</p>
+              <p className="mt-2 text-lg font-semibold text-[#f4f7fb]">{metaAds.reach}</p>
+            </div>
+            <div className="rounded-[18px] border border-[#3a3d43] bg-[#343840] p-4">
+              <p className="text-xs uppercase tracking-[0.24em] text-slate-400">Клики</p>
+              <p className="mt-2 text-lg font-semibold text-[#f4f7fb]">{metaAds.clicks}</p>
+            </div>
           </div>
         </Surface>
-
-        <div className="space-y-6">
-          <SignalBoard title="Сигналы под контролем" badge="Руководитель" signals={overview.signals} />
-          <InsightStack title="Бизнес-выводы" badge="Выводы" items={overview.ai_insights} />
-        </div>
+        <SourceCloud title="Источники данных" badge="Источники" items={module.sources ?? []} />
       </div>
 
-      <div className="space-y-6">
-        <SourceCloud title="Приоритеты и контекст" badge="Действия" items={module.actions ?? []} />
-        <SourceCloud title="Источники обзора" badge="Источники" items={module.sources ?? []} />
-      </div>
+      <InsightStack title="Что делать дальше" badge="Шаги" items={module.actions ?? []} />
     </div>
   );
 }
@@ -868,9 +903,14 @@ function StatsShelf({ stats }: { stats?: ModuleConfig["stats"] }) {
   }
 
   return (
-    <div className="flex gap-3 overflow-x-auto pb-1">
+    // On a phone this used to be a flex row you had to swipe through
+    // sideways to see every KPI (each card pinned to min-w-[260px], only
+    // ~1.3 visible at once). A 2-column grid keeps every card visible
+    // without scrolling; sm: and up goes back to the original horizontal
+    // scroll-strip, unchanged from before.
+    <div className="grid grid-cols-2 gap-3 sm:flex sm:overflow-x-auto sm:pb-1">
       {stats.map((stat) => (
-        <div key={stat.label} className="min-w-[260px] flex-1">
+        <div key={stat.label} className="min-w-0 sm:min-w-[260px] sm:flex-1">
           <MetricTile
             label={stat.label}
             value={stat.value}

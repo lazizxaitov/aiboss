@@ -74,6 +74,33 @@ class MetaGraphClient:
             params["breakdowns"] = ",".join(breakdowns)
         return self._paginate(self.get(f"{object_id}/insights", **params))
 
+    def media_insights(
+        self, media_id: str, metrics: str = "reach,impressions,saved,shares,total_interactions"
+    ) -> dict[str, Any]:
+        """Best-effort per-media insights (reach/impressions/saves/shares).
+
+        Not every media item supports every metric (e.g. carousel posts don't
+        support `shares`), and the `instagram_manage_insights` permission may
+        simply be missing — either way this returns {} instead of raising, so
+        a sync never fails just because one post's insights aren't available.
+        Likes/comments come from the media object itself (`like_count`,
+        `comments_count`), not from here.
+        """
+
+        try:
+            payload = self.get(f"{media_id}/insights", metric=metrics)
+        except MetaAPIError:
+            return {}
+        values: dict[str, Any] = {}
+        for item in payload.get("data") or []:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            series = item.get("values") or []
+            if name and series and isinstance(series[0], dict):
+                values[name] = series[0].get("value")
+        return values
+
     def _paginate(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         rows = list(payload.get("data") or []) if isinstance(payload.get("data"), list) else []
         next_url = (

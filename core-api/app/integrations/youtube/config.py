@@ -1,7 +1,17 @@
-"""Backend-only Google OAuth configuration for YouTube."""
+"""Backend-only Google OAuth configuration for YouTube.
+
+Two sources are layered together: environment variables (YOUTUBE_CLIENT_ID
+and friends — set once by whoever deploys the server) and a small settings
+row in the core data store (set by the owner from Settings → Интеграции →
+YouTube, see app/integrations/youtube/service.py's save_credentials()). The
+Settings-entered value wins when present; the env var is the fallback for a
+setup that still configures YouTube the old way, via .env."""
 
 from dataclasses import dataclass
+from typing import Any
 import os
+
+YOUTUBE_CREDENTIALS_SETTING_KEY = "integrations:youtube:credentials:v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +38,29 @@ class YouTubeConfig:
             analytics_base_url=os.getenv(
                 "YOUTUBE_ANALYTICS_API_BASE_URL", "https://youtubeanalytics.googleapis.com/v2"
             ),
+        )
+
+    @classmethod
+    def resolve(cls, store: Any) -> "YouTubeConfig":
+        env = cls.from_env()
+        try:
+            setting = store.get_app_setting(YOUTUBE_CREDENTIALS_SETTING_KEY)
+        except Exception:  # noqa: BLE001 - a broken settings read must never block YouTube entirely
+            setting = None
+        stored = setting.setting_value if setting else {}
+
+        def pick(key: str, fallback: str | None) -> str | None:
+            value = stored.get(key)
+            return value if isinstance(value, str) and value.strip() else fallback
+
+        return cls(
+            client_id=pick("client_id", env.client_id),
+            client_secret=pick("client_secret", env.client_secret),
+            redirect_uri=pick("redirect_uri", env.redirect_uri),
+            access_token=pick("access_token", env.access_token),
+            refresh_token=pick("refresh_token", env.refresh_token),
+            api_base_url=env.api_base_url,
+            analytics_base_url=env.analytics_base_url,
         )
 
     @property

@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type PointerEvent } from "react";
 
 import { streamAiChat, transcribeVoiceMessage, type AiChatMessage } from "@/lib/core-api";
@@ -71,6 +72,7 @@ function readFileAsDataUrl(file: File): Promise<string> {
 }
 
 export default function MobileChatPage() {
+  const router = useRouter();
   const [items, setItems] = useState<ChatItem[]>([]);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -155,6 +157,15 @@ export default function MobileChatPage() {
     const text = draft;
     setDraft("");
     void send(text);
+  };
+
+  const onNewChat = () => {
+    const created = newId();
+    window.localStorage.setItem(CONVERSATION_ID_KEY, created);
+    conversationIdRef.current = created;
+    setItems([]);
+    setError(null);
+    setDraft("");
   };
 
   // --- Attach: photo / file -------------------------------------------------
@@ -370,8 +381,38 @@ export default function MobileChatPage() {
         : null;
 
   return (
-    <div className="flex h-[calc(100dvh-9.5rem)] min-h-0 w-full min-w-0 flex-col">
-      <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden pb-3">
+    // This route sits outside the (shell) tab-bar layout on purpose — a full-
+    // screen chat, like Claude's/ChatGPT's own mobile app, rather than one
+    // more tab. h-dvh (not the shell's fixed-chrome calc, which doesn't apply
+    // here) plus its own safe-area padding is what actually pins the header
+    // under the notch/Dynamic Island and the composer to the real bottom
+    // edge, above the home indicator.
+    <div className="flex h-dvh w-full min-w-0 flex-col bg-[#1E1E21] text-[#f4f7fb]">
+      <header
+        className="sticky top-0 z-10 flex shrink-0 items-center gap-1 border-b border-[#3a3d43] bg-[#1E1E21]/95 px-2 backdrop-blur"
+        style={{ paddingTop: "max(0.75rem, env(safe-area-inset-top))", paddingBottom: "0.75rem" }}
+      >
+        <button
+          type="button"
+          onClick={() => router.push("/m")}
+          aria-label="Назад"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-lg text-slate-300 active:bg-[#2E3137]"
+        >
+          ←
+        </button>
+        <p className="flex-1 truncate text-center text-sm font-semibold text-[#f4f7fb]">Чат с ИИ</p>
+        <button
+          type="button"
+          onClick={onNewChat}
+          aria-label="Новый диалог"
+          title="Новый диалог"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-lg text-slate-300 active:bg-[#2E3137]"
+        >
+          ＋
+        </button>
+      </header>
+
+      <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden px-4 py-4">
         {items.length === 0 ? <p className="pt-10 text-center text-sm text-slate-500">Задайте вопрос ИИ, прикрепите файл/фото или отправьте голосовое сообщение.</p> : null}
         {items.map((item) => (
           <div key={item.id} className={`flex ${item.role === "user" ? "justify-end" : "justify-start"}`}>
@@ -391,7 +432,7 @@ export default function MobileChatPage() {
       </div>
 
       {recordingPhase !== "idle" ? (
-        <div className="pointer-events-none mb-3 flex flex-col items-center gap-2">
+        <div className="pointer-events-none mb-3 flex flex-col items-center gap-2 px-4">
           <div className="relative flex h-24 w-24 items-center justify-center">
             {/* Soft outer glow — breathes with the overall loudness. */}
             <div
@@ -429,9 +470,13 @@ export default function MobileChatPage() {
           <p className={`text-xs ${cancelledRef.current ? "text-rose-300" : "text-slate-300"}`}>{recordingLabel}</p>
         </div>
       ) : null}
-      {error ? <p className="pb-2 text-center text-xs text-rose-300">{error}</p> : null}
+      {error ? <p className="px-4 pb-2 text-center text-xs text-rose-300">{error}</p> : null}
 
-      <form onSubmit={onSubmit} className="flex items-center gap-2 border-t border-[#3a3d43] pt-3">
+      <form
+        onSubmit={onSubmit}
+        className="flex shrink-0 items-center gap-2 border-t border-[#3a3d43] bg-[#1E1E21] px-4 pt-3"
+        style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
+      >
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}

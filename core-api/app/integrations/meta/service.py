@@ -6,9 +6,12 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+from app.core.data_layer.entities import AppSetting
 from app.integrations.meta.client import MetaAPIError, MetaGraphClient
-from app.integrations.meta.config import MetaConfig
+from app.integrations.meta.config import META_CREDENTIALS_SETTING_KEY, MetaConfig
 from app.integrations.meta.repository import MetaRepository
+
+CREDENTIAL_FIELDS = ("app_id", "app_secret", "redirect_uri", "access_token")
 
 
 class MetaMarketingService:
@@ -16,9 +19,44 @@ class MetaMarketingService:
         self, store: Any, *, config: MetaConfig | None = None, client: MetaGraphClient | None = None
     ) -> None:
         self.store = store
-        self.config = config or MetaConfig.from_env()
+        self.config = config or MetaConfig.resolve(store)
         self.client = client or MetaGraphClient(self.config)
         self.repository = MetaRepository(store)
+
+    def credentials_state(self) -> dict[str, bool]:
+        """Which credential fields are currently set — never the values themselves."""
+
+        return {field: bool(getattr(self.config, field)) for field in CREDENTIAL_FIELDS}
+
+    def save_credentials(self, **fields: str | None) -> dict[str, bool]:
+        """Persist owner-entered Meta credentials (Settings → Интеграции → Meta).
+
+        Only fields explicitly passed (not None) are touched; passing an empty
+        string clears that field instead of leaving it as-is, so the owner can
+        blank out a token from the UI without retyping the others.
+        """
+
+        existing = self.store.get_app_setting(META_CREDENTIALS_SETTING_KEY)
+        stored: dict[str, Any] = dict(existing.setting_value) if existing else {}
+        now = datetime.now(timezone.utc)
+        for field in CREDENTIAL_FIELDS:
+            if field not in fields or fields[field] is None:
+                continue
+            value = fields[field].strip()
+            if value:
+                stored[field] = value
+            else:
+                stored.pop(field, None)
+        self.store.upsert_app_setting(AppSetting(
+            setting_key=META_CREDENTIALS_SETTING_KEY,
+            setting_value=stored,
+            metadata={"scope": "global", "kind": "integration_credentials", "provider": "meta"},
+            created_at=existing.created_at if existing else now,
+            updated_at=now,
+        ))
+        self.config = MetaConfig.resolve(self.store)
+        self.client = MetaGraphClient(self.config)
+        return self.credentials_state()
 
     def status(self) -> dict[str, Any]:
         rows = self.repository.list("meta_connections")
@@ -26,6 +64,7 @@ class MetaMarketingService:
             return {
                 "status": "not_configured",
                 "configured": self.config.configured,
+                "credentials": self.credentials_state(),
                 "resources": [],
                 "mappings": [],
             }
@@ -40,6 +79,7 @@ class MetaMarketingService:
         return {
             "status": connection.get("status", "connected"),
             "configured": True,
+            "credentials": self.credentials_state(),
             "last_success_at": connection.get("last_success_at"),
             "last_error": connection.get("last_error"),
             "resources": resources,
@@ -357,18 +397,27 @@ class MetaMarketingService:
                 )
                 if not account:
                     continue
+                account_id = str(account["id"])
+                existing_media_by_external_id = {
+                    row.get("external_id"): row
+                    for row in self.repository.list("meta_instagram_media", org)
+                    if row.get("account_id") == account_id
+                }
                 for media in self.client.collection(
                     resource,
                     "media",
-                    fields="id,media_type,media_product_type,caption,permalink,timestamp,shortcode",
+                    fields="id,media_type,media_product_type,caption,permalink,timestamp,shortcode,like_count,comments_count",
                 ):
+                    external_id = str(media.get("id"))
+                    existing_row = existing_media_by_external_id.get(external_id)
+                    media_id = str(existing_row["id"]) if existing_row else str(uuid4())
                     self.repository.upsert(
                         "meta_instagram_media",
                         {
-                            "id": str(uuid4()),
+                            "id": media_id,
                             "organization_id": org,
-                            "account_id": str(account["id"]),
-                            "external_id": str(media.get("id")),
+                            "account_id": account_id,
+                            "external_id": external_id,
                             "media_type": media.get("media_type"),
                             "media_product_type": media.get("media_product_type"),
                             "caption": media.get("caption"),
@@ -379,6 +428,36 @@ class MetaMarketingService:
                             "updated_at": now,
                         },
                         ("organization_id", "account_id", "external_id"),
+                    )
+                    # Likes/comments come straight from the media object (no
+                    # extra permission needed); reach/impressions/saves/shares
+                    # need the Insights edge and may be unavailable — either
+                    # way we record a same-day snapshot row so the Marketing
+                    # Analytics page has real like/comment numbers even when
+                    # Insights access isn't granted.
+                    insight_metrics = self.client.media_insights(external_id)
+                    today = datetime.now(timezone.utc).date().isoformat()
+                    self.repository.upsert(
+                        "meta_instagram_media_insights_daily",
+                        {
+                            "id": str(uuid4()),
+                            "organization_id": org,
+                            "account_id": account_id,
+                            "media_id": media_id,
+                            "date_start": today,
+                            "date_stop": today,
+                            "reach": insight_metrics.get("reach"),
+                            "impressions": insight_metrics.get("impressions"),
+                            "views": insight_metrics.get("plays") or insight_metrics.get("video_views"),
+                            "likes": media.get("like_count"),
+                            "comments": media.get("comments_count"),
+                            "shares": insight_metrics.get("shares"),
+                            "saves": insight_metrics.get("saved"),
+                            "interactions": insight_metrics.get("total_interactions"),
+                            "created_at": now,
+                            "updated_at": now,
+                        },
+                        ("organization_id", "account_id", "media_id", "date_start", "date_stop"),
                     )
 
     def _save_insight(

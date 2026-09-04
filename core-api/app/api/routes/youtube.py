@@ -25,6 +25,18 @@ class YouTubeMappingRequest(BaseModel):
     display_name: str | None = None
 
 
+class YouTubeCredentialsRequest(BaseModel):
+    # Every field is optional and independent — the owner can paste in just
+    # an access/refresh token pair obtained elsewhere, or the full OAuth
+    # Client ID/Secret/Redirect URI trio. Sending "" for a field clears it;
+    # omitting a field leaves it untouched.
+    client_id: str | None = None
+    client_secret: str | None = None
+    redirect_uri: str | None = None
+    access_token: str | None = None
+    refresh_token: str | None = None
+
+
 class YouTubeSyncRequest(BaseModel):
     mode: str = "incremental"
     backfill_days: int = Field(default=7, ge=1, le=365)
@@ -46,6 +58,16 @@ def youtube_connect(
 ) -> dict[str, object]:
     _owner(authorization, store)
     return YouTubeMarketingService(store).connect()
+
+
+@router.post("/credentials")
+def youtube_save_credentials(
+    payload: YouTubeCredentialsRequest,
+    store: Annotated[CoreDataStore, Depends(get_core_store)],
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    _owner(authorization, store)
+    return {"credentials": YouTubeMarketingService(store).save_credentials(**payload.model_dump())}
 
 
 @router.post("/mappings")

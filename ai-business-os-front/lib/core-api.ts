@@ -173,13 +173,23 @@ export type DashboardOverviewFilters = {
 };
 
 export type MetaResource = { id?: string; resource_type: string; external_id: string; name?: string | null; username?: string | null; currency?: string | null; timezone?: string | null };
-export type MetaStatus = { status: string; configured: boolean; last_success_at?: string | null; last_error?: string | null; resources: MetaResource[]; mappings: Array<{ organization_id: string; resource_type: string; external_id: string }> };
+export type MetaCredentialsState = { app_id: boolean; app_secret: boolean; redirect_uri: boolean; access_token: boolean };
+export type MetaStatus = { status: string; configured: boolean; credentials?: MetaCredentialsState; last_success_at?: string | null; last_error?: string | null; resources: MetaResource[]; mappings: Array<{ organization_id: string; resource_type: string; external_id: string }> };
 
 export async function getMetaStatus(): Promise<MetaStatus> {
   return requestJson<MetaStatus>("/api/v1/meta/status", {}, fastReadTimeoutMs);
 }
 export async function connectMeta(): Promise<MetaStatus> {
   return requestJson<MetaStatus>("/api/v1/meta/connect", { method: "POST" });
+}
+export type MetaCredentialsInput = { app_id?: string; app_secret?: string; redirect_uri?: string; access_token?: string };
+export async function saveMetaCredentials(payload: MetaCredentialsInput): Promise<MetaCredentialsState> {
+  const response = await requestJson<{ credentials: MetaCredentialsState }>("/api/v1/meta/credentials", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return response.credentials;
 }
 export async function mapMetaResource(payload: { organization_id: string; resource_type: string; external_id: string; display_name?: string }): Promise<unknown> {
   return requestJson<unknown>("/api/v1/meta/mappings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
@@ -188,11 +198,98 @@ export async function syncMeta(mode: "incremental" | "backfill" = "incremental",
   return requestJson<MetaStatus & { sync_status?: string }>("/api/v1/meta/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode, backfill_days: backfillDays }) });
 }
 
-export type YouTubeStatus = { status: string; configured: boolean; last_success_at?: string | null; last_error?: string | null; channels: Array<{ external_id: string; title?: string | null; subscriber_count?: string | null; video_count?: string | null }>; mappings: Array<{ organization_id: string; channel_id: string }> };
+export type YouTubeCredentialsState = { client_id: boolean; client_secret: boolean; redirect_uri: boolean; access_token: boolean; refresh_token: boolean };
+export type YouTubeStatus = { status: string; configured: boolean; credentials?: YouTubeCredentialsState; last_success_at?: string | null; last_error?: string | null; channels: Array<{ external_id: string; title?: string | null; subscriber_count?: string | null; video_count?: string | null }>; mappings: Array<{ organization_id: string; channel_id: string }> };
 export async function getYouTubeStatus(): Promise<YouTubeStatus> { return requestJson<YouTubeStatus>("/api/v1/youtube/status", {}, fastReadTimeoutMs); }
 export async function connectYouTube(): Promise<YouTubeStatus> { return requestJson<YouTubeStatus>("/api/v1/youtube/connect", { method: "POST" }); }
+export type YouTubeCredentialsInput = { client_id?: string; client_secret?: string; redirect_uri?: string; access_token?: string; refresh_token?: string };
+export async function saveYouTubeCredentials(payload: YouTubeCredentialsInput): Promise<YouTubeCredentialsState> {
+  const response = await requestJson<{ credentials: YouTubeCredentialsState }>("/api/v1/youtube/credentials", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return response.credentials;
+}
 export async function mapYouTubeChannel(payload: { organization_id: string; channel_id: string; display_name?: string }): Promise<unknown> { return requestJson<unknown>("/api/v1/youtube/mappings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); }
 export async function syncYouTube(mode: "incremental" | "backfill" = "incremental", backfillDays = 7): Promise<YouTubeStatus & { sync_status?: string }> { return requestJson<YouTubeStatus & { sync_status?: string }>("/api/v1/youtube/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode, backfill_days: backfillDays }) }); }
+
+// Marketing Analytics page (repurposed "Руководитель"/CEO page): top
+// Instagram posts and YouTube videos sourced from the Meta/YouTube
+// integrations above, plus a short AI-generated commentary. This is a
+// separate endpoint from `/marketing/attribution/*` above — that one is
+// about ad-click attribution evidence, this one is read-only analytics.
+export type InstagramPostAnalytics = {
+  external_id: string;
+  caption: string;
+  media_type?: string | null;
+  permalink?: string | null;
+  published_at?: string | null;
+  account_username?: string | null;
+  likes: number;
+  comments: number;
+  reach: number;
+  impressions: number;
+  saves: number;
+  shares: number;
+  engagement: number;
+};
+export type YouTubeVideoAnalytics = {
+  external_id: string;
+  title?: string | null;
+  published_at?: string | null;
+  channel_title?: string | null;
+  views: number;
+  likes: number;
+  comments: number;
+  shares: number;
+};
+export type MetaAdsAnalyticsSummary = { spend: number; impressions: number; reach: number; clicks: number };
+export type MarketingAnalyticsSummary = {
+  instagram_posts: number;
+  instagram_total_reach: number;
+  instagram_total_engagement: number;
+  youtube_videos: number;
+  youtube_total_views: number;
+  meta_ad_spend: number;
+  meta_ad_impressions: number;
+};
+export type MarketingAnalyticsResponse = {
+  summary: MarketingAnalyticsSummary;
+  top_instagram_posts: InstagramPostAnalytics[];
+  top_youtube_videos: YouTubeVideoAnalytics[];
+  meta_ads: MetaAdsAnalyticsSummary;
+  ai_commentary: string;
+};
+const emptyMarketingAnalytics = (message: string): MarketingAnalyticsResponse => ({
+  summary: {
+    instagram_posts: 0,
+    instagram_total_reach: 0,
+    instagram_total_engagement: 0,
+    youtube_videos: 0,
+    youtube_total_views: 0,
+    meta_ad_spend: 0,
+    meta_ad_impressions: 0,
+  },
+  top_instagram_posts: [],
+  top_youtube_videos: [],
+  meta_ads: { spend: 0, impressions: 0, reach: 0, clicks: 0 },
+  ai_commentary: message,
+});
+export async function getMarketingAnalytics(organizationId?: string): Promise<MarketingAnalyticsResponse> {
+  const params = new URLSearchParams();
+  if (organizationId) params.set("organization_id", organizationId);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  try {
+    return await requestJson<MarketingAnalyticsResponse>(`/api/v1/marketing/analytics${suffix}`);
+  } catch (error) {
+    return emptyMarketingAnalytics(
+      error instanceof Error
+        ? `Не удалось загрузить маркетинговую аналитику: ${error.message}`
+        : "Не удалось загрузить маркетинговую аналитику.",
+    );
+  }
+}
 export type MarketingAttributionStatus = { evidence_available: boolean; confirmed_attribution_available: boolean; evidence_count: number; attributed_outcome_count: number; message: string };
 export async function getMarketingAttributionStatus(): Promise<MarketingAttributionStatus> { return requestJson<MarketingAttributionStatus>("/api/v1/marketing/attribution/status", {}, fastReadTimeoutMs); }
 

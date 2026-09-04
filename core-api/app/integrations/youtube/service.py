@@ -4,9 +4,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
+from app.core.data_layer.entities import AppSetting
 from app.integrations.youtube.client import YouTubeAPIError, YouTubeClient
-from app.integrations.youtube.config import YouTubeConfig
+from app.integrations.youtube.config import YOUTUBE_CREDENTIALS_SETTING_KEY, YouTubeConfig
 from app.integrations.youtube.repository import YouTubeRepository
+
+CREDENTIAL_FIELDS = ("client_id", "client_secret", "redirect_uri", "access_token", "refresh_token")
 
 
 def _stat(value: Any) -> str | None:
@@ -21,9 +24,44 @@ class YouTubeMarketingService:
         config: YouTubeConfig | None = None,
         client: YouTubeClient | None = None,
     ) -> None:
-        self.config = config or YouTubeConfig.from_env()
+        self.store = store
+        self.config = config or YouTubeConfig.resolve(store)
         self.client = client or YouTubeClient(self.config)
         self.repository = YouTubeRepository(store)
+
+    def credentials_state(self) -> dict[str, bool]:
+        """Which credential fields are currently set — never the values themselves."""
+
+        return {field: bool(getattr(self.config, field)) for field in CREDENTIAL_FIELDS}
+
+    def save_credentials(self, **fields: str | None) -> dict[str, bool]:
+        """Persist owner-entered YouTube credentials (Settings → Интеграции → YouTube).
+
+        Only fields explicitly passed (not None) are touched; passing an empty
+        string clears that field instead of leaving it as-is.
+        """
+
+        existing = self.store.get_app_setting(YOUTUBE_CREDENTIALS_SETTING_KEY)
+        stored: dict[str, Any] = dict(existing.setting_value) if existing else {}
+        now = datetime.now(timezone.utc)
+        for field in CREDENTIAL_FIELDS:
+            if field not in fields or fields[field] is None:
+                continue
+            value = fields[field].strip()
+            if value:
+                stored[field] = value
+            else:
+                stored.pop(field, None)
+        self.store.upsert_app_setting(AppSetting(
+            setting_key=YOUTUBE_CREDENTIALS_SETTING_KEY,
+            setting_value=stored,
+            metadata={"scope": "global", "kind": "integration_credentials", "provider": "youtube"},
+            created_at=existing.created_at if existing else now,
+            updated_at=now,
+        ))
+        self.config = YouTubeConfig.resolve(self.store)
+        self.client = YouTubeClient(self.config)
+        return self.credentials_state()
 
     def status(self) -> dict[str, Any]:
         connections = self.repository.list("youtube_connections")
@@ -33,6 +71,7 @@ class YouTubeMarketingService:
             if connections
             else "not_configured",
             "configured": self.config.configured,
+            "credentials": self.credentials_state(),
             "last_success_at": connections[0].get("last_success_at") if connections else None,
             "last_error": connections[0].get("last_error") if connections else None,
             "channels": channels,

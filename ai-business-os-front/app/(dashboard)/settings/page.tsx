@@ -197,13 +197,13 @@ export default function Page() {
               {securityRows.map((row) => (
                 <div
                   key={row.title}
-                  className="flex items-center justify-between rounded-2xl border border-[#3a3d43] bg-[#2E3137] px-4 py-4"
+                  className="flex items-center justify-between gap-3 rounded-2xl border border-[#3a3d43] bg-[#2E3137] px-4 py-4"
                 >
-                  <div>
+                  <div className="min-w-0">
                     <p className="text-sm font-medium text-slate-200">{row.title}</p>
                     <p className="mt-1 text-sm text-slate-400">{row.value}</p>
                   </div>
-                  <span className="h-3 w-3 rounded-full bg-emerald-500" />
+                  <span className="h-3 w-3 shrink-0 rounded-full bg-emerald-500" />
                 </div>
               ))}
               <AutoLockSetting />

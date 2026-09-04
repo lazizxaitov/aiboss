@@ -29,6 +29,17 @@ class MetaMappingRequest(BaseModel):
     display_name: str | None = None
 
 
+class MetaCredentialsRequest(BaseModel):
+    # Every field is optional and independent: the owner can fill in just an
+    # access token (a Meta System User token needs nothing else), or the
+    # full App ID/App Secret/Redirect URI trio for the OAuth flow. Sending ""
+    # for a field clears it; omitting a field leaves it untouched.
+    app_id: str | None = None
+    app_secret: str | None = None
+    redirect_uri: str | None = None
+    access_token: str | None = None
+
+
 class MetaSyncRequest(BaseModel):
     mode: str = "incremental"
     backfill_days: int = Field(default=7, ge=1, le=365)
@@ -50,6 +61,16 @@ def meta_connect(
 ) -> dict[str, object]:
     _owner(authorization, store)
     return MetaMarketingService(store).connect()
+
+
+@router.post("/credentials")
+def meta_save_credentials(
+    payload: MetaCredentialsRequest,
+    store: Annotated[CoreDataStore, Depends(get_core_store)],
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    _owner(authorization, store)
+    return {"credentials": MetaMarketingService(store).save_credentials(**payload.model_dump())}
 
 
 @router.post("/mappings")

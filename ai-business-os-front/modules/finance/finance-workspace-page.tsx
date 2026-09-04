@@ -843,8 +843,8 @@ export function FinanceWorkspacePage() {
       </Surface>
 
       <Surface className="overflow-hidden">
-        <div className="flex items-center justify-between gap-3 border-b border-[#3a3d43] px-5 py-4">
-          <div>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#3a3d43] px-5 py-4">
+          <div className="min-w-0">
             <h2 className="text-lg font-semibold text-[#f4f7fb]">Операционный журнал</h2>
             <p className="mt-1 text-sm text-slate-400">
               {error
