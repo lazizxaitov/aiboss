@@ -746,6 +746,13 @@ class AIBusinessAgentService:
         )
         result_cache: dict[str, object] = {}
         duplicate_query_keys: set[str] = set()
+        # Failed tool calls are never cached (a transient failure should be
+        # retryable), so the duplicate-query guard above can never engage on
+        # a call that fails the same way every time. Track failure counts
+        # separately so a query that keeps failing identically can be cut
+        # off instead of silently burning the whole tool-call budget on
+        # retries of a query that will never succeed.
+        failed_query_counts: dict[str, int] = {}
         total_tool_calls = 0
         rounds = 0
         # Capability transport is selected by role permissions, never by model
@@ -1630,18 +1637,43 @@ class AIBusinessAgentService:
                                     rounds=rounds,
                                     capability_calls=total_tool_calls,
                                 ) from error
+                            error_type_name = type(error).__name__
+                            # The first line of the driver's error is safe (and
+                            # necessary) to hand back to the model — without it
+                            # the model has no way to tell a wrong column name
+                            # apart from a wrong type apart from a wrong value,
+                            # and ends up retrying the exact same broken SQL
+                            # forever. (This is only fed to the model as tool
+                            # evidence; the system prompt separately forbids
+                            # exposing raw SQL/DB errors in the user-facing
+                            # final answer.)
+                            error_detail = str(error).strip().splitlines()[0][:300]
                             logger.info(
-                                "AI_BUSINESS_QUERY_ERROR request_id=%s error_type=%s",
+                                "AI_BUSINESS_QUERY_ERROR request_id=%s error_type=%s detail=%s",
                                 request_id,
-                                type(error).__name__,
+                                error_type_name,
+                                error_detail,
                             )
+                            hint = ""
+                            if error_type_name == "InvalidTextRepresentation" and "uuid" in error_detail.lower():
+                                hint = (
+                                    " Hint: a non-uuid value was passed into a uuid column — this usually means "
+                                    "you joined on the wrong column, e.g. a human-readable identifier such as "
+                                    "ai_sales.sale_id (text, the sale number) instead of the internal ai_sales.id "
+                                    "(uuid) that ai_sale_items.sale_id actually references. Check business.describe "
+                                    "or the schema for the correct join key before retrying."
+                                )
                             tool_result = {
                                 "success": False,
                                 "available": False,
                                 "status": "query_execution_error",
-                                "error_type": type(error).__name__,
+                                "error_type": error_type_name,
                                 "retryable": isinstance(error, UnicodeDecodeError),
-                                "message": "Business query execution failed. Retry with the same published schema.",
+                                "message": (
+                                    f"Business query execution failed: {error_detail}.{hint} "
+                                    "Do not resubmit the same SQL unchanged — correct the column/type/join used "
+                                    "based on this error and the published schema, or pick a different approach."
+                                ),
                             }
                         timings["db_queries"] = int(timings.get("db_queries") or 0) + 1
                         timings.update({
@@ -1679,6 +1711,17 @@ class AIBusinessAgentService:
                     ):
                         result_cache[cache_key] = tool_result
                 result_failed = _result_failed(tool_result)
+                repeated_failure = False
+                if result_failed and query_executed:
+                    failed_query_counts[cache_key] = failed_query_counts.get(cache_key, 0) + 1
+                    if failed_query_counts[cache_key] >= 2:
+                        repeated_failure = True
+                        logger.info(
+                            "AI_ANALYTICS_REPEATED_FAILURE_GUARD analysis_id=%s capability=%s attempts=%s",
+                            request_id,
+                            tool_name,
+                            failed_query_counts[cache_key],
+                        )
                 if result_failed:
                     logger.info(
                         "AI_TOOL_RESULT request_id=%s name=%s status=error error_type=%s",
@@ -1750,6 +1793,17 @@ class AIBusinessAgentService:
                         "content": (
                             "This exact query has already been executed. Use the cached authoritative evidence below. "
                             "Do not repeat this query. Return action=final now; no further query is needed."
+                        ),
+                    })
+                elif repeated_failure:
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "This exact query has now failed more than once with the same error. Do not resubmit "
+                            "it again in any form, even reformatted. Either fix the underlying issue with a "
+                            "materially different query (different columns, join, or approach), or if you cannot "
+                            "fix it, return action=final now and answer using only the data already successfully "
+                            "retrieved in this conversation, clearly noting what could not be retrieved."
                         ),
                     })
                 else:
