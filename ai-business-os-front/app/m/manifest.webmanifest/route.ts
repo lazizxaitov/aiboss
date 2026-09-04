@@ -8,7 +8,15 @@ export async function GET() {
     short_name: "AI BOS",
     description: "Мобильная версия AI Business OS.",
     start_url: "/m",
-    scope: "/m",
+    // The mobile drawer menu (app/m/(shell)/layout.tsx) links out to the
+    // existing desktop pages (/ceo, /sales, /visits, ...) reusing them as-is
+    // until each gets its own /m/... screen. Those routes live outside /m,
+    // so a scope of "/m" made iOS/Android treat every one of those taps as
+    // leaving the installed app: it opened the link in Safari/Chrome instead
+    // of the standalone PWA window, and its own back button then landed on
+    // the public site rather than back inside the app. Scoping to the whole
+    // origin keeps all same-site navigation inside the installed app shell.
+    scope: "/",
     display: "standalone",
     orientation: "portrait",
     background_color: "#1E1E21",

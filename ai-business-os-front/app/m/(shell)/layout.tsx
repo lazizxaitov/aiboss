@@ -6,8 +6,6 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import { Drawer } from "@/components/ui/drawer";
 import { MobileActionButton } from "@/components/mobile/mobile-action-button";
-// MobileComposerProvider now lives in the parent app/m/layout.tsx, shared
-// with the sibling /m/chat route — see the comment there for why.
 
 type MenuItem = { href: string; label: string; icon: string };
 
